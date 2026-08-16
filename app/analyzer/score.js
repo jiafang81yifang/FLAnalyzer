@@ -14,6 +14,30 @@ var RESULT_LABELS = {
   away: '客胜'
 };
 
+var STRATEGIES = [
+  {
+    key: 'attack',
+    label: '主动进攻',
+    goalFor: 1.16,
+    goalAgainst: 1.12,
+    risk: 0.16
+  },
+  {
+    key: 'balance',
+    label: '均衡控制',
+    goalFor: 1,
+    goalAgainst: 1,
+    risk: 0.07
+  },
+  {
+    key: 'defend',
+    label: '收缩防守',
+    goalFor: 0.86,
+    goalAgainst: 0.82,
+    risk: 0.03
+  }
+];
+
 var isNumber = function (value){
   return typeof value === 'number' && isFinite(value);
 };
@@ -51,19 +75,29 @@ var latestOdds = function (market){
   return null;
 };
 
+var sameTeam = function (left, right){
+  if(!left || !right){
+    return false;
+  }
+  if(left.tid !== undefined && left.tid !== null && right.tid !== undefined && right.tid !== null){
+    return left.tid === right.tid;
+  }
+  return left.name && right.name && left.name === right.name;
+};
+
 var teamGoals = function (match, team){
   var score = fullScore(match);
-  if(!score || !team || !team.tid){
+  if(!score || !team){
     return null;
   }
-  if(match.home && match.home.tid === team.tid){
+  if(sameTeam(match.home, team)){
     return {
       scored: score.home,
       conceded: score.away,
       points: score.home > score.away ? 3 : (score.home === score.away ? 1 : 0)
     };
   }
-  if(match.away && match.away.tid === team.tid){
+  if(sameTeam(match.away, team)){
     return {
       scored: score.away,
       conceded: score.home,
@@ -245,6 +279,115 @@ var outcomePick = function (outcomes){
   return pick;
 };
 
+var adjustedByStrategies = function (expected, homeStrategy, awayStrategy){
+  return {
+    home: round(clamp(expected.home * homeStrategy.goalFor * awayStrategy.goalAgainst, 0.1, 5.8), 2),
+    away: round(clamp(expected.away * awayStrategy.goalFor * homeStrategy.goalAgainst, 0.1, 5.8), 2)
+  };
+};
+
+var payoff = function (side, strategy, opponentStrategy, goals, probabilities, market){
+  var isHome = side === 'home';
+  var winProbability = isHome ? probabilities.outcomes.home : probabilities.outcomes.away;
+  var loseProbability = isHome ? probabilities.outcomes.away : probabilities.outcomes.home;
+  var scored = isHome ? goals.home : goals.away;
+  var conceded = isHome ? goals.away : goals.home;
+  var marketProbability = 0;
+
+  if(market){
+    marketProbability = isHome ? market.probabilities[0] : market.probabilities[2];
+  }
+
+  return (winProbability * 3) +
+    probabilities.outcomes.draw -
+    (loseProbability * 0.6) +
+    (scored * 0.16) -
+    (conceded * 0.14) -
+    (strategy.risk * (conceded + opponentStrategy.goalFor)) +
+    (market ? (winProbability - marketProbability) * 0.45 : 0);
+};
+
+var selectEquilibrium = function (matrix){
+  var equilibria = [];
+  var fallback = null;
+
+  matrix.forEach(function (row){
+    row.forEach(function (cell){
+      var homeBest = matrix.reduce(function (best, candidateRow){
+        var candidate = candidateRow[cell.awayIndex];
+        return candidate.homePayoff > best ? candidate.homePayoff : best;
+      }, -Infinity);
+      var awayBest = row.reduce(function (best, candidate){
+        return candidate.awayPayoff > best ? candidate.awayPayoff : best;
+      }, -Infinity);
+      var score = cell.homePayoff + cell.awayPayoff - Math.abs(cell.homePayoff - cell.awayPayoff) * 0.12;
+
+      cell.isNash = cell.homePayoff >= homeBest - 0.0001 && cell.awayPayoff >= awayBest - 0.0001;
+      cell.stabilityScore = score;
+      if(cell.isNash){
+        equilibria.push(cell);
+      }
+      if(!fallback || score > fallback.stabilityScore){
+        fallback = cell;
+      }
+    });
+  });
+
+  if(equilibria.length > 0){
+    equilibria.sort(function (a, b){
+      return b.stabilityScore - a.stabilityScore;
+    });
+    equilibria[0].equilibriumType = '纳什均衡';
+    return {
+      selected: equilibria[0],
+      equilibria: equilibria
+    };
+  }
+
+  fallback.equilibriumType = '最优稳态';
+  return {
+    selected: fallback,
+    equilibria: []
+  };
+};
+
+var gameTheoryAnalysis = function (expected, market, maxGoal){
+  var matrix = [];
+
+  STRATEGIES.forEach(function (homeStrategy, homeIndex){
+    var row = [];
+    STRATEGIES.forEach(function (awayStrategy, awayIndex){
+      var goals = adjustedByStrategies(expected, homeStrategy, awayStrategy);
+      var probabilities = scoreProbabilities(goals.home, goals.away, maxGoal);
+      var pick = outcomePick(probabilities.outcomes);
+      row.push({
+        homeIndex: homeIndex,
+        awayIndex: awayIndex,
+        homeStrategy: homeStrategy,
+        awayStrategy: awayStrategy,
+        expectedGoals: goals,
+        outcomes: probabilities.outcomes,
+        pick: {
+          key: pick,
+          label: RESULT_LABELS[pick],
+          probability: probabilities.outcomes[pick]
+        },
+        homePayoff: payoff('home', homeStrategy, awayStrategy, goals, probabilities, market),
+        awayPayoff: payoff('away', awayStrategy, homeStrategy, goals, probabilities, market)
+      });
+    });
+    matrix.push(row);
+  });
+
+  var equilibrium = selectEquilibrium(matrix);
+  return {
+    strategies: STRATEGIES,
+    matrix: matrix,
+    equilibria: equilibrium.equilibria,
+    selected: equilibrium.selected
+  };
+};
+
 var expectedGoals = function (summaries, market){
   var homeBase = pairExpected(summaries.homeRecent.goalsForAvg, summaries.awayRecent.goalsAgainstAvg, 1.25);
   var awayBase = pairExpected(summaries.awayRecent.goalsForAvg, summaries.homeRecent.goalsAgainstAvg, 1.05);
@@ -279,6 +422,14 @@ var confidence = function (summaries, market, recent){
   var h2hScore = Math.min(1, summaries.homeH2h.count / 6);
   var oddsScore = market ? 1 : 0;
   return round((recentScore * 0.48) + (venueScore * 0.18) + (h2hScore * 0.14) + (oddsScore * 0.20), 2);
+};
+
+var combineExpectedGoals = function (baseExpected, gameTheory){
+  var strategyExpected = gameTheory.selected.expectedGoals;
+  return {
+    home: round((baseExpected.home * 0.68) + (strategyExpected.home * 0.32), 2),
+    away: round((baseExpected.away * 0.68) + (strategyExpected.away * 0.32), 2)
+  };
 };
 
 var analyzeMatch = function (match, options, callback){
@@ -343,14 +494,18 @@ var analyzeMatch = function (match, options, callback){
           awayH2h: summarize(samples.h2h, match.away)
         };
         var market = marketSignal(match);
-        var expected = expectedGoals(summaries, market);
+        var baseExpected = expectedGoals(summaries, market);
+        var gameTheory = gameTheoryAnalysis(baseExpected, market, maxGoal);
+        var expected = combineExpectedGoals(baseExpected, gameTheory);
         var probabilities = scoreProbabilities(expected.home, expected.away, maxGoal);
         var pick = outcomePick(probabilities.outcomes);
 
         callback(null, {
           match: match,
           generatedAt: new Date(),
+          baseExpectedGoals: baseExpected,
           expectedGoals: expected,
+          gameTheory: gameTheory,
           summaries: summaries,
           market: market,
           topScores: probabilities.candidates.slice(0, parseInt(options.top, 10) || DEFAULTS.top),
@@ -393,6 +548,12 @@ var formatAnalysis = function (analysis){
   lines.push('比分候选：' + analysis.topScores.map(function (item){
     return item.score + ' ' + percent(item.probability);
   }).join('，'));
+  lines.push('博弈论判断：' + match.home.name + ' ' + analysis.gameTheory.selected.homeStrategy.label +
+    ' / ' + match.away.name + ' ' + analysis.gameTheory.selected.awayStrategy.label +
+    '（' + analysis.gameTheory.selected.equilibriumType + '，倾向' + analysis.gameTheory.selected.pick.label + ' ' + percent(analysis.gameTheory.selected.pick.probability) + '）');
+  lines.push('博弈预期：' + match.home.name + ' ' + analysis.gameTheory.selected.expectedGoals.home +
+    ' - ' + match.away.name + ' ' + analysis.gameTheory.selected.expectedGoals.away +
+    '；收益 ' + round(analysis.gameTheory.selected.homePayoff, 2) + ' / ' + round(analysis.gameTheory.selected.awayPayoff, 2));
   lines.push('');
   lines.push('近期状态：');
   lines.push('  ' + match.home.name + '：' + formatSummary(analysis.summaries.homeRecent));
@@ -421,6 +582,7 @@ module.exports = {
     summarize: summarize,
     marketSignal: marketSignal,
     scoreProbabilities: scoreProbabilities,
-    expectedGoals: expectedGoals
+    expectedGoals: expectedGoals,
+    gameTheoryAnalysis: gameTheoryAnalysis
   }
 };
