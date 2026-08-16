@@ -14,6 +14,8 @@ var RESULT_LABELS = {
   away: '客胜'
 };
 
+var RESULT_KEYS = ['home','draw','away'];
+
 var STRATEGIES = [
   {
     key: 'attack',
@@ -58,6 +60,10 @@ var percent = function (value){
   return round(value * 100, 1) + '%';
 };
 
+var validOdds = function (odds){
+  return odds && odds.length >= 3 && !!odds[0] && !!odds[1] && !!odds[2];
+};
+
 var fullScore = function (match){
   if(match.score && match.score.full && isNumber(match.score.full.home) && isNumber(match.score.full.away)){
     return match.score.full;
@@ -71,6 +77,16 @@ var latestOdds = function (market){
   }
   if(market && market.sp && market.sp.length > 0){
     return market.sp[market.sp.length - 1].data;
+  }
+  return null;
+};
+
+var firstOdds = function (market){
+  if(market && market.first){
+    return market.first;
+  }
+  if(market && market.sp && market.sp.length > 0){
+    return market.sp[0].data;
   }
   return null;
 };
@@ -105,6 +121,155 @@ var teamGoals = function (match, team){
     };
   }
   return null;
+};
+
+var resultByIndex = function (index){
+  var key = RESULT_KEYS[index];
+  return {
+    key: key,
+    label: RESULT_LABELS[key]
+  };
+};
+
+var maxIndex = function (values){
+  var index = 0;
+  values.forEach(function (value, i){
+    if(value > values[index]){
+      index = i;
+    }
+  });
+  return index;
+};
+
+var minIndex = function (values){
+  var index = 0;
+  values.forEach(function (value, i){
+    if(value < values[index]){
+      index = i;
+    }
+  });
+  return index;
+};
+
+var tradeRatio = function (trade){
+  if(!trade || trade.length < 3){
+    return null;
+  }
+  var total = trade[0] + trade[1] + trade[2];
+  if(!total){
+    return null;
+  }
+  return [trade[0] / total, trade[1] / total, trade[2] / total];
+};
+
+var safeClaimRatio = function (odds){
+  if(!validOdds(odds)){
+    return null;
+  }
+  return converter.claimRatio(odds);
+};
+
+var bookmakerStrategy = function (match, odds, probabilities, rqOdds){
+  var first = firstOdds(match.jingcai && match.jingcai.spf);
+  first = validOdds(first) ? first : null;
+  rqOdds = validOdds(rqOdds) ? rqOdds : null;
+  var firstProbabilities = first ? converter.probability(first) : null;
+  var probabilityShift = firstProbabilities ? probabilities.map(function (value, index){
+    return value - firstProbabilities[index];
+  }) : null;
+  var oddsChange = first ? odds.map(function (value, index){
+    return first[index] ? (value - first[index]) / first[index] : 0;
+  }) : null;
+  var ratio = tradeRatio(match.jingcai && match.jingcai.spf ? match.jingcai.spf.trade : null);
+  var heat = ratio ? ratio.map(function (value, index){
+    return value - probabilities[index];
+  }) : null;
+  var protectedIndex = probabilityShift ? maxIndex(probabilityShift) : maxIndex(probabilities);
+  var protectedShift = probabilityShift ? probabilityShift[protectedIndex] : 0;
+  var heatIndex = heat ? maxIndex(heat) : null;
+  var heatGap = heat ? heat[heatIndex] : 0;
+  var firstClaim = safeClaimRatio(first);
+  var nowClaim = safeClaimRatio(odds);
+  var claimChange = firstClaim !== null && nowClaim !== null ? nowClaim - firstClaim : null;
+  var conclusion = '均衡控赔';
+  var leanIndex = protectedShift > 0.02 ? protectedIndex : null;
+  var notes = [];
+  var bwinPressure = null;
+
+  if(probabilityShift && protectedShift > 0.035 && heatIndex === protectedIndex && heatGap > 0.08){
+    conclusion = '热门降赔防范';
+    notes.push('投注热度与降赔方向一致，庄家倾向压低热门回报。');
+  }else if(heat && oddsChange && heatGap > 0.10 && oddsChange[heatIndex] > 0.025){
+    conclusion = '抬赔诱导分流';
+    notes.push('高热方向仍被抬赔，存在诱导资金继续流入的迹象。');
+  }else if(probabilityShift && protectedShift > 0.035 && heatIndex !== null && heatIndex !== protectedIndex){
+    conclusion = '逆向降赔防范';
+    notes.push('降赔方向与投注热度不一致，庄家更防范非热门结果。');
+  }else if(probabilityShift && Math.abs(protectedShift) > 0.02){
+    conclusion = '主动控赔调整';
+    notes.push('即时概率相对初赔已有明显调整。');
+  }else{
+    notes.push('赔率、热度和赔付率变化较小，暂按均衡控赔处理。');
+  }
+
+  if(match.bwin && match.bwin.length >= 3){
+    var minBwin = minIndex(match.bwin);
+    var maxBwin = maxIndex(match.bwin);
+    if(match.bwin[minBwin] < -500000){
+      bwinPressure = {
+        type: '赔付压力',
+        result: resultByIndex(minBwin),
+        value: match.bwin[minBwin]
+      };
+      notes.push('必发盈亏显示' + resultByIndex(minBwin).label + '方向存在赔付压力。');
+    }else if(match.bwin[maxBwin] > 500000){
+      bwinPressure = {
+        type: '盈利优势',
+        result: resultByIndex(maxBwin),
+        value: match.bwin[maxBwin]
+      };
+      notes.push('必发盈亏显示' + resultByIndex(maxBwin).label + '方向对庄家更有利。');
+    }
+  }
+
+  return {
+    conclusion: conclusion,
+    lean: leanIndex === null ? null : resultByIndex(leanIndex),
+    protected: resultByIndex(protectedIndex),
+    protectedShift: protectedShift,
+    heat: heatIndex === null ? null : resultByIndex(heatIndex),
+    heatGap: heatGap,
+    firstOdds: first,
+    nowOdds: odds,
+    firstProbabilities: firstProbabilities,
+    probabilityShift: probabilityShift,
+    tradeRatio: ratio,
+    claimRatio: {
+      first: firstClaim,
+      now: nowClaim,
+      change: claimChange
+    },
+    rq: rqOdds ? {
+      odds: rqOdds,
+      probabilities: converter.probability(rqOdds),
+      pick: resultByIndex(maxIndex(converter.probability(rqOdds)))
+    } : null,
+    bwinPressure: bwinPressure,
+    notes: notes
+  };
+};
+
+var bookmakerAdjustment = function (bookmaker){
+  if(!bookmaker || !bookmaker.lean){
+    return { home: 0, away: 0 };
+  }
+  if(bookmaker.lean.key === 'home'){
+    return { home: 0.08, away: -0.02 };
+  }
+  if(bookmaker.lean.key === 'away'){
+    return { home: -0.02, away: 0.08 };
+  }
+  return { home: -0.05, away: -0.05 };
 };
 
 var summarize = function (matches, team){
@@ -181,7 +346,7 @@ var weightedAverage = function (items, fallback){
 
 var marketSignal = function (match){
   var odds = latestOdds(match.jingcai && match.jingcai.spf);
-  if(!odds || odds.length < 3 || !odds[0] || !odds[1] || !odds[2]){
+  if(!validOdds(odds)){
     return null;
   }
 
@@ -191,6 +356,10 @@ var marketSignal = function (match){
   var homeGoals = clamp((total + diff) / 2, 0.15, 4.8);
   var awayGoals = clamp((total - diff) / 2, 0.15, 4.8);
   var rqOdds = latestOdds(match.jingcai && match.jingcai.rqspf);
+  var bookmaker = bookmakerStrategy(match, odds, probabilities, rqOdds);
+  var adjustment = bookmakerAdjustment(bookmaker);
+  homeGoals = clamp(homeGoals + adjustment.home, 0.15, 4.8);
+  awayGoals = clamp(awayGoals + adjustment.away, 0.15, 4.8);
 
   return {
     odds: odds,
@@ -198,7 +367,8 @@ var marketSignal = function (match){
     homeGoals: homeGoals,
     awayGoals: awayGoals,
     rq: match.jingcai && match.jingcai.rqspf ? match.jingcai.rqspf.rq : undefined,
-    rqOdds: rqOdds
+    rqOdds: rqOdds,
+    bookmaker: bookmaker
   };
 };
 
@@ -570,6 +740,32 @@ var formatAnalysis = function (analysis){
     if(analysis.market.rqOdds){
       lines.push('  让球胜平负：让球 ' + (analysis.market.rq === undefined ? '-' : analysis.market.rq) + '，赔率 ' + analysis.market.rqOdds.join(' / '));
     }
+    if(analysis.market.bookmaker){
+      lines.push('庄家策略：');
+      lines.push('  判断：' + analysis.market.bookmaker.conclusion +
+        '，防范方向：' + analysis.market.bookmaker.protected.label +
+        (analysis.market.bookmaker.lean ? '，修正倾向：' + analysis.market.bookmaker.lean.label : ''));
+      lines.push('  概率变化：主胜 ' + percent(analysis.market.bookmaker.probabilityShift ? analysis.market.bookmaker.probabilityShift[0] : null) +
+        ' / 平局 ' + percent(analysis.market.bookmaker.probabilityShift ? analysis.market.bookmaker.probabilityShift[1] : null) +
+        ' / 客胜 ' + percent(analysis.market.bookmaker.probabilityShift ? analysis.market.bookmaker.probabilityShift[2] : null));
+      if(analysis.market.bookmaker.tradeRatio){
+        lines.push('  投注热度：主胜 ' + percent(analysis.market.bookmaker.tradeRatio[0]) +
+          ' / 平局 ' + percent(analysis.market.bookmaker.tradeRatio[1]) +
+          ' / 客胜 ' + percent(analysis.market.bookmaker.tradeRatio[2]) +
+          (analysis.market.bookmaker.heat ? '，过热方向：' + analysis.market.bookmaker.heat.label + ' ' + percent(analysis.market.bookmaker.heatGap) : ''));
+      }
+      if(analysis.market.bookmaker.claimRatio.now !== null){
+        lines.push('  赔付率：' + (analysis.market.bookmaker.claimRatio.first === null ? '-' : percent(analysis.market.bookmaker.claimRatio.first)) +
+          ' -> ' + percent(analysis.market.bookmaker.claimRatio.now) +
+          '（变化 ' + (analysis.market.bookmaker.claimRatio.change === null ? '-' : percent(analysis.market.bookmaker.claimRatio.change)) + '）');
+      }
+      if(analysis.market.bookmaker.bwinPressure){
+        lines.push('  必发盈亏：' + analysis.market.bookmaker.bwinPressure.result.label +
+          ' ' + analysis.market.bookmaker.bwinPressure.type +
+          ' ' + analysis.market.bookmaker.bwinPressure.value);
+      }
+      lines.push('  说明：' + analysis.market.bookmaker.notes.join(' '));
+    }
   }
 
   return lines.join('\n');
@@ -581,6 +777,7 @@ module.exports = {
   _private: {
     summarize: summarize,
     marketSignal: marketSignal,
+    bookmakerStrategy: bookmakerStrategy,
     scoreProbabilities: scoreProbabilities,
     expectedGoals: expectedGoals,
     gameTheoryAnalysis: gameTheoryAnalysis
