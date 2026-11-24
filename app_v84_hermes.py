@@ -17503,7 +17503,8 @@ def _apply_direction_lock_to_ai_pred(result, payload):
         return result
     if DeepSeekAnalyzer is None:
         return result
-    rows = [row for row in (result.get('scores') if isinstance(result.get('scores'), list) else []) if isinstance(row, dict)]
+    raw_rows = result.get('scores')
+    rows = [row for row in raw_rows if isinstance(row, dict)] if isinstance(raw_rows, list) else []
     s1 = str(rows[0].get('score') or '') if rows and isinstance(rows[0], dict) else ''
     s2 = str(rows[1].get('score') or '') if len(rows) > 1 and isinstance(rows[1], dict) else ''
     a, b = DeepSeekAnalyzer.snap_score_pair(s1, s2, payload)
@@ -21168,8 +21169,6 @@ def build_probability_cluster(prob_dict, first_score, second_score,
             _ou = float(ou_line) if ou_line is not None else None
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             _ou = None
-        float(lam_h or 0) + float(lam_a or 0)
-
         cluster_type, cluster_label, members = 'regular', '', []
         if kl_high:
             # ── KL高阈值触发：直接输出高概率比分集群 ──
@@ -23937,7 +23936,7 @@ try:
         scrape_okooo_mobile_six_markets,
         seed_mobile_ah_ou_books,
     )
-    six_market_fetch_blocked = getattr(_okooo_cs_mod, 'six_market_fetch_blocked', None)
+    six_market_fetch_blocked = cast(Any, getattr(_okooo_cs_mod, 'six_market_fetch_blocked', None))
     if not callable(six_market_fetch_blocked):
         six_market_fetch_blocked = cast(Any, lambda rec: False)
 except Exception as _okooo_cs_imp_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -23982,8 +23981,9 @@ except Exception as _okooo_cs_imp_err:  # noqa: BLE001 - intentional degraded-mo
     def finish_match_water_scrape(result, attempt, rescrape):
         return result if isinstance(result, dict) else {}
 
-    def six_market_fetch_blocked(rec):
+    def _six_market_fetch_blocked_fallback(rec):
         return False
+    six_market_fetch_blocked = cast(Any, _six_market_fetch_blocked_fallback)
 
     def detect_six_market_contradictions(pack):
         return []
@@ -42874,7 +42874,7 @@ if not _CLI_HEADLESS:
         pred_pairs = []
         has_home_away = 'actual_home_goals' in getattr(frame, 'columns', [])
         for row in frame.itertuples(index=False):
-            info = by_id.get(str(row.match_id)) or {}
+            info = by_id.get(str(getattr(row, 'match_id', ''))) or {}
             direction = str(getattr(row, 'final_direction', '') or '').strip()
             if direction not in ('胜', '平', '负'):
                 direction = _locked(info)
@@ -42882,7 +42882,7 @@ if not _CLI_HEADLESS:
             home = getattr(row, 'actual_home_goals', None) if has_home_away else None
             away = getattr(row, 'actual_away_goals', None) if has_home_away else None
             if home is None or away is None or (has_home_away and (pd.isna(home) or pd.isna(away))):
-                home, away = parse_score(row.actual_score)
+                home, away = parse_score(getattr(row, 'actual_score', ''))
             if home is None or away is None:
                 result = str(getattr(row, 'match_result', '') or '').strip()
                 flag = getattr(row, 'is_correct', None)
