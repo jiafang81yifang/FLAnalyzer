@@ -1,0 +1,12 @@
+[MASTER]
+ignored-modules=
+    blade_deepseek_pipeline,
+    blade_ml_engine,
+    blade_monitor_panel,
+    convergence_arbitrator,
+    msvcrt,
+    odds_fallback,
+    odds_index_math,
+    okooo_mobile_cs,
+    ProductionRunnerBridge,
+    sporttery_jc

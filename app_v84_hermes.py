@@ -5,7 +5,7 @@ import statistics
 import sys
 import time
 import warnings
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 # ================== 🖥️ CLI 模式探测（必须最先执行，早于 Streamlit/浏览器启动） ==================
 # 支持:
@@ -156,6 +156,8 @@ def _silence_closed_websocket_writes():
     except ImportError:
         return
     proto = getattr(ws, 'WebSocketProtocol13', None)
+    if proto is None:
+        return
     write = getattr(proto, 'write_message', None)
     if write is None or getattr(write, '_blade_closed_safe', False):
         return
@@ -184,7 +186,7 @@ def _silence_closed_websocket_writes():
                 pass
         return fut
 
-    write_message._blade_closed_safe = True
+    write_message.__dict__['_blade_closed_safe'] = True
     proto.write_message = write_message
 
 
@@ -538,7 +540,7 @@ def safe_api_get(url, headers=None, timeout=20, params=None):
     for proxies in _proxies_list:
         try:
             r = requests.get(url, headers=headers, timeout=timeout,
-                             proxies=proxies, verify=_verify_tls, params=params)
+                             proxies=cast(Any, proxies), verify=_verify_tls, params=params)
         except _net_errors:
             if proxies is not _DIRECT_PROXIES:
                 _forget_dead_proxy()
@@ -550,7 +552,7 @@ def safe_api_get(url, headers=None, timeout=20, params=None):
         for proxies in _proxies_list:
             try:
                 r = requests.get(http_url, headers=headers, timeout=timeout,
-                                 proxies=proxies, params=params)
+                                 proxies=cast(Any, proxies), params=params)
             except _net_errors:
                 if proxies is not _DIRECT_PROXIES:
                     _forget_dead_proxy()
@@ -737,7 +739,7 @@ def jczq_classify_score(score_str):
     """
     try:
         h, a = parse_score(score_str)
-        if h is None:
+        if h is None or a is None:
             return None, None
         s = f"{h}-{a}"
         if s in JCZQ_VALID_SET:
@@ -830,6 +832,7 @@ class OneMatchOnePlanCollector:
         self.fixture_id = fixture_id
         self.verdicts = []  # List[ModuleVerdict]
         self._module_names = set()
+        self.direction_lock_payload = {}
     
     def register(self, verdict):
         """注册一个模块的独立判决。方向锁存在时，比分和方向先收进提示方向。"""
@@ -930,10 +933,13 @@ class UnifiedConvergenceArbitrator:
     def _lock_side_and_picks(cls, match_context):
         """读特征无关方向锁。没有锁时返回空，不另投方向。"""
         ctx = match_context if isinstance(match_context, dict) else {}
-        payload = ctx.get('direction_lock_payload') if isinstance(ctx.get('direction_lock_payload'), dict) else {}
-        lock = payload.get('direction_lock') if isinstance(payload.get('direction_lock'), dict) else {}
-        if not lock and isinstance(ctx.get('direction_lock'), dict):
-            lock = ctx.get('direction_lock')
+        raw_payload = ctx.get('direction_lock_payload')
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        raw_lock = payload.get('direction_lock')
+        lock = raw_lock if isinstance(raw_lock, dict) else {}
+        raw_ctx_lock = ctx.get('direction_lock')
+        if not lock and isinstance(raw_ctx_lock, dict):
+            lock = raw_ctx_lock
         raw = str(lock.get('direction') or '')
         side = {'胜': 'home', '平': 'draw', '负': 'away', 'home': 'home', 'draw': 'draw', 'away': 'away'}.get(raw, '')
         picks = []
@@ -947,7 +953,8 @@ class UnifiedConvergenceArbitrator:
     def _v1631_lock_speech(cls, lock):
         """只读已经落锁的 V16.31 日志，话术取引擎模板。不改方向，不写 first_score。"""
         lock = lock if isinstance(lock, dict) else {}
-        pack = lock.get('v1623_high_entropy') if isinstance(lock.get('v1623_high_entropy'), dict) else {}
+        raw_pack = lock.get('v1623_high_entropy')
+        pack = raw_pack if isinstance(raw_pack, dict) else {}
         from blade_deepseek_pipeline import V1631StandardUnifiedEngine
         templates = V1631StandardUnifiedEngine._TEMPLATES
         lock_type = str(pack.get('lock_type') or '')
@@ -1035,7 +1042,7 @@ class UnifiedConvergenceArbitrator:
         # 方向投票结果
         total_vote = sum(direction_votes.values()) or 1.0
         direction_probs = {k: v / total_vote for k, v in direction_votes.items()}
-        module_direction = max(direction_votes, key=direction_votes.get)
+        module_direction = max(direction_votes, key=lambda key: direction_votes[key])
         direction_margin = direction_probs[module_direction] - sorted(direction_probs.values())[-2] if len([v for v in direction_probs.values() if v > 0]) > 1 else direction_probs[module_direction]
         lock_side, lock_picks, lock = cls._lock_side_and_picks(match_context)
         ratio_audit = cls._mean_gap_ratio_audit(match_context, lock)
@@ -1117,6 +1124,8 @@ class UnifiedConvergenceArbitrator:
                         s_dir = 'draw'
                 else:
                     h, a = parse_score(score_str)
+                    if h is None or a is None:
+                        continue
                     s_dir = 'home' if h > a else ('draw' if h == a else 'away')
                 
                 if s_dir == voted_direction:
@@ -1133,13 +1142,15 @@ class UnifiedConvergenceArbitrator:
                 if ou_line is not None and '其它' not in str(score_str):
                     ou_val = float(ou_line)
                     h, a = parse_score(score_str)
+                    if h is None or a is None:
+                        continue
                     total = h + a
                     # 大小球投票
                     ou_votes = {'大球': 0, '小球': 0}
                     for v in verdicts:
                         if v.ou_verdict in ou_votes:
                             ou_votes[v.ou_verdict] += cls.MODULE_BASE_WEIGHTS.get(v.module_name, 0.5) * v.confidence
-                    voted_ou = max(ou_votes, key=ou_votes.get) if any(ou_votes.values()) else ''
+                    voted_ou = max(ou_votes, key=lambda key: ou_votes[key]) if any(ou_votes.values()) else ''
                     
                     # 【OverUnderEngine驱动】精确判定投票与比分的一致性
                     _score_ou = ou_verdict_from_score_safe(score_str, ou_val)  # 【Bug4修复】s → score_str
@@ -1162,6 +1173,8 @@ class UnifiedConvergenceArbitrator:
                 if ah_line is not None and '其它' not in str(score_str):
                     ah_val = float(ah_line)
                     h, a = parse_score(score_str)
+                    if h is None or a is None:
+                        continue
                     net = h - a
                     # 亚盘方向一致性（主让为负）
                     if ah_val < -0.5 and net >= 1 or ah_val > 0.5 and net <= -1:
@@ -1305,6 +1318,7 @@ class ScoreOddsAnalyzer:
     """市均对竞彩的比分偏离。压赔深度达到规则表门槛才记防范。不写 first_score。"""
 
     def __init__(self, df_scores, min_depth=None):
+        self.df: Any
         if df_scores is None:
             self.df = pd.DataFrame()
         elif isinstance(df_scores, pd.DataFrame):
@@ -1485,7 +1499,7 @@ class ScoreOddsAnalyzerModule:
         if df_scores is None:
             return None
         analyzer = ScoreOddsAnalyzer(df_scores)
-        res_df = analyzer.run_full_analysis()
+        res_df = cast(Any, analyzer.run_full_analysis())
         if res_df is None or res_df.empty:
             return None
         usable = res_df[res_df['score'].map(cls._pickable)]
@@ -1621,7 +1635,8 @@ class ModuleVerdictAdapters:
             direction = ''
             if first_score and '-' in first_score and '其它' not in first_score:
                 h, a = parse_score(first_score)
-                direction = 'home' if h > a else ('draw' if h == a else 'away')
+                if h is not None and a is not None:
+                    direction = 'home' if h > a else ('draw' if h == a else 'away')
             elif '胜' in str(first_score):
                 direction = 'home'
             elif '负' in str(first_score):
@@ -1690,13 +1705,12 @@ class ModuleVerdictAdapters:
             direction = ''
             if primary and '-' in primary and '其它' not in primary:
                 h, a = parse_score(primary)
-                direction = 'home' if h > a else ('draw' if h == a else 'away')
+                if h is not None and a is not None:
+                    direction = 'home' if h > a else ('draw' if h == a else 'away')
             
             # 大小球
             ou_verdict = ''
             if primary and '-' in primary and '其它' not in primary:
-                h, a = parse_score(primary)
-                h + a
                 # 【OverUnderEngine驱动】精确三类盘口结算
                 ou_verdict = ou_verdict_from_score_safe(primary, ou_line)
             
@@ -1765,7 +1779,8 @@ class ModuleVerdictAdapters:
             direction = ''
             if first_score and '-' in first_score and '其它' not in first_score:
                 h, a = parse_score(first_score)
-                direction = 'home' if h > a else ('draw' if h == a else 'away')
+                if h is not None and a is not None:
+                    direction = 'home' if h > a else ('draw' if h == a else 'away')
             
             # 大小球【OverUnderEngine驱动】
             ou_verdict = ''
@@ -1822,7 +1837,8 @@ class ModuleVerdictAdapters:
             direction = ''
             if first_score and '-' in first_score and '其它' not in first_score:
                 h, a = parse_score(first_score)
-                direction = 'home' if h > a else ('draw' if h == a else 'away')
+                if h is not None and a is not None:
+                    direction = 'home' if h > a else ('draw' if h == a else 'away')
             
             # 大小球【OverUnderEngine驱动】
             ou_verdict = ''
@@ -1895,6 +1911,8 @@ class ModuleVerdictAdapters:
                         continue
                     try:
                         h, a = parse_score(s)
+                        if h is None or a is None:
+                            continue
                         s_dir = 'home' if h > a else ('draw' if h == a else 'away')
                         if s_dir == direction:
                             dir_scores.append((s, float(item.get('theory', 0))))
@@ -2003,7 +2021,8 @@ class ModuleVerdictAdapters:
             direction = ''
             if first_score and '-' in first_score and '其它' not in first_score:
                 h, a = parse_score(first_score)
-                direction = 'home' if h > a else ('draw' if h == a else 'away')
+                if h is not None and a is not None:
+                    direction = 'home' if h > a else ('draw' if h == a else 'away')
             
             # 大小球
             ou_verdict = ''
@@ -2134,6 +2153,8 @@ class ModuleVerdictAdapters:
                         continue
                     try:
                         h, a = parse_score(s)
+                        if h is None or a is None:
+                            continue
                         s_dir = 'home' if h > a else ('draw' if h == a else 'away')
                         if s_dir == direction:
                             dir_scores.append((s, float(item.get('theory', 0))))
@@ -2216,7 +2237,7 @@ def _make_deepseek_client(use_proxy=None):
     return OpenAI(
         api_key=DEEPSEEK_API_KEY,
         base_url=base,
-        http_client=_deepseek_http_client(bool(use_proxy)),
+        http_client=cast(Any, _deepseek_http_client(bool(use_proxy))),
     ), bool(use_proxy)
 
 
@@ -2250,6 +2271,9 @@ try:
 except Exception as _ds_pipe_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
     print(f"   ❌ [DeepSeek管线] blade_deepseek_pipeline 加载失败: {_ds_pipe_err}")
     DeepSeekAnalyzer = None  # type: ignore
+    JCZQ_MACRO_BAIT_SCORES = set()  # type: ignore
+    def bind_hermes_runtime(*a, **k):  # type: ignore
+        return None
     def get_deepseek_analyzer(*a, **k):  # type: ignore
         raise RuntimeError('blade_deepseek_pipeline missing')
     def compute_score_occ(*a, **k):  # type: ignore
@@ -2297,7 +2321,7 @@ try:
     )
     if not getattr(sys, '_blade_ml_announced', False):
         print(f"   ✅ [ML引擎] blade_ml_engine 已加载 | sklearn={ML_SKLEARN_OK} | enable={ml_predict_enabled()}")
-        sys._blade_ml_announced = True
+        setattr(sys, '_blade_ml_announced', True)  # noqa: B010
 except Exception as _ml_pipe_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
     print(f"   ❌ [ML引擎] blade_ml_engine 加载失败: {_ml_pipe_err}")
     _blade_ml = None  # type: ignore
@@ -2366,6 +2390,8 @@ def llm_call_with_retry(messages, temperature=0.7, timeout=90, max_retries=3,
         OpenAI ChatCompletion 响应对象；全链路失败时返回 None。
     """
     cfg = _LLM_ROUTER.get('deepseek')
+    if not isinstance(cfg, dict):
+        raise TypeError('LLM router provider "deepseek" is not configured')
     active_client = cfg['client']()
     active_model = model or cfg['model']
 
@@ -2496,7 +2522,6 @@ def _split_flash_review_sections(text):
 # 双变量泊松概率矩阵 + Deviation/IBI 双轨分级裁决，替代旧硬编码规则树
 # 在 AI 裁决庭调用之前执行量化路由预判，为终审提供额外决策参考
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -2558,7 +2583,7 @@ class UnifiedFootballMappingEngine:
         numpy不可用时自动降级到纯Python循环。
         """
         mg = self.max_goals
-        if NUMPY_VEC_AVAILABLE and mg <= _POISSON_VEC_FACT_MAX:
+        if NUMPY_VEC_AVAILABLE and _POISSON_VEC_FACT_TABLE is not None and mg <= _POISSON_VEC_FACT_MAX:
             fact = _POISSON_VEC_FACT_TABLE[:mg]
             goals = np.arange(mg, dtype=np.float64)
             p_h = np.exp(-lam_h) * np.power(lam_h, goals) / fact
@@ -2717,7 +2742,7 @@ class CoreQuantEngine:
         max_goals = self.max_goals
 
         # ── numpy矢量化路径 ──
-        if NUMPY_VEC_AVAILABLE and max_goals <= _POISSON_VEC_FACT_MAX:
+        if NUMPY_VEC_AVAILABLE and _POISSON_VEC_FACT_TABLE is not None and max_goals <= _POISSON_VEC_FACT_MAX:
             exp_term = np.exp(-(lam_h_ind + lam_a_ind + rho))
             fact = _POISSON_VEC_FACT_TABLE[:max_goals]
             goals = np.arange(max_goals, dtype=np.float64)
@@ -2740,7 +2765,9 @@ class CoreQuantEngine:
                 prob_matrix *= exp_term
 
             # dict构建（使用预计算标签）
-            labels = _POISSON_VEC_LABELS.get(max_goals)
+            labels = _POISSON_VEC_LABELS.get(max_goals) if _POISSON_VEC_LABELS is not None else None
+            if labels is None:
+                labels = [[f"{h}-{a}" for a in range(max_goals)] for h in range(max_goals)]
             prob_dict = {}
             total = 0.0
             for h in range(max_goals):
@@ -3067,6 +3094,8 @@ class TensorFissureGlobalReconstructor:
             return 'home' if '胜' in s else ('away' if '负' in s else 'draw')
         try:
             h, a = parse_score(s)
+            if h is None or a is None:
+                return 'neutral'
             return 'home' if h > a else ('away' if h < a else 'draw')
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             return 'neutral'
@@ -3171,6 +3200,8 @@ class TensorGravityReversalEngine:
             return 'home' if '胜' in s else ('away' if '负' in s else 'draw')
         try:
             h, a = parse_score(s)
+            if h is None or a is None:
+                return 'neutral'
             return 'home' if h > a else ('away' if h < a else 'draw')
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             return 'neutral'
@@ -3265,6 +3296,8 @@ class DeepClusterPenetrationEngine:
                 h, a = parse_score(score)
             except (ValueError, IndexError):
                 continue
+            if h is None or a is None:
+                continue
 
             theory = float(item.get('theory', 0.0) or 0.0)
             market = float(item.get('market', 0.0) or 0.0)
@@ -3304,6 +3337,8 @@ class TailEndGhostNodeInjector:
             return 'home' if '胜' in s else ('away' if '负' in s else 'draw')
         try:
             h, a = parse_score(s)
+            if h is None or a is None:
+                return 'neutral'
             return 'home' if h > a else ('away' if h < a else 'draw')
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             return 'neutral'
@@ -3366,8 +3401,8 @@ def run_ventropy_pipeline(ranked_scores, pool15_enriched, league_name, anomaly_p
         pool_records = []
         for item in (pool15_enriched or []):
             _score_str = str(item.get('score', '') or '').strip()
-            _theory = MathUtils.safe_float(item.get('theory', 0.0), 0.0)
-            _market = MathUtils.safe_float(item.get('market', 0.0), 0.0)
+            _theory = float(MathUtils.safe_float(item.get('theory', 0.0), 0.0) or 0.0)
+            _market = float(MathUtils.safe_float(item.get('market', 0.0), 0.0) or 0.0)
             if _score_str and _theory >= 0:
                 pool_records.append({
                     'score': _score_str,
@@ -3506,6 +3541,8 @@ class LLMPromptRouter:
         if "负" in score_str: return "Away"
         try:
             h, a = parse_score(score_str)
+            if h is None or a is None:
+                return "Draw"
             if h > a: return "Home"
             elif h == a: return "Draw"
             else: return "Away"
@@ -3539,8 +3576,8 @@ class LLMPromptRouter:
             dir_theory[direction] += n.p_theory
             dir_market[direction] += n.p_market
 
-        fav_theory = max(dir_theory, key=dir_theory.get)
-        fav_market = max(dir_market, key=dir_market.get)
+        fav_theory = max(dir_theory, key=lambda key: dir_theory[key])
+        fav_market = max(dir_market, key=lambda key: dir_market[key])
 
         min_ibi_node = min([n for n in nodes if n.ibi > 0], key=lambda x: x.ibi, default=None)
 
@@ -3587,8 +3624,8 @@ class LLMPromptRouter:
             dir_theory[direction] += n.p_theory
             dir_market[direction] += n.p_market
 
-        fav_theory = max(dir_theory, key=dir_theory.get)
-        fav_market = max(dir_market, key=dir_market.get)
+        fav_theory = max(dir_theory, key=lambda key: dir_theory[key])
+        fav_market = max(dir_market, key=lambda key: dir_market[key])
         min_ibi_node = min([n for n in nodes if n.ibi > 0], key=lambda x: x.ibi, default=None)
 
         if deltas and max(deltas) < 0.03 and ibis and all(0.8 < ibi < 1.25 for ibi in ibis):
@@ -4244,19 +4281,19 @@ def load_json(path):
 
 class SafeJSONEncoder(json.JSONEncoder):
     """安全JSON编码器：将numpy/scipy的bool/int/float类型转为Python原生类型"""
-    def default(self, obj):
+    def default(self, o):
         import numpy as np
-        if isinstance(obj, (np.bool_,)):
-            return bool(obj)
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, (np.ndarray,)):
-            return obj.tolist()
-        if isinstance(obj, bool):
-            return bool(obj)
-        return super().default(obj)
+        if isinstance(o, (np.bool_,)):
+            return bool(o)
+        if isinstance(o, (np.integer,)):
+            return int(o)
+        if isinstance(o, (np.floating,)):
+            return float(o)
+        if isinstance(o, (np.ndarray,)):
+            return o.tolist()
+        if isinstance(o, bool):
+            return bool(o)
+        return super().default(o)
 
 def save_json(path, data):
     """线程安全地保存JSON文件（SafeJSONEncoder防止numpy/bool序列化报错）"""
@@ -4349,6 +4386,21 @@ def _infer_sqlite_column_type(value):
     return 'TEXT'
 
 
+def _assert_safe_feature_column_name(col_name):
+    """Dynamic feature columns are generated internally and must stay identifier-safe."""
+    if not re.fullmatch(r'feat_[0-9a-zA-Z_]+(?:_[0-9]+)?', str(col_name or '')):
+        raise ValueError(f"unsafe feature column name: {col_name!r}")
+    return col_name
+
+
+def _assert_safe_match_feature_columns(columns):
+    """Validate generated SQL identifier list before composing SQLite DDL/DML."""
+    for col_name in columns:
+        if col_name in FEATURE_DB_BASE_COLUMNS:
+            continue
+        _assert_safe_feature_column_name(col_name)
+
+
 def ensure_feature_columns(conn, feature_vector):
     """根据特征向量自动扩展SQLite表字段。"""
     ensure_feature_store_table(conn)
@@ -4364,7 +4416,9 @@ def ensure_feature_columns(conn, feature_vector):
             suffix += 1
         column_mapping[feature_name] = col_name
         if col_name not in used_columns:
+            col_name = _assert_safe_feature_column_name(col_name)
             col_type = _infer_sqlite_column_type(feature_value)
+            # Column name is generated and validated above.
             conn.execute(f'ALTER TABLE match_features ADD COLUMN "{col_name}" {col_type}')
             used_columns.add(col_name)
     conn.commit()
@@ -4460,11 +4514,13 @@ def save_features_to_db(match_record, feature_vector=None):
             for feature_name, feature_value in feature_vector.items():
                 row_payload[column_mapping[feature_name]] = _to_sqlite_scalar(feature_value)
             columns = list(row_payload.keys())
+            _assert_safe_match_feature_columns(columns)
             placeholders = ', '.join(['?'] * len(columns))
             quoted_columns = ', '.join([f'"{col}"' for col in columns])
             update_clause = ', '.join([f'"{col}"=excluded."{col}"' for col in columns if col != 'fixture_id'])
+            # Column names are fixed base columns or generated and validated feature columns.
             conn.execute(
-                f'INSERT INTO match_features ({quoted_columns}) '
+                f'INSERT INTO match_features ({quoted_columns}) '  # nosec B608
                 f'VALUES ({placeholders}) '
                 f'ON CONFLICT(fixture_id) DO UPDATE SET {update_clause}',
                 [row_payload[col] for col in columns]
@@ -5189,7 +5245,7 @@ def _tg_listen_gate():
     gate = getattr(threading, "_blade_tg_listen_gate", None)
     if gate is None:
         gate = threading.Lock()
-        threading._blade_tg_listen_gate = gate
+        setattr(threading, "_blade_tg_listen_gate", gate)  # noqa: B010
     return gate
 
 
@@ -5198,7 +5254,7 @@ def _tg_fail_should_log():
     last = float(getattr(threading, "_blade_tg_fail_log_at", 0.0) or 0.0)
     if now - last < 600:
         return False
-    threading._blade_tg_fail_log_at = now
+    setattr(threading, "_blade_tg_fail_log_at", now)  # noqa: B010
     return True
 
 
@@ -5927,11 +5983,17 @@ def ensure_models_dir():
 
 def _load_pickle_cache(path):
     """加载pickle模型缓存。"""
-    if not os.path.exists(path):
+    models_root = os.path.abspath(MODELS_DIR)
+    cache_path = os.path.abspath(path)
+    if not cache_path.startswith(models_root + os.sep):
+        print(f"   ⚠️ [ML] 拒绝读取模型目录外的缓存: {path}")
+        return None
+    if not os.path.exists(cache_path):
         return None
     try:
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+        with open(cache_path, 'rb') as f:
+            # Trusted local model cache constrained to MODELS_DIR.
+            return pickle.load(f)  # nosec B301
     except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         print(f"   ⚠️ [ML] 读取模型缓存失败 {path}: {e}")
         return None
@@ -5940,8 +6002,13 @@ def _load_pickle_cache(path):
 def _save_pickle_cache(path, obj):
     """保存pickle模型缓存。"""
     ensure_models_dir()
+    models_root = os.path.abspath(MODELS_DIR)
+    cache_path = os.path.abspath(path)
+    if not cache_path.startswith(models_root + os.sep):
+        print(f"   ⚠️ [ML] 拒绝写入模型目录外的缓存: {path}")
+        return False
     try:
-        with open(path, 'wb') as f:
+        with open(cache_path, 'wb') as f:
             pickle.dump(obj, f)
         return True
     except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -8550,7 +8617,7 @@ def calc_poisson_prob(lam_h, lam_a, max_goals=8, rho=-0.05, matrix_context=None,
     lam_a = max(0.05, float(lam_a))
 
     # ── numpy矢量化路径：Dixon-Coles泊松矩阵 ──
-    if NUMPY_VEC_AVAILABLE and max_goals <= _POISSON_VEC_FACT_MAX:
+    if NUMPY_VEC_AVAILABLE and _POISSON_VEC_FACT_TABLE is not None and max_goals <= _POISSON_VEC_FACT_MAX:
         fact = _POISSON_VEC_FACT_TABLE[:max_goals]
         goals = np.arange(max_goals, dtype=np.float64)
         p_home = np.exp(-lam_h) * np.power(lam_h, goals) / fact
@@ -38615,23 +38682,6 @@ def institutional_harvest_scan():
         err_msg = f"雷达引擎异常: {e}"
         print(err_msg)
         return err_msg
-
-
-def _safe_parse_score(s):
-    """其它类返回代表分。数字比分解析失败返回 None，不记成 0-0。"""
-    text = str(s or '')
-    if '其它' in text:
-        if '胜' in text:
-            return (5, 0)
-        if '平' in text:
-            return (4, 4)
-        return (0, 5)
-    h, a = parse_score(s)
-    if h is None or a is None:
-        print(f"   ⚠️ [比分解析] 无法解析 {text!r}，不记成 0-0")
-        return None
-    return (h, a)
-
 
 def _poisson_score_prob(lam_h, lam_a, h, a):
     """泊松独立乘积概率（百分比）。"""
