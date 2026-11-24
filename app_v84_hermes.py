@@ -5,6 +5,7 @@ import statistics
 import sys
 import time
 import warnings
+from typing import ClassVar
 
 # ================== 🖥️ CLI 模式探测（必须最先执行，早于 Streamlit/浏览器启动） ==================
 # 支持:
@@ -26,7 +27,7 @@ def _blade_normalize_proxy_url(url):
     if not text:
         return ""
     if "://" not in text:
-        text = "http://%s" % text
+        text = f"http://{text}"
     return text
 
 
@@ -259,7 +260,7 @@ if _BOOT_PROXY and _BOOT_ROUTE != "direct":
     os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
     try:
         print(
-            "[boot] OkoooRoute=%s OkoooProxy=%s" % (_BOOT_ROUTE, _BOOT_PROXY),
+            f"[boot] OkoooRoute={_BOOT_ROUTE} OkoooProxy={_BOOT_PROXY}",
             flush=True,
         )
     except Exception:
@@ -912,7 +913,7 @@ class UnifiedConvergenceArbitrator:
     """
     
     # 模块基础权重（基于数理逻辑可靠性而非历史命中率）
-    MODULE_BASE_WEIGHTS = {
+    MODULE_BASE_WEIGHTS: ClassVar[dict[str, float]] = {
         'RTM顺位追踪矩阵': 1.0,          # 位移极差=纯数理逻辑，不可伪造
         'DPS动态提权选择器': 0.7,          # 聚类分析=数理逻辑
         'V-Entropy量化引擎': 0.85,         # 信息熵=纯数理逻辑
@@ -1045,14 +1046,14 @@ class UnifiedConvergenceArbitrator:
         )
         voted_direction, direction_resolution = resolve_direction(lock_side, module_direction)
         adapted = resolve_cores(lock if lock_side else {}, lock_picks if lock_side else [])
-        clean_sheet = tuple(adapted.get('cover') or ())
-        attack_core = tuple(adapted.get('hedge') or ())
+        tuple(adapted.get('cover') or ())
+        tuple(adapted.get('hedge') or ())
         
         log_lines.append(f"[方向投票] 主胜={direction_probs.get('home',0):.2%} "
                         f"平局={direction_probs.get('draw',0):.2%} "
                         f"客胜={direction_probs.get('away',0):.2%} | 模块{module_direction} | 输出{voted_direction}")
-        log_lines.append("[均差比值分档] %s" % ratio_audit.get('fuse'))
-        log_lines.append("[2倍邻近] %s" % ratio_audit.get('neighbor'))
+        log_lines.append("[均差比值分档] {}".format(ratio_audit.get('fuse')))
+        log_lines.append("[2倍邻近] {}".format(ratio_audit.get('neighbor')))
         if ratio_audit.get('inside_band') and module_direction != 'draw':
             log_lines.append("[均差比值分档] 高度混淆已命中。模块票不因此改平，输出仍按方向锁。")
         if direction_resolution.get('conflict'):
@@ -1062,8 +1063,7 @@ class UnifiedConvergenceArbitrator:
         else:
             log_lines.append("[方向容错] 输出与方向锁一致。" if lock_side else "[方向容错] 本场没有方向锁，模块方向只作对照。")
         log_lines.append(
-            "[均差余地] 模式=%s | 零封权重=%s | 打击权重=%s | 技能=%s"
-            % (
+            "[均差余地] 模式={} | 零封权重={} | 打击权重={} | 技能={}".format(
                 adapted.get('mode'),
                 adapted.get('clean_weight'),
                 adapted.get('attack_weight'),
@@ -1244,8 +1244,8 @@ class UnifiedConvergenceArbitrator:
         log_lines.append(f"[庄家风控剥离] {'已执行' if manipulation_modules else '未触发'}")
         lock_type, lock_speech = cls._v1631_lock_speech(lock)
         if lock_type:
-            log_lines.append("[V16.31审计日志] %s" % lock_type)
-            log_lines.append("[架构解析] %s" % lock_speech)
+            log_lines.append(f"[V16.31审计日志] {lock_type}")
+            log_lines.append(f"[架构解析] {lock_speech}")
         
         return {
             'lock_type': lock_type,
@@ -1696,7 +1696,7 @@ class ModuleVerdictAdapters:
             ou_verdict = ''
             if primary and '-' in primary and '其它' not in primary:
                 h, a = parse_score(primary)
-                total = h + a
+                h + a
                 # 【OverUnderEngine驱动】精确三类盘口结算
                 ou_verdict = ou_verdict_from_score_safe(primary, ou_line)
             
@@ -3136,7 +3136,7 @@ class TensorFissureGlobalReconstructor:
             return current_top2, current_lambdas, "无可用暗桩"
 
         best_hidden_node = fissure_nodes[0]["score"]
-        current_first = current_top2[0] if current_top2 else None
+        current_top2[0] if current_top2 else None
         new_top2 = list(current_top2)
 
         lam_h = current_lambdas.get('home')
@@ -3254,7 +3254,7 @@ class DeepClusterPenetrationEngine:
         满足以上条件的比分被标记为 HIDDEN_ATTACK_ANCHOR（正向进攻型暗桩）。
         """
         rescued_targets = []
-        is_fissure = fissure_payload.get("triggered", False)
+        fissure_payload.get("triggered", False)
 
         for item in pool15_records:
             score = str(item.get('score', '')).strip()
@@ -3349,9 +3349,9 @@ def run_ventropy_pipeline(ranked_scores, pool15_enriched, league_name, anomaly_p
         _ve_bait_set = set()
         _ve_singularity_set = set()
         if rtm_result and isinstance(rtm_result, dict) and rtm_result.get('ok'):
-            _ve_anchor_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('anchor_scores', []) or []))
-            _ve_bait_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('bait_scores', []) or []))
-            _ve_singularity_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('singularity_score_names', []) or []))
+            _ve_anchor_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('anchor_scores', []) or [])}
+            _ve_bait_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('bait_scores', []) or [])}
+            _ve_singularity_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('singularity_score_names', []) or [])}
         # 【USMD 诱饵剥离验证】若 USMD 引擎产出诱饵，则与 RTM 诱饵集求并集（诱饵剥离必须最严苛）
         if usmd_result and isinstance(usmd_result, dict) and usmd_result.get('available'):
             _usmd_bait = set(UltimateScoreMatrixDetector.bait_scores_of(usmd_result))
@@ -3878,8 +3878,8 @@ def _read_lock_metadata(path):
     try:
         if 'pid=' in content and 'ts=' in content:
             parts = content.replace('\n', ' ').split()
-            pid = int([p for p in parts if p.startswith('pid=')][0].split('=', 1)[1])
-            ts = float([p for p in parts if p.startswith('ts=')][0].split('=', 1)[1])
+            pid = int(next(p for p in parts if p.startswith('pid=')).split('=', 1)[1])
+            ts = float(next(p for p in parts if p.startswith('ts=')).split('=', 1)[1])
             return pid, ts, True
         if '|' in content:
             pid_str, ts_str = content.split('|', 1)
@@ -4683,7 +4683,7 @@ def ingest_event_to_europa_db(event_data, db_path=None):
                 dir_bias = tensor.get('directional_bias', {})
                 axis_pos = dir_bias.get('axis_positive', {})
                 axis_neu = dir_bias.get('axis_neutral', {})
-                axis_neg = dir_bias.get('axis_negative', {})
+                dir_bias.get('axis_negative', {})
                 conn.execute(
                     "INSERT OR REPLACE INTO tensor_field_snapshot "
                     "(event_id, axis_pos_intrinsic_mass, axis_pos_market_mass, axis_neutral_deviation, axis_neg_resistance) "
@@ -4783,7 +4783,7 @@ def batch_ingest_europa_db(events_list, db_path=None):
 
                     dir_bias = tensor.get('directional_bias', {})
                     axis_pos = dir_bias.get('axis_positive', {})
-                    axis_neu = dir_bias.get('axis_neutral', {})
+                    dir_bias.get('axis_neutral', {})
                     conn.execute(
                         "INSERT OR REPLACE INTO tensor_field_snapshot "
                         "(event_id, axis_pos_intrinsic_mass, axis_pos_market_mass, axis_neutral_deviation, axis_neg_resistance) "
@@ -5012,9 +5012,7 @@ def is_history_match_not_started(info, now=None):
     if dt is not None and dt <= now:
         return False
     inferred = get_inferred_match_status(info, now=now)
-    if inferred in ('completed', 'live', 'likely_live', 'stale_pending'):
-        return False
-    return True
+    return inferred not in ('completed', 'live', 'likely_live', 'stale_pending')
 
 
 def get_display_status(info, now=None):
@@ -5755,7 +5753,7 @@ class DeviationDrivenEngine:
             score_rows = []
             for item in top:
                 try:
-                    confidence = int(round(100.0 * MathUtils.safe_float(item.get('score'), 0.0) / total_score)) if total_score > 0.0 else 0
+                    confidence = round(100.0 * MathUtils.safe_float(item.get('score'), 0.0) / total_score) if total_score > 0.0 else 0
                     score_rows.append({
                         'score': item.get('option', ''),
                         'conf': max(0, min(100, confidence)),
@@ -6590,7 +6588,7 @@ class GameTheoryBattleEngine:
 
             max_theory = max(theories) if theories else 1.0
             max_market = max(markets) if markets else 1.0
-            avg_ibi = sum(ibis) / len(ibis) if ibis else 1.0
+            sum(ibis) / len(ibis) if ibis else 1.0
 
             for item in pool15_enriched:
                 try:
@@ -7160,9 +7158,9 @@ class PureSystemDeterministicEngine:
 
         poisson_home = match_data.get('poisson_home_prob', 0.0)
         handicap = abs(match_data.get('handicap_line', 0.0))
-        pool31 = match_data.get('pool31_records', [])
+        match_data.get('pool31_records', [])
         gt_triggered = match_data.get('game_theory_triggered', [])
-        nash_score = match_data.get('nash_equilibrium_score')
+        match_data.get('nash_equilibrium_score')
 
         # 【博弈论干预】平局力场强化 (囚徒困境)
         if "Prisoners_Dilemma" in gt_triggered:
@@ -7775,7 +7773,7 @@ class AdaptiveWeightLearner:
                 return {}
 
             completed = []
-            for fid, info in history_data.items():
+            for info in history_data.values():
                 if isinstance(info, dict) and info.get('status') == 'completed':
                     actual = str(info.get('actual_score', '')).replace(' (进行中)', '').strip()
                     if actual and '其它' not in actual and '-' in actual:
@@ -8752,21 +8750,31 @@ def generate_31pool_theory_vs_market_chart(match_data):
             if isinstance(_synth_mkt, dict) and _synth_mkt:
                 # synth_market 的 key 格式为 '1-0' 等，值为小数概率（已归一化）
                 # 将其映射到31池选项
+                def _score_dir_matches(score_key, direction):
+                    _h, _a = parse_score(score_key)
+                    if _h is None or _a is None:
+                        return False
+                    if direction == 'home':
+                        return _h > _a
+                    if direction == 'draw':
+                        return _h == _a
+                    return _h < _a
+
                 _synth_sum = 0.0
                 _synth_mapped = {}
                 for _opt in JCZQ_ALL_OPTIONS:
                     if '其它' in _opt:
                         # 汇总选项：该方向所有比分概率之和 - 已列出具体比分之和
                         if _opt == '胜其它':
-                            _dir_all = sum(v for k, v in _synth_mkt.items() if '-' in k and (lambda _h, _a: _h is not None and _h > _a)(*parse_score(k)))
+                            _dir_all = sum(v for k, v in _synth_mkt.items() if '-' in k and _score_dir_matches(k, 'home'))
                             _dir_listed = sum(_synth_mkt.get(sc, 0.0) for sc in JCZQ_HOME_WIN_SCORES)
                             _synth_mapped[_opt] = max(0.0, _dir_all - _dir_listed)
                         elif _opt == '平其它':
-                            _dir_all = sum(v for k, v in _synth_mkt.items() if '-' in k and (lambda _h, _a: _h is not None and _h == _a)(*parse_score(k)))
+                            _dir_all = sum(v for k, v in _synth_mkt.items() if '-' in k and _score_dir_matches(k, 'draw'))
                             _dir_listed = sum(_synth_mkt.get(sc, 0.0) for sc in JCZQ_DRAW_SCORES)
                             _synth_mapped[_opt] = max(0.0, _dir_all - _dir_listed)
                         elif _opt == '负其它':
-                            _dir_all = sum(v for k, v in _synth_mkt.items() if '-' in k and (lambda _h, _a: _h is not None and _h < _a)(*parse_score(k)))
+                            _dir_all = sum(v for k, v in _synth_mkt.items() if '-' in k and _score_dir_matches(k, 'away'))
                             _dir_listed = sum(_synth_mkt.get(sc, 0.0) for sc in JCZQ_AWAY_WIN_SCORES)
                             _synth_mapped[_opt] = max(0.0, _dir_all - _dir_listed)
                     else:
@@ -8965,7 +8973,7 @@ class ScoreMatrix:
         if not records:
             return pd.DataFrame()
         rows = sorted(records.keys())
-        cols = sorted({c for inner in records.values() for c in inner.keys()})
+        cols = sorted({c for inner in records.values() for c in inner})
         df = pd.DataFrame(index=rows, columns=cols, dtype=object)
         for r in rows:
             for c in cols:
@@ -10491,9 +10499,9 @@ class AsianHandicapEngine:
                 result['away_win'] += prob
 
         # 四舍五入
-        for k in result:
+        for k, value in result.items():
             if k != 'line':
-                result[k] = round(result[k], 6)
+                result[k] = round(value, 6)
 
         return result
 
@@ -12321,7 +12329,7 @@ def unified_account_checklist(first_score, second_score, match_context):
         # 提取对账参数
         ou_line = match_context.get('ou_line')
         ah_line = match_context.get('ah_line')
-        or_direction = match_context.get('or_direction', '')
+        match_context.get('or_direction', '')
         ai_ou_pred = match_context.get('ai_ou_pred', '')
         rtm_anchors = match_context.get('rtm_anchors', [])
 
@@ -12451,8 +12459,8 @@ class FeatureSpaceSnapshot:
     """特征空间只读快照管理器：防止下游决策层反向回流调用上游特征清洗模块"""
     _instance = None
     _frozen = False
-    _ibi_gradient_snapshot = {}
-    _full_dim_snapshot = {}
+    _ibi_gradient_snapshot: ClassVar[dict[str, Any]] = {}
+    _full_dim_snapshot: ClassVar[dict[str, Any]] = {}
     _snapshot_stage = 'INIT'  # INIT → COMPUTED → FROZEN
     
     @classmethod
@@ -14455,7 +14463,7 @@ def derive_markets_from_matrix(prob_dict, asian_handicap=None, ou_line=None,
         # adjusted_net = (h - a) + handicap_int，>0让球胜，==0让球平，<0让球负
         # 竞彩让球数来源：优先使用传入的jc_handicap_int参数，降级用infer_from_asian
         _jc_hc = result['hdc'].get('handicap', 0)
-        _jc_hc_int = int(round(_jc_hc)) if _jc_hc is not None else 0
+        _jc_hc_int = round(_jc_hc) if _jc_hc is not None else 0
         _jc_adjusted_net = net + _jc_hc_int  # net = h - a
         if _jc_adjusted_net > 0:
             result['hdc']['home'] += prob
@@ -14663,7 +14671,7 @@ def calc_lambda_from_odds(odds_1x2_dict, asian_handicap=None, ou_line=None,
         return round(lam_h, 3), round(lam_a, 3)
     except (TypeError, ValueError, KeyError, ZeroDivisionError, OverflowError, ArithmeticError) as _mle_err:
         print(f"   ⚠️ [λ极大似然] {type(_mle_err).__name__}: {_mle_err}。本场不采用求解结果。")
-        calc_lambda_from_odds.last_mle_result = {'success': False, 'error': '%s: %s' % (type(_mle_err).__name__, _mle_err)}
+        calc_lambda_from_odds.last_mle_result = {'success': False, 'error': f'{type(_mle_err).__name__}: {_mle_err}'}
         return None, None
 calc_lambda_from_odds.last_mle_result = None
 
@@ -14785,7 +14793,7 @@ def _calc_form_features(team_stats, recent_matches, prefix):
                 continue
             g1, g2 = int(m.group(1)), int(m.group(2))
             team_name = str(item.get('team') or item.get('home') or '').strip()
-            opp_name = str(item.get('opponent') or item.get('away') or '').strip()
+            str(item.get('opponent') or item.get('away') or '').strip()
             # 若明细中无法明确主客方向，则使用结果标签降级
             if prefix == 'home':
                 is_self_home = True if team_name else None
@@ -15208,7 +15216,7 @@ def parse_deepseek_game_theory_signals(text):
     signals = {}
     if not text:
         return signals
-    blocks = re.findall(r'\[GAME_THEORY_SIGNAL\](.*?)\[/GAME_THEORY_SIGNAL\]', str(text), flags=re.S)
+    blocks = re.findall(r'\[GAME_THEORY_SIGNAL\](.*?)\[/GAME_THEORY_SIGNAL\]', str(text), flags=re.DOTALL)
     for raw_block in blocks:
         block = raw_block.strip()
         if not block:
@@ -15223,7 +15231,7 @@ def parse_deepseek_game_theory_signals(text):
         except Exception:
             obj = {}
             model_m = re.search(r'model\s*[:：]\s*([^\n,]+)', cleaned)
-            trig_m = re.search(r'triggered\s*[:：]\s*(true|false|是|否)', cleaned, re.I)
+            trig_m = re.search(r'triggered\s*[:：]\s*(true|false|是|否)', cleaned, re.IGNORECASE)
             weight_m = re.search(r'weight_adjustment\s*[:：]\s*([-+]?\d+(?:\.\d+)?)', cleaned)
             conf_m = re.search(r'confidence\s*[:：]\s*([-+]?\d+(?:\.\d+)?)', cleaned)
             reason_m = re.search(r'reason\s*[:：]\s*([^\n]+)', cleaned)
@@ -16560,9 +16568,7 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
 
     # ── 提取凯利方差 ──
     kelly_var = {'home': 1.0, 'draw': 1.0, 'away': 1.0}
-    kelly_available = False
     if kelly_variance_data and isinstance(kelly_variance_data, dict):
-        kelly_available = bool(kelly_variance_data.get('available', False))
         kv = kelly_variance_data.get('variance', {}) or {}
         kelly_var = {
             'home': float(kv.get('home', 1.0) or 1.0),
@@ -16944,7 +16950,7 @@ class ScoreClusterGrouping:
     """31比分双维度（方向×分差）聚类分组与组内梯度特征提取器。"""
 
     # ─── 方向维度分组（8组）：同一类型同一方向胜或负的比分递增/递减链 ───
-    DIRECTION_GROUPS = {
+    DIRECTION_GROUPS: ClassVar[dict[str, list[str]]] = {
         "主胜净胜链": ["1-0", "2-0", "3-0", "4-0", "5-0"],
         "客胜净胜链": ["0-1", "0-2", "0-3", "0-4", "0-5"],
         "主胜进攻链": ["2-1", "3-1", "4-1", "5-1"],
@@ -16956,7 +16962,7 @@ class ScoreClusterGrouping:
     }
 
     # ─── 分差维度分组（6组）：有序链，以净胜球为轴 ───
-    MARGIN_GROUPS = {
+    MARGIN_GROUPS: ClassVar[dict[str, list[str]]] = {
         "净胜1球": ["1-0", "0-1", "2-1", "1-2", "3-2", "2-3"],
         "净胜2球": ["2-0", "0-2", "3-1", "1-3", "4-2", "2-4"],
         "净胜3球": ["3-0", "0-3", "4-1", "1-4", "5-2", "2-5"],
@@ -18341,9 +18347,9 @@ class BettingStrategyExpertSystem:
         _es_bait_set = set()
         _es_singularity_set = set()
         if rtm_result and isinstance(rtm_result, dict) and rtm_result.get('ok'):
-            _es_anchor_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('anchor_scores', []) or []))
-            _es_bait_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('bait_scores', []) or []))
-            _es_singularity_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('singularity_score_names', []) or []))
+            _es_anchor_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('anchor_scores', []) or [])}
+            _es_bait_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('bait_scores', []) or [])}
+            _es_singularity_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('singularity_score_names', []) or [])}
 
         # 【IBI梯度平滑性预计算】为后续效用值修正提供梯度数据
         _ibi_gradient_map = {}
@@ -18370,8 +18376,8 @@ class BettingStrategyExpertSystem:
 
         for item in pool15_enriched:
             score = str(item.get('score', '')).strip()
-            theory = float(item.get('theory', 0) or 0)
-            market = float(item.get('market', 0) or 0)
+            float(item.get('theory', 0) or 0)
+            float(item.get('market', 0) or 0)
             delta = float(item.get('delta', 0) or 0)
             ibi = float(item.get('ibi', 1) or 1)
             delta_pos = int(item.get('delta_pos', 5) or 5)
@@ -18816,7 +18822,7 @@ class SkillMatchingEngine:
         return feat
 
     # 比较符号映射
-    _CMP_OPS = {
+    _CMP_OPS: ClassVar[dict[str, Any]] = {
         '>=': lambda a, b: a >= b,
         '<=': lambda a, b: a <= b,
         '>': lambda a, b: a > b,
@@ -20258,7 +20264,7 @@ class BladeQuantEngine:
 
             # 2. 常规三维复合共振计算 (未触发任何极端熔断的情况)
             direction = "AWAY" if ctx.away_surge_ratio > 0.50 else ctx.psde_1x2
-            smooth_channels = self._find_smooth_physics_channel(ctx, direction)
+            self._find_smooth_physics_channel(ctx, direction)
 
             return {
                 "action": "STANDARD_CONFLUENCE",
@@ -20416,7 +20422,7 @@ def build_binary_mask_matrix(score_list, veto_direction=None, extra_kill_scores=
     为 score_list 生成 {score_str: 0/1} 掩码：0=逆向/平局应清零，1=同向保留。
     """
     _vd = str(veto_direction or "").lower().strip()
-    _extra = set(str(x).replace(":", "-").strip() for x in (extra_kill_scores or []))
+    _extra = {str(x).replace(":", "-").strip() for x in (extra_kill_scores or [])}
     _mask = {}
     for _sc in (score_list or []):
         _sc_norm = str(_sc).replace(":", "-").strip()
@@ -20491,16 +20497,16 @@ class DynamicPoolSelector:
     """结合相空间定性，强制提权危险探针，剪枝僵尸节点，交付高纯度15池"""
     @staticmethod
     def process_and_filter(raw_data: list[dict[str, float]],
-                           first_score: str = None, second_score: str = None,
-                           rtm_result: dict = None):
+                           first_score: str | None = None, second_score: str | None = None,
+                           rtm_result: dict | None = None):
         # 【全维度顺位追踪矩阵·精算表】解析铁锚/诱饵/物理奇点，作为提权/降权依据
         _dps_anchor_set = set()
         _dps_bait_set = set()
         _dps_singularity_set = set()
         if rtm_result and isinstance(rtm_result, dict) and rtm_result.get('ok'):
-            _dps_anchor_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('anchor_scores', []) or []))
-            _dps_bait_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('bait_scores', []) or []))
-            _dps_singularity_set = set(str(x).replace(':', '-').strip() for x in (rtm_result.get('singularity_score_names', []) or []))
+            _dps_anchor_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('anchor_scores', []) or [])}
+            _dps_bait_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('bait_scores', []) or [])}
+            _dps_singularity_set = {str(x).replace(':', '-').strip() for x in (rtm_result.get('singularity_score_names', []) or [])}
         nodes = []
         _ban_dps = {'theory_le_1': 0, 'market_0': 0, 'delta_0': 0}
         for d in raw_data:
@@ -21063,14 +21069,14 @@ def build_probability_cluster(prob_dict, first_score, second_score,
 
         kl = kl_result if isinstance(kl_result, dict) else {}
         kl_high = bool(kl.get('real_defense')) or bool(kl.get('kl_surge'))
-        rd_dir = str(kl.get('real_defense_direction') or '').lower()
+        str(kl.get('real_defense_direction') or '').lower()
         rd_scores = [str(x).replace(':', '-').strip() for x in (kl.get('real_defense_scores') or [])]
         _ou = None
         try:
             _ou = float(ou_line) if ou_line is not None else None
         except Exception:
             _ou = None
-        exp_total = float(lam_h or 0) + float(lam_a or 0)
+        float(lam_h or 0) + float(lam_a or 0)
 
         cluster_type, cluster_label, members = 'regular', '', []
         if kl_high:
@@ -21970,14 +21976,14 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
                     odds_val = 1.0 / imp
                     imp_pct = imp * 100
                     odds_tag = f"/赔{odds_val:.1f}/隐{imp_pct:.1f}%"
-            _, _, gap, dir_label = _score_gap_dir(s)
+            _, _, _gap, dir_label = _score_gap_dir(s)
             parts.append(f"{s}({p*100:.1f}%{odds_tag}分差:{dir_label}{tag}{sup_tag})")
         return ' / '.join(parts) if parts else '无'
 
     def _build_gap_analysis(grp, group_name):
         lines = [f"【{group_name}分差与隐含概率分析】"]
         for s, p, sig, is_sup in grp:
-            h2, a2, gap, dir_label = _score_gap_dir(s)
+            _h2, _a2, gap, dir_label = _score_gap_dir(s)
             imp = _get_implied_prob(s)
             imp_str = f"{imp*100:.1f}%" if imp else '无数据'
             if imp:
@@ -22001,7 +22007,7 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
 
     step2_pool = {s: p for s, p, _, _ in group_possible}
     unlikely_scores = set()
-    eligible_scores = set(s for s, _, _, _ in group_possible)
+    eligible_scores = {s for s, _, _, _ in group_possible}
 
     # =====================================================
     # 第三阶：核心博弈论过滤（已删除低贡献模型）
@@ -22872,10 +22878,10 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
         gap_note = gap_desc.get(main_gap, f'分差={main_gap}（大比分）')
 
         # 陷阱类型文字化
-        bookie_dir_label = '/'.join(set(
+        bookie_dir_label = '/'.join({
             '主队赢' if d == 'home' else ('平局' if d == 'draw' else '客队赢')
             for d in bookie_favors
-        ))
+        })
         trap_type_full = f'{trap_type}（庄家目标：{bookie_dir_label}）'
 
         # 庄家目标比分展示字符串
@@ -23131,7 +23137,7 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
         _depth = abs(_ahv)
         if _depth <= 2.0:
             return (False, None, 0)
-        _need = int(math.floor(_depth))
+        _need = math.floor(_depth)
         if _ahv < 0:
             return (True, 'home', _need)   # 主队深让
         else:
@@ -23144,9 +23150,7 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
                 # 胜其它=主队大胜延伸，负其它=客队大胜延伸
                 if need_dir == 'home' and '胜其它' in str(score_str):
                     return True
-                if need_dir == 'away' and '负其它' in str(score_str):
-                    return True
-                return False
+                return bool(need_dir == 'away' and '负其它' in str(score_str))
             _h, _a = parse_score(score_str)
             if _h is None:
                 return True
@@ -23451,7 +23455,7 @@ def calc_big_small(prob_dict, ou_line, lam_h=None, lam_a=None, market_over_odds=
                 return "未知", 0, False
 
         # 使用 OverUnderEngine 计算
-        verdict, expected_goals, is_edge, deviation_info = OverUnderEngine.predict_ou(
+        verdict, expected_goals, is_edge, _deviation_info = OverUnderEngine.predict_ou(
             _lam_h, _lam_a, ou_line, market_over_odds, market_under_odds
         )
 
@@ -24122,7 +24126,7 @@ def fetch_okooo_mobile_jingcai_board(proxies=None, now=None):
             except Exception:
                 parts = re.fullmatch(r'(\d{1,2})\s*-\s*(\d{1,2})', vs_raw or '')
                 if parts and _plausible_ft_score(parts.group(1), parts.group(2)):
-                    ft_score = '%d-%d' % (int(parts.group(1)), int(parts.group(2)))
+                    ft_score = f"{int(parts.group(1))}-{int(parts.group(2))}"
         xu_node = el.select_one('.xuhao')
         xu = re.sub(r'\s+', '', xu_node.get_text() if xu_node else '')
         m_no = re.match(r'([一二三四五六日])(\d{3})', xu)
@@ -24168,7 +24172,7 @@ def fetch_okooo_mobile_jingcai_board(proxies=None, now=None):
             'away': away,
             'home_team': home,
             'away_team': away,
-            'match': ('%s vs %s' % (home, away)).strip(' vs '),
+            'match': ' vs '.join(x for x in (home, away) if x),
             'sale_status': status,
             'sale_day': current_date,
             'is_today': bool(current_date and current_date == today_md),
@@ -24210,9 +24214,7 @@ def _okooo_expand_full_team_names(row_txt, h_short, a_short):
             return True
         if re.fullmatch(r'\d+(\.\d+)?', t):
             return True
-        if re.fullmatch(r'\d{1,2}:\d{2}', t):
-            return True
-        return False
+        return bool(re.fullmatch(r'\d{1,2}:\d{2}', t))
 
     tokens = re.findall(r'[\u4e00-\u9fffA-Za-z0-9·\-]+', txt)
 
@@ -24273,19 +24275,18 @@ def _okooo_expand_full_team_names(row_txt, h_short, a_short):
 
     # 同短名主客：块序优先；否则按出现序拆第1、第2候选
     same_short = bool(h_short and a_short and h_short == a_short)
-    if same_short:
-        if not h_full or not a_full or h_full == a_full:
-            cands = []
-            for t in _cands_for(h_short):
-                if t not in cands:
-                    cands.append(t)
-            longer = [t for t in cands if len(t) > len(h_short)]
-            pool = longer if len(longer) >= 2 else cands
-            if len(pool) >= 2:
-                h_full, a_full = pool[0], pool[1]
-            elif len(pool) == 1:
-                h_full = h_full or pool[0]
-                a_full = a_full or pool[0]
+    if same_short and (not h_full or not a_full or h_full == a_full):
+        cands = []
+        for t in _cands_for(h_short):
+            if t not in cands:
+                cands.append(t)
+        longer = [t for t in cands if len(t) > len(h_short)]
+        pool = longer if len(longer) >= 2 else cands
+        if len(pool) >= 2:
+            h_full, a_full = pool[0], pool[1]
+        elif len(pool) == 1:
+            h_full = h_full or pool[0]
+            a_full = a_full or pool[0]
 
     if not h_full or (h_short and len(h_full) < len(h_short)):
         h_full = _expand_nth(h_short, 0) or h_full or h_short
@@ -24402,7 +24403,7 @@ def filter_today_onsale_not_started(matches, now=None):
             _drop_name = (
                 m.get('no') or m.get('cn') or m.get('ordercn')
                 or m.get('match')
-                or ('%s vs %s' % (m.get('home') or m.get('hname') or '', m.get('away') or m.get('aname') or '')).strip()
+                or ('{} vs {}'.format(m.get('home') or m.get('hname') or '', m.get('away') or m.get('aname') or '')).strip()
                 or m.get('okooo_match_id')
                 or ''
             )
@@ -24777,7 +24778,7 @@ def _record_jc_handicap(rec):
             continue
         if abs(val - round(val)) > 1e-6 or abs(val) > 5:
             continue
-        return float(int(round(val)))
+        return float(round(val))
     return None
 
 
@@ -25606,9 +25607,8 @@ def scrape_betfair_profit_loss(match_info):
             return (True, 1.0)
         
         # 策略 2：前缀关键词包含（原有逻辑）
-        if home_key and away_key:
-            if home_key in h_text and away_key in h_text:
-                return (True, 0.9)
+        if home_key and away_key and home_key in h_text and away_key in h_text:
+            return (True, 0.9)
 
         # 【修复·问题3】策略 2.5：去除常见后缀后再包含匹配
         # 解决如"萨巴赫队"vs"萨巴赫"、"某某FC"vs"某某"等译名后缀不统一问题
@@ -26837,17 +26837,16 @@ def _okooo_this_match_ft_score(html, okooo_match_id):
     if not mid or not html or 'jsThisMatch' not in html:
         return None
     row_m = re.search(
-        r'class="[^"]*jsThisMatch[^"]*"[^>]*data-matchid="%s"(.*?)</tr>' % re.escape(mid),
+        rf'class="[^"]*jsThisMatch[^"]*"[^>]*data-matchid="{re.escape(mid)}"(.*?)</tr>',
         html,
-        re.S,
+        re.DOTALL,
     )
     if not row_m:
         return None
     cell = re.search(
-        r'attr="(\d{1,2}-\d{1,2})"[^>]*>\s*<a[^>]*href="/soccer/match/%s/"[^>]*>\s*(\d{1,2}-\d{1,2})'
-        % re.escape(mid),
+        rf'attr="(\d{{1,2}}-\d{{1,2}})"[^>]*>\s*<a[^>]*href="/soccer/match/{re.escape(mid)}/"[^>]*>\s*(\d{{1,2}}-\d{{1,2}})',
         row_m.group(1),
-        re.S,
+        re.DOTALL,
     )
     if not cell or cell.group(1) != cell.group(2):
         return None
@@ -26899,7 +26898,7 @@ def fetch_score_from_okooo(okooo_match_id):
         'Referer': 'https://m.okooo.com/jczq/',
         'Accept-Language': 'zh-CN,zh;q=0.9',
     }
-    mobile_url = 'https://m.okooo.com/match/history.php?MatchID=%s' % okooo_match_id
+    mobile_url = f'https://m.okooo.com/match/history.php?MatchID={okooo_match_id}'
     try:
         resp = safe_api_get(mobile_url, headers=mobile_headers, timeout=15)
         if resp is not None and resp.status_code == 200 and resp.text:
@@ -27155,7 +27154,7 @@ def analyze_odds_movement(prev_snapshot, curr_snapshot):
         if not prev or not curr:
             return result
         # 共同比分集合
-        _common = [s for s in curr.keys() if s in prev]
+        _common = [s for s in curr if s in prev]
         if not _common:
             return result
 
@@ -27622,7 +27621,7 @@ def analyze_cross_market_hologram(odds_1x2_dict=None, asian_handicap=None,
                 _ah = float(asian_handicap)
                 # 经验映射：让球线 → 主胜深度概率（logistic 拟合，主让为负数）
                 # ah=0→~0.42, ah=-0.5→~0.55, ah=-1.0→~0.66, ah=-1.5→~0.75, ah=-2→~0.83
-                _p_ah_home = 1.0 / (1.0 + math.exp(-(-_ah) * 1.05 - (-0.32)))
+                _p_ah_home = 1.0 / (1.0 + math.exp(_ah * 1.05 + 0.32))
                 _p_ah_home = max(0.02, min(0.98, _p_ah_home))
             except (TypeError, ValueError):
                 _p_ah_home = None
@@ -28111,9 +28110,7 @@ def _history_rec_has_scrape_facts(rec):
         return True
     if isinstance(rec.get('okooo_markets'), dict) and rec.get('okooo_markets'):
         return True
-    if isinstance(rec.get('sporttery_fixed_bonus'), dict) and rec.get('sporttery_fixed_bonus'):
-        return True
-    return False
+    return bool(isinstance(rec.get('sporttery_fixed_bonus'), dict) and rec.get('sporttery_fixed_bonus'))
 
 
 def _empty_mobile_cs_heat(reason='okooo_mobile_cs_missing'):
@@ -31508,10 +31505,10 @@ trap_signal: true/false（是否存在陷阱信号）
                 _imp_ah = standardize_ah_line(asian_handicap) if 'asian_handicap' in locals() else None
                 _imp_loc = locals()
                 _imp_lh_raw = _imp_loc['lam_h'] if 'lam_h' in _imp_loc else (
-                    _imp_loc['lam_h_dyn'] if 'lam_h_dyn' in _imp_loc else None
+                    _imp_loc.get('lam_h_dyn', None)
                 )
                 _imp_la_raw = _imp_loc['lam_a'] if 'lam_a' in _imp_loc else (
-                    _imp_loc['lam_a_dyn'] if 'lam_a_dyn' in _imp_loc else None
+                    _imp_loc.get('lam_a_dyn', None)
                 )
                 _imp_lh_pre = float(_imp_lh_raw) if _imp_lh_raw is not None else None
                 _imp_la_pre = float(_imp_la_raw) if _imp_la_raw is not None else None
@@ -32671,7 +32668,7 @@ trap_signal: true/false（是否存在陷阱信号）
                     _dti_ah_depth = 0.0
                 if _dti_ah_depth > 2.0:
                     # 深盘下 DTI 平局保护不应覆盖深盘穿盘首选
-                    _dh_need = int(math.floor(_dti_ah_depth))
+                    _dh_need = math.floor(_dti_ah_depth)
                     _dh_dir = 'home' if float(asian_handicap) < 0 else 'away'
 
                     def _outer_satisfies_deep(s_str):
@@ -32823,8 +32820,8 @@ trap_signal: true/false（是否存在陷阱信号）
                 dir_scores['负'] += _prob
         total_dir = sum(dir_scores.values())
         if total_dir > 0:
-            for k in dir_scores:
-                dir_scores[k] = dir_scores[k] / total_dir
+            for k, value in dir_scores.items():
+                dir_scores[k] = value / total_dir
         pred_dir_str = max(dir_scores, key=dir_scores.get)
         try:
             _lock_payload = lookup_direction_lock_payload(
@@ -35030,8 +35027,8 @@ Top5比分及概率：
                             if not _ln.startswith('[V16.31审计日志]') and not _ln.startswith('[架构解析]')
                         ]
                         if _lock_type:
-                            _kept_log.append('[V16.31审计日志] %s' % _lock_type)
-                            _kept_log.append('[架构解析] %s' % _lock_speech)
+                            _kept_log.append(f'[V16.31审计日志] {_lock_type}')
+                            _kept_log.append(f'[架构解析] {_lock_speech}')
                         _arbitration_result['arbitration_log'] = '\n'.join(_kept_log).rstrip()
                         _arbitration_result['final_first_score'] = _arb_first
                         _arbitration_result['final_second_score'] = _arb_second
@@ -36446,8 +36443,8 @@ Top5比分及概率：
             _rtm_reusable = False
             try:
                 if '_rtm_result' in locals() and _rtm_result and _rtm_result.get('ok'):
-                    _set_a = set(str(d.get('score', '')).strip() for d in (_pool15_enriched or []))
-                    _set_b = set(str(d.get('score', '')).strip() for d in (_gemini_pool15_enriched or [])) if '_gemini_pool15_enriched' in locals() else set()
+                    _set_a = {str(d.get('score', '')).strip() for d in (_pool15_enriched or [])}
+                    _set_b = {str(d.get('score', '')).strip() for d in (_gemini_pool15_enriched or [])} if '_gemini_pool15_enriched' in locals() else set()
                     _rtm_reusable = bool(_set_a) and (_set_a == _set_b)
             except Exception:
                 _rtm_reusable = False
@@ -36492,7 +36489,7 @@ Top5比分及概率：
                 f"  → 系统超限锁定: 胜其它/总进球6+盲区"
             )
         # 【博弈策略专家系统】已关闭，不进入 TG
-        if False and '_expert_system_result' in locals() and _expert_system_result:
+        if False:
             try:
                 _expert_tg_text = BettingStrategyExpertSystem.format_for_tg(_expert_system_result)
                 if _expert_tg_text:
@@ -36840,8 +36837,7 @@ Top5比分及概率：
                             _reasoning_parts.append(f"  {_chk_line}")
                         _reasoning_parts.append("")
                     if _rtm_summary_lines:
-                        for _sum_ln in _rtm_summary_lines:
-                            _reasoning_parts.append(_sum_ln)
+                        _reasoning_parts.extend(_rtm_summary_lines)
                     _reasoning_parts.append("")
                     # ================================================================
                     # 【统计论升级·模块9·普适性相空间逻辑对齐】信息熵极大化对齐
@@ -38124,14 +38120,14 @@ Top5比分及概率：
                     _kl_line += " | 无真实防范信号"
                 _v85_lines.append(_kl_line)
             _gb_r = _gbdt_analysis_result if '_gbdt_analysis_result' in locals() and isinstance(_gbdt_analysis_result, dict) else {}
-            if False and _gb_r.get('available'):
+            if False:
                 _gb_wdl = _gb_r.get('blended_wdl', {}) or {}
                 _v85_lines.append(
                     f"━ GBDT×泊松几何平均: 主{_gb_wdl.get('home', 0)*100:.1f}% "
                     f"平{_gb_wdl.get('draw', 0)*100:.1f}% 客{_gb_wdl.get('away', 0)*100:.1f}% "
                     f"(后端={_gb_r.get('backend', 'NA')})"
                 )
-            elif False and _gb_r:
+            elif False:
                 _v85_lines.append(f"━ GBDT分类器: {_gb_r.get('note', '模型未训练，使用纯泊松概率')}")
             if _gb_r.get('fuse_breaker_triggered'):
                 _v85_lines.append(
@@ -38231,7 +38227,6 @@ Top5比分及概率：
             except Exception:
                 _prev_sig = ''
             # 【修复】TG指令触发的分析，强制发送（不受去重限制）
-            global _TG_FORCE_SEND
             if _TG_FORCE_SEND:
                 _tg_should_send = True
                 # 不在这里重置，等所有场次发完后在auto_run的finally块重置
@@ -38467,7 +38462,7 @@ def game_theory_analysis():
         return "阵地无未开赛数据，无法进行博弈推演。"
 
     macro_log = "【当前全盘未开赛对阵与融合模型预测】：\n"
-    for fid, info in pending.items():
+    for info in pending.values():
         macro_log += (f"- {info['match']} | 联赛:{info.get('league','')} | 主推: {info.get('predicted_result')} | "
                       f"首选: {info.get('predicted_score')} | 次选: {info.get('second_score', '无')} | "
                       f"置信度: {info.get('confidence', '未知')} | 融合强度: {get_prediction_strength(info):.1f}% | "
@@ -38503,7 +38498,7 @@ def ai_furnace():
         return "燃料不足！没有完结的比赛无法开启熔炉。"
 
     combat_log = ""
-    for fid, info in completed.items():
+    for info in completed.values():
         combat_log += (f"赛事: {info['match']}, 联赛: {info.get('league','')}, "
                        f"AI首选: {info['predicted_score']}, "
                        f"次选: {info.get('second_score', '无')}, 实际: {info['actual_score']}, "
@@ -38537,7 +38532,7 @@ def institutional_harvest_scan():
     scan_log = "【机构收割雷达扫描日志】\n"
     trigger_count = 0
     
-    for fid, info in pending.items():
+    for info in pending.values():
         match_name = info.get('match', '未知赛事')
         league = info.get('league', '')
         
@@ -38647,8 +38642,7 @@ def _poisson_score_prob(lam_h, lam_a, h, a):
         return round(p * 100, 2)
     except (TypeError, ValueError, OverflowError, ZeroDivisionError) as err:
         print(
-            "   ⚠️ [泊松比分概率] lam_h=%r lam_a=%r 比分=%r-%r：%s: %s"
-            % (lam_h, lam_a, h, a, type(err).__name__, err)
+            f"   ⚠️ [泊松比分概率] lam_h={lam_h!r} lam_a={lam_a!r} 比分={h!r}-{a!r}：{type(err).__name__}: {err}"
         )
         return None
 
@@ -38899,9 +38893,8 @@ def _review_match_facts(info, index=None):
         judged = {}
     if isinstance(judged, dict) and judged.get('verdict'):
         lines.append(
-            '方向锁判定报告: %s 数据判断：%s 博弈判断：%s 经验教训：%s 策略措施：%s '
-            '三者作用：%s 判定路径：%s 缺失判定：%s 命中率改进：%s'
-            % (
+            '方向锁判定报告: {} 数据判断：{} 博弈判断：{} 经验教训：{} 策略措施：{} '
+            '三者作用：{} 判定路径：{} 缺失判定：{} 命中率改进：{}'.format(
                 judged.get('verdict'),
                 judged.get('data_judgment') or '',
                 judged.get('game_judgment') or '',
@@ -38923,9 +38916,8 @@ def _review_match_facts(info, index=None):
     try:
         _dual = DeepSeekAnalyzer.build_system_ml_dual_matrix_pack(info if isinstance(info, dict) else {})
         lines.append(
-            '两套矩阵识别: 前8最多【%s】占比胜%.1f%%/平%.1f%%/负%.1f%%；'
-            '前15进球主导【%s】少球%.1f%%/多球%.1f%%；市短vs市热=%s；均差vs市短市热=%s。不改方向锁。'
-            % (
+            '两套矩阵识别: 前8最多【{}】占比胜{:.1f}%/平{:.1f}%/负{:.1f}%；'
+            '前15进球主导【{}】少球{:.1f}%/多球{:.1f}%；市短vs市热={}；均差vs市短市热={}。不改方向锁。'.format(
                 _dual.get('top8_dominant') or '未形成',
                 float((_dual.get('top8_share_pct') or {}).get('胜') or 0),
                 float((_dual.get('top8_share_pct') or {}).get('平') or 0),
@@ -39116,21 +39108,19 @@ def _direction_lock_judgment_report(completed):
             pack = DeepSeekAnalyzer.build_direction_lock_judgment_report(info)
         except Exception:
             pack = {}
+        verdict = (pack.get('verdict') if isinstance(pack, dict) else '') or '方向锁未落盘'
+        data_judgment = (pack.get('data_judgment') if isinstance(pack, dict) else '') or '数据未形成'
+        game_judgment = (pack.get('game_judgment') if isinstance(pack, dict) else '') or '博弈未形成'
+        lesson = (pack.get('lesson') if isinstance(pack, dict) else '') or '材料不足'
+        strategy = (pack.get('strategy') if isinstance(pack, dict) else '') or '不改方向锁'
+        roles = (pack.get('roles') if isinstance(pack, dict) else '') or '三者作用未形成'
+        path = (pack.get('path') if isinstance(pack, dict) else '') or '判定路径未形成'
+        missing = (pack.get('missing') if isinstance(pack, dict) else '') or '不补造均差'
+        hit_rate = (pack.get('hit_rate') if isinstance(pack, dict) else '') or '不把缺项凑成命中'
         lines.append(
-            '台账%02d|方向锁判定报告|%s|数据判断：%s|博弈判断：%s|经验教训：%s|策略措施：%s|'
-            '三者作用：%s|判定路径：%s|缺失判定：%s|命中率改进：%s'
-            % (
-                index,
-                (pack.get('verdict') if isinstance(pack, dict) else '') or '方向锁未落盘',
-                (pack.get('data_judgment') if isinstance(pack, dict) else '') or '数据未形成',
-                (pack.get('game_judgment') if isinstance(pack, dict) else '') or '博弈未形成',
-                (pack.get('lesson') if isinstance(pack, dict) else '') or '材料不足',
-                (pack.get('strategy') if isinstance(pack, dict) else '') or '不改方向锁',
-                (pack.get('roles') if isinstance(pack, dict) else '') or '三者作用未形成',
-                (pack.get('path') if isinstance(pack, dict) else '') or '判定路径未形成',
-                (pack.get('missing') if isinstance(pack, dict) else '') or '不补造均差',
-                (pack.get('hit_rate') if isinstance(pack, dict) else '') or '不把缺项凑成命中',
-            )
+            f'台账{index:02d}|方向锁判定报告|{verdict}|数据判断：{data_judgment}|'
+            f'博弈判断：{game_judgment}|经验教训：{lesson}|策略措施：{strategy}|'
+            f'三者作用：{roles}|判定路径：{path}|缺失判定：{missing}|命中率改进：{hit_rate}'
         )
     return '\n'.join(lines)
 
@@ -39142,7 +39132,7 @@ def _short_hot_compare_report(completed):
     lines = ['市短市热对照统计']
     for index, info in enumerate(rows, 1):
         compared = compare_short_abs_hot(info)
-        lines.append('台账%02d|%s' % (index, compared.get('line') or '市短市热对照: 未形成'))
+        lines.append(f"台账{index:02d}|{compared.get('line') or '市短市热对照: 未形成'}")
     return '\n'.join(lines)
 
 
@@ -39786,7 +39776,7 @@ def compare_matches():
         return
 
     comparison = []
-    for fid, info in pending.items():
+    for info in pending.values():
         top15 = info.get('top15_scores', [])
         if len(top15) >= 2:
             first_total = (top15[0][1].get('prob', 0) * 100) if isinstance(top15[0][1], dict) else 0
@@ -40223,12 +40213,12 @@ def learn_completed_match(fid, info, notify=False):
         send_tg(
             "\n".join([
                 "📚【本场机器学习】",
-                "赛事号：%s" % label,
+                f"赛事号：{label}",
                 team_line,
-                "完场比分：%s" % score,
+                f"完场比分：{score}",
                 done,
-                "样本：%s" % (pack.get('sample_count') or 0),
-                "特征：%s" % (pack.get('feature_count') or 0),
+                f"样本：{pack.get('sample_count') or 0}",
+                f"特征：{pack.get('feature_count') or 0}",
                 "只学习完场样本，不改方向，不改已有预测。",
             ] + body_lines)
         )
@@ -41193,7 +41183,7 @@ def daily_result_learning_report():
         _per_match_blocks = []
         _ml_facts = []
 
-        for _fid, _info in _completed.items():
+        for _info in _completed.values():
             try:
                 _match = _info.get("match", "?")
                 _actual = str(_info.get("actual_score", "?")).replace(":", "-").strip()
@@ -41279,7 +41269,7 @@ def daily_result_learning_report():
                     _improve.append(f"实际{_actual}未进入15池，属池外冷门，建议放宽"
                                     f"15池筛选阈值或增强冷门触发器对该方向的捕获")
                 if not _improve:
-                    if _hit_tag.startswith("✅") or _hit_tag.startswith("🟡"):
+                    if _hit_tag.startswith(("✅", "🟡")):
                         _improve.append("命中，当前信号权重组合在该场有效，建议保留参数。")
                     else:
                         _improve.append("未命中但信号无显著异常，可能为高方差结果，维持观察。")
@@ -41290,7 +41280,7 @@ def daily_result_learning_report():
                             f"市场概率={_aM:.1f}% 概率偏差={_aD:+.1f}% 庄家防备指数={_aIBI:.2f}")
                 else:
                     _pat = f"{_match} {_hit_tag}｜实际{_actual}｜池外"
-                if _hit_tag.startswith("✅") or _hit_tag.startswith("🟡"):
+                if _hit_tag.startswith(("✅", "🟡")):
                     _hit_patterns.append(_pat)
                 else:
                     _miss_patterns.append(_pat)
@@ -41354,8 +41344,7 @@ def daily_result_learning_report():
                             _avg15_n += 1
                             if _top15_learn.get('hit'):
                                 _avg15_hit += 1
-                        for _learn_line in DeepSeekAnalyzer.format_matrix_learning_tg_lines(_info, _actual):
-                            _block.append(_learn_line)
+                        _block.extend(DeepSeekAnalyzer.format_matrix_learning_tg_lines(_info, _actual))
                     except Exception:
                         _block.append('  矩阵学习未形成。不改首选，不改次选，不改方向锁。')
                 _block.append(f"  {_act_metric_str}")
@@ -41622,7 +41611,7 @@ def deepseek_flash_run_learning_report():
     try:
         for ln in ds.splitlines():
             s = ln.strip()
-            if s.startswith('铁律：') or s.startswith('铁律:'):
+            if s.startswith(('铁律：', '铁律:')):
                 rule = s.split('：', 1)[-1].split(':', 1)[-1].strip()
                 if rule and len(rule) >= 6:
                     save_brain_rules(rule)
@@ -42348,10 +42337,10 @@ if not _CLI_HEADLESS:
         _fig_ht = go.Figure()
         _fig_ht.add_trace(go.Scatter(
             x=_ht_dates, y=_ht_rates, mode='lines+markers', name='比分命中率',
-            line=dict(color='#B91C1C', width=2),
+            line={"color": '#B91C1C', "width": 2},
         ))
         _fig_ht.update_layout(
-            height=180, margin=dict(l=8, r=8, t=8, b=8),
+            height=180, margin={"l": 8, "r": 8, "t": 8, "b": 8},
             showlegend=False, yaxis_title="%", template='plotly_white',
         )
         st.sidebar.plotly_chart(_fig_ht, width='stretch', key='classic_hit_trend_chart')
@@ -42401,7 +42390,7 @@ if not _CLI_HEADLESS:
                 st.sidebar.info("没有开赛满150分钟且仍缺完场比分的场次")
             else:
                 _need_ids = sorted(
-                    list(_fetch_need.keys()),
+                    _fetch_need.keys(),
                     key=lambda _fid: _fetch_need[_fid].get('time', '9999-99-99 99:99')
                 )
                 for _fid_one in _need_ids:
@@ -42507,7 +42496,7 @@ if not _CLI_HEADLESS:
         except (TypeError, ValueError):
             _conf_txt = '未形成'
         _c3.metric("置信度", _conf_txt)
-        _c4.metric("主选① / 次选②", "%s / %s" % (view.get('primary') or '未形成', view.get('secondary') or '未形成'))
+        _c4.metric("主选① / 次选②", "{} / {}".format(view.get('primary') or '未形成', view.get('secondary') or '未形成'))
 
 
     def render_ai_prediction_panel(info):
@@ -42520,7 +42509,7 @@ if not _CLI_HEADLESS:
             # ============================================================
             # 一、AI 预测结果（醒目展示）
             # ============================================================
-            if False and _ai and isinstance(_ai, dict) and _ai.get('available'):
+            if False:
                 # 第一行：大小球 + 胜平负 醒目指标
                 _c1, _c2, _c3, _c4 = st.columns(4)
                 _ou = _ai.get('ou_pred', '') or '—'
@@ -42664,11 +42653,11 @@ if not _CLI_HEADLESS:
 
             fig_trend = go.Figure()
             fig_trend.add_trace(go.Scatter(x=dates, y=hit_rates, mode='lines+markers', name='比分命中率',
-                                           line=dict(color='#B91C1C', width=2)))
+                                           line={"color": '#B91C1C', "width": 2}))
             fig_trend.add_trace(go.Scatter(x=dates, y=dir_rates, mode='lines+markers', name='方向命中率',
-                                           line=dict(color='#1D4ED8', width=2)))
+                                           line={"color": '#1D4ED8', "width": 2}))
             fig_trend.add_trace(go.Scatter(x=dates, y=bs_rates, mode='lines+markers', name='大小球命中率',
-                                           line=dict(color='#15803D', width=2)))
+                                           line={"color": '#15803D', "width": 2}))
             hot8_rates = []
             for d in dates:
                 _elig = hit_history[d].get('hot8_eligible') or 0
@@ -42680,10 +42669,10 @@ if not _CLI_HEADLESS:
                 else:
                     hot8_rates.append(None)
             fig_trend.add_trace(go.Scatter(x=dates, y=hot8_rates, mode='lines+markers', name='市热全列命中率',
-                                           line=dict(color='#C2410C', width=2),
+                                           line={"color": '#C2410C', "width": 2},
                                            connectgaps=False))
-            fig_trend.update_layout(height=280, margin=dict(l=10, r=10, t=30, b=10),
-                                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            fig_trend.update_layout(height=280, margin={"l": 10, "r": 10, "t": 30, "b": 10},
+                                    legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
                                     yaxis_title="%",
                                     template='plotly_white')
             st.plotly_chart(fig_trend, width='stretch')
@@ -42884,7 +42873,7 @@ if not _CLI_HEADLESS:
                 pie.update_layout(
                     title_text='胜平负方向预测分布占比',
                     height=320,
-                    margin=dict(t=40, b=10, l=10, r=10),
+                    margin={"t": 40, "b": 10, "l": 10, "r": 10},
                 )
                 st.plotly_chart(pie, width='stretch')
             with right:
@@ -42901,7 +42890,7 @@ if not _CLI_HEADLESS:
                     labels={'value': '场次数', 'final_direction': '预测方向', 'variable': '结果'},
                     color_discrete_map={'命中': '#00CC96', '偏离': '#EF553B'},
                 )
-                bar.update_layout(height=320, margin=dict(t=40, b=10, l=10, r=10))
+                bar.update_layout(height=320, margin={"t": 40, "b": 10, "l": 10, "r": 10})
                 st.plotly_chart(bar, width='stretch')
         st.markdown('### 📋 历史赛事对账明细')
         show = frame.copy()
