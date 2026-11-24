@@ -5,7 +5,7 @@ import statistics
 import sys
 import time
 import warnings
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, cast, overload
 
 # ================== 🖥️ CLI 模式探测（必须最先执行，早于 Streamlit/浏览器启动） ==================
 # 支持:
@@ -683,6 +683,11 @@ def _safe_parse_score(score_str):
         print(f"   ⚠️ [比分解析] 无法解析 {text!r}，不记成 0-0")
         return None
     return (h, a)
+
+
+def _as_dict(value):
+    """Return dict values as-is and normalize absent/invalid dynamic payloads to {}."""
+    return value if isinstance(value, dict) else {}
 
 
 
@@ -4429,6 +4434,14 @@ class MathUtils:
     """全局公共数学/解析工具库（模块级唯一实现，全文统一调用）。"""
 
     @staticmethod
+    @overload
+    def safe_float(value, default: None = None) -> float | None: ...
+
+    @staticmethod
+    @overload
+    def safe_float(value, default: float) -> float: ...
+
+    @staticmethod
     def safe_float(value, default=None):
         """统一的安全浮点转换。
 
@@ -5837,6 +5850,8 @@ class DeviationDrivenEngine:
                     direction = '客胜'
                 elif '-' in first_option and '其它' not in first_option and '其他' not in first_option:
                     home_goals, away_goals = parse_score(first_option)
+                    if home_goals is None or away_goals is None:
+                        raise ValueError(f"invalid score: {first_option}")
                     direction = '主胜' if home_goals > away_goals else ('客胜' if home_goals < away_goals else '平')
                     goal_sum = home_goals + away_goals
             except Exception as direction_error:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -6495,6 +6510,8 @@ class OverUnderEngine:
                 return ''
 
             h, a = parse_score(score_str)
+            if h is None or a is None:
+                return ''
 
             total = h + a
             line_val = float(ou_line)
@@ -6547,6 +6564,8 @@ class OverUnderEngine:
 
                 try:
                     h, a = parse_score(score_str)
+                    if h is None or a is None:
+                        continue
 
                     total = h + a
                     total_goals_list.append(total)
@@ -7869,6 +7888,8 @@ class AdaptiveWeightLearner:
                 actual = str(info.get('actual_score', '')).replace(' (进行中)', '').strip()
                 try:
                     ah, aa = parse_score(actual)
+                    if ah is None or aa is None:
+                        continue
 
                 except (ValueError, IndexError):
                     continue
@@ -8630,7 +8651,9 @@ def calc_poisson_prob(lam_h, lam_a, max_goals=8, rho=-0.05, matrix_context=None,
         prob_matrix[1, 0] *= (1 + lam_a * rho)
         prob_matrix[1, 1] *= (1 - rho)
 
-        labels = _POISSON_VEC_LABELS.get(max_goals)
+        labels = _POISSON_VEC_LABELS.get(max_goals) if _POISSON_VEC_LABELS is not None else None
+        if labels is None:
+            labels = [[f"{h}-{a}" for a in range(max_goals)] for h in range(max_goals)]
         score_probs = {}
         for h in range(max_goals):
             for a in range(max_goals):
@@ -9147,29 +9170,23 @@ def build_synthetic_market_data_from_500(data_500):
 
     try:
         # 欧赔 1x2
-        euro_home = data_500.get('euro_avg_home')
-        euro_draw = data_500.get('euro_avg_draw')
-        euro_away = data_500.get('euro_avg_away')
-        ok_1x2 = (euro_home and float(euro_home) > 1.0 and
-                   euro_draw and float(euro_draw) > 1.0 and
-                   euro_away and float(euro_away) > 1.0)
+        euro_home = MathUtils.safe_float(data_500.get('euro_avg_home'), 0.0)
+        euro_draw = MathUtils.safe_float(data_500.get('euro_avg_draw'), 0.0)
+        euro_away = MathUtils.safe_float(data_500.get('euro_avg_away'), 0.0)
+        ok_1x2 = euro_home > 1.0 and euro_draw > 1.0 and euro_away > 1.0
 
         # 亚盘 AH
-        ah_line = data_500.get('ah_avg_line')
-        ah_home_water = data_500.get('ah_avg_home_water')
-        ah_away_water = data_500.get('ah_avg_away_water')
-        ok_ah = (ah_line is not None and
-                 ah_home_water and float(ah_home_water) > 0 and
-                 ah_away_water and float(ah_away_water) > 0)
+        ah_line = MathUtils.safe_float(data_500.get('ah_avg_line'), None)
+        ah_home_water = MathUtils.safe_float(data_500.get('ah_avg_home_water'), 0.0)
+        ah_away_water = MathUtils.safe_float(data_500.get('ah_avg_away_water'), 0.0)
+        ok_ah = ah_line is not None and ah_home_water > 0 and ah_away_water > 0
 
         # 大小球 OU
         _ou_avg_raw = data_500.get('ou_avg_line')
         ou_line_val = standardize_ou_line(_ou_avg_raw) if _ou_avg_raw is not None else None
-        ou_over = data_500.get('ou_avg_over')
-        ou_under = data_500.get('ou_avg_under')
-        ok_ou = (ou_line_val is not None and
-                 ou_over and float(ou_over) > 0 and
-                 ou_under and float(ou_under) > 0)
+        ou_over = MathUtils.safe_float(data_500.get('ou_avg_over'), 0.0)
+        ou_under = MathUtils.safe_float(data_500.get('ou_avg_under'), 0.0)
+        ok_ou = ou_line_val is not None and ou_over > 0 and ou_under > 0
 
         if not (ok_1x2 and ok_ah and ok_ou):
             _missing = []
@@ -9185,19 +9202,19 @@ def build_synthetic_market_data_from_500(data_500):
         synthetic_entry = {
             'bookmaker': '500网合成',
             '1x2': {
-                'home': float(euro_home),
-                'draw': float(euro_draw),
-                'away': float(euro_away),
+                'home': euro_home,
+                'draw': euro_draw,
+                'away': euro_away,
             },
             'ah': {
-                'line': standardize_ah_line(float(ah_line)) or float(ah_line),
-                'home': float(ah_home_water),
-                'away': float(ah_away_water),
+                'line': standardize_ah_line(ah_line) or ah_line,
+                'home': ah_home_water,
+                'away': ah_away_water,
             },
             'ou': {
-                'line': standardize_ou_line(float(ou_line_val)),
-                'over': float(ou_over),
-                'under': float(ou_under),
+                'line': standardize_ou_line(ou_line_val),
+                'over': ou_over,
+                'under': ou_under,
             },
         }
         print(f"      🚀 [500网备用阵列] 合成成功! "
@@ -9253,7 +9270,7 @@ def _ou_line_lambda_floor(market_ou_line):
     cache = getattr(_ou_line_lambda_floor, '_cache', None)
     if cache is None:
         cache = {}
-        _ou_line_lambda_floor._cache = cache
+        _ou_line_lambda_floor.__dict__['_cache'] = cache
     if key in cache:
         return cache[key]
 
@@ -12256,9 +12273,10 @@ def update_strategy_weights(candidate_pool, overflow_candidates, direction_lock_
     boost_weight = max(max_weight * 0.90, 1.0)
     boosted_scores = []
     _boost_dir = ''
-    if direction_lock_payload and DeepSeekAnalyzer is not None:
+    _boost_analyzer = _ensure_deepseek_analyzer() if direction_lock_payload else None
+    if direction_lock_payload and _boost_analyzer is not None:
         try:
-            _boost_dir = DeepSeekAnalyzer.matrix_direction_lock(direction_lock_payload).get('direction') or ''
+            _boost_dir = _boost_analyzer.matrix_direction_lock(direction_lock_payload).get('direction') or ''
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             _boost_dir = ''
     _boost_drop = []
@@ -12272,7 +12290,7 @@ def update_strategy_weights(candidate_pool, overflow_candidates, direction_lock_
             continue
         if _boost_dir and score_str:
             try:
-                if DeepSeekAnalyzer._classify_score_wdl(score_str)[1] != _boost_dir:
+                if _boost_analyzer is not None and _boost_analyzer._classify_score_wdl(score_str)[1] != _boost_dir:
                     _boost_drop.append(score_str)
                     continue
             except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback
@@ -14723,7 +14741,7 @@ def calc_lambda_from_odds(odds_1x2_dict, asian_handicap=None, ou_line=None,
             ou_odds_over=ou_odds_over, ou_odds_under=ou_odds_under,
         )
         if not isinstance(_mle_res, dict) or not _mle_res.get('success'):
-            calc_lambda_from_odds.last_mle_result = _mle_res if isinstance(_mle_res, dict) else {'success': False}
+            calc_lambda_from_odds.__dict__['last_mle_result'] = _mle_res if isinstance(_mle_res, dict) else {'success': False}
             return None, None
         lam_h = _mle_res.get('lambda_home')
         lam_a = _mle_res.get('lambda_away')
@@ -14732,15 +14750,15 @@ def calc_lambda_from_odds(odds_1x2_dict, asian_handicap=None, ou_line=None,
         lam_h = float(lam_h)
         lam_a = float(lam_a)
         # 将完整MLE结果暂存到函数属性，供主流程读取 ρ 协方差与诊断信息
-        calc_lambda_from_odds.last_mle_result = _mle_res
+        calc_lambda_from_odds.__dict__['last_mle_result'] = _mle_res
         lam_h = max(0.4, min(4.0, lam_h))
         lam_a = max(0.3, min(3.5, lam_a))
         return round(lam_h, 3), round(lam_a, 3)
     except (TypeError, ValueError, KeyError, ZeroDivisionError, OverflowError, ArithmeticError) as _mle_err:
         print(f"   ⚠️ [λ极大似然] {type(_mle_err).__name__}: {_mle_err}。本场不采用求解结果。")
-        calc_lambda_from_odds.last_mle_result = {'success': False, 'error': f'{type(_mle_err).__name__}: {_mle_err}'}
+        calc_lambda_from_odds.__dict__['last_mle_result'] = {'success': False, 'error': f'{type(_mle_err).__name__}: {_mle_err}'}
         return None, None
-calc_lambda_from_odds.last_mle_result = None
+calc_lambda_from_odds.__dict__['last_mle_result'] = None
 
 
 
@@ -15109,11 +15127,13 @@ def build_feature_vector(match_data, data_500, odds_data):
     return feature_vector
 
 
-def _score_direction(score_str):
+def _score_direction_home_draw_away(score_str):
     try:
         h, a = parse_score(score_str)
     except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         print(f"   ⚠️ [异常已捕获·return 'Draw'降级 L12455] {_silent_err}")
+        return 'Draw'
+    if h is None or a is None:
         return 'Draw'
     if h > a:
         return 'Home'
@@ -15133,7 +15153,7 @@ def build_probability_rankings(prob_dict, limit=None):
             {
                 'prob': float(prob or 0.0),
                 'prob_pct': round(float(prob or 0.0) * 100, 2),
-                'direction': _score_direction(score_str),
+                'direction': _score_direction_home_draw_away(score_str),
             }
         )
         for score_str, prob in items
@@ -15232,7 +15252,7 @@ def build_step3_game_theory_candidates(prob_dict, threshold=0.03, limit=15):
             'rank': rank,
             'score': score,
             'prob': round(float(prob), 4),
-            'direction': _score_direction(score),
+            'direction': _score_direction_home_draw_away(score),
         })
     return result
 
@@ -16659,7 +16679,7 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
         theory_p = float(item.get('theory_prob', 0.0) or 0.0)
         market_p = float(item.get('market_prob', 0.0) or 0.0)
         ibi = float(item.get('ibi', 0.0) or 0.0)
-        direction = _score_direction(score)
+        direction = _score_direction_home_draw_away(score)
 
         # 计算 |Δ|（百分比差值的绝对值）
         delta_pct = abs(theory_p - market_p)
@@ -16691,7 +16711,7 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
         theory_p = float(item.get('theory_prob', 0.0) or 0.0) / 100.0  # 转为小数
         market_p = float(item.get('market_prob', 0.0) or 0.0) / 100.0
         ibi = float(item.get('ibi', 0.0) or 0.0)
-        direction = _score_direction(score)
+        direction = _score_direction_home_draw_away(score)
 
         # 从波胆赔率计算 market_odds
         market_odds = 0.0
@@ -16735,14 +16755,14 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
     ibi_top_direction = 'neutral'
     if ibi_sorted:
         top_score = ibi_sorted[0].get('score', '')
-        ibi_top_direction = _score_direction(top_score)
+        ibi_top_direction = _score_direction_home_draw_away(top_score)
 
     # 找出理论概率最高的比分方向（融合模型推荐方向）
     theory_sorted = sorted(pool15_data, key=lambda x: float(x.get('theory_prob', 0) or 0), reverse=True)
     theory_top_direction = 'neutral'
     if theory_sorted:
         top_theory_score = theory_sorted[0].get('score', '')
-        theory_top_direction = _score_direction(top_theory_score)
+        theory_top_direction = _score_direction_home_draw_away(top_theory_score)
 
     # 判定算法对垒结果
     if ibi_top_direction != theory_top_direction and ibi_top_direction != 'neutral':
@@ -16828,7 +16848,7 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
             fused_rank = fused_rank_map[score]
             delta_gap = abs(neutral_rank - fused_rank)
             if delta_gap >= 3:
-                direction = _score_direction(score)
+                direction = _score_direction_home_draw_away(score)
                 algorithm_fingerprints.append({
                     'score': score,
                     'neutral_rank': neutral_rank,
@@ -16852,7 +16872,7 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
         theory_p = float(item.get('theory_prob', 0.0) or 0.0)
         market_p = float(item.get('market_prob', 0.0) or 0.0)
         ibi = float(item.get('ibi', 0.0) or 0.0)
-        direction = _score_direction(score)
+        direction = _score_direction_home_draw_away(score)
 
         # 4a. IBI热度陷阱过滤：市场热度>10% 且 IBI>2.5
         if market_p > 10.0 and ibi > 2.5:
@@ -17479,7 +17499,7 @@ def _apply_direction_lock_to_ai_pred(result, payload):
         return result
     if DeepSeekAnalyzer is None:
         return result
-    rows = result.get('scores') if isinstance(result.get('scores'), list) else []
+    rows = [row for row in (result.get('scores') if isinstance(result.get('scores'), list) else []) if isinstance(row, dict)]
     s1 = str(rows[0].get('score') or '') if rows and isinstance(rows[0], dict) else ''
     s2 = str(rows[1].get('score') or '') if len(rows) > 1 and isinstance(rows[1], dict) else ''
     a, b = DeepSeekAnalyzer.snap_score_pair(s1, s2, payload)
@@ -18179,10 +18199,11 @@ class RankTrackingMatrix:
                     for _i_mk in range(_n_mk):
                         _ha_i = _ha_list[_i_mk]
                         for _j_mk in range(_n_mk):
-                            if _ha_i is None or _ha_list[_j_mk] is None:
+                            _ha_j = _ha_list[_j_mk]
+                            if _ha_i is None or _ha_j is None:
                                 continue
-                            _dh = abs(_ha_i[0] - _ha_list[_j_mk][0])
-                            _da = abs(_ha_i[1] - _ha_list[_j_mk][1])
+                            _dh = abs(_ha_i[0] - _ha_j[0])
+                            _da = abs(_ha_i[1] - _ha_j[1])
                             if _dh <= 1 and _da <= 1:
                                 _T[_i_mk, _j_mk] = _node_w[_j_mk]
                         _rsum = _T[_i_mk].sum()
@@ -21932,8 +21953,10 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
     def _signal_support_score(s):
         """计算信号支持强度，供后续博弈论选取与排序参考。"""
         h, a = parse_score(s)
+        if h is None or a is None:
+            return 0.0
         total_g = h + a
-        direction = _score_direction(s)
+        direction = _score_direction_home_draw_away(s)
         support = 0
 
         # sig_support 动态阈值（sigmoid）：
@@ -23912,14 +23935,14 @@ try:
     )
     six_market_fetch_blocked = getattr(_okooo_cs_mod, 'six_market_fetch_blocked', None)
     if not callable(six_market_fetch_blocked):
-        six_market_fetch_blocked = lambda rec: False
+        six_market_fetch_blocked = cast(Any, lambda rec: False)
 except Exception as _okooo_cs_imp_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
     print(f"   ⚠️ [澳客手机CS] 模块加载失败: {_okooo_cs_imp_err}")
 
     def _okooo_only_data_mode():
         return True
 
-    def scrape_okooo_mobile_cs_zuizhi(match_id, proxies=None, session=None):
+    def scrape_okooo_mobile_cs_zuizhi(match_id, proxies=None, session=None, **kwargs):
         return {'available': False, 'channel': 'mobile', 'block_reason': 'module_missing'}
 
     def scrape_okooo_mobile_six_markets(match_id, proxies=None, session=None, jc_handicap=None):
@@ -24795,7 +24818,7 @@ def _attach_mobile_lineup(rec, match_id, proxies=None):
 
 def _attach_mobile_lineup_if_missing(rec, match_id, proxies=None):
     rec = rec if isinstance(rec, dict) else {}
-    pack = rec.get('mobile_lineup') if isinstance(rec.get('mobile_lineup'), dict) else {}
+    pack = _as_dict(rec.get('mobile_lineup'))
     if pack.get('available'):
         return pack
     return _attach_mobile_lineup(rec, match_id, proxies=proxies)
@@ -24817,8 +24840,8 @@ def _attach_mobile_ah_ou_books(rec, match_id, proxies=None):
             'changes_direction': False,
         }
     rec['mobile_ah_ou_books'] = pack
-    ah_n = len((pack.get('asian_handicap') or {}).get('companies') or [])
-    ou_pack = pack.get('over_under') or {}
+    ah_n = len(_as_dict(pack.get('asian_handicap')).get('companies') or [])
+    ou_pack = _as_dict(pack.get('over_under'))
     ou_companies = ou_pack.get('companies') or []
     ou_n = len(ou_companies)
     ou_tl = sum(1 for row in ou_companies if isinstance(row, dict) and row.get('changes'))
@@ -24870,7 +24893,7 @@ def _stamp_more_play_scores(rec, pack):
     """胜平负比分：竞足更多玩法 oddsData.SportteryScore，覆盖同键竞彩比分，不进市均。"""
     rec = rec if isinstance(rec, dict) else {}
     pack = pack if isinstance(pack, dict) else {}
-    scores = pack.get('jc_score_odds') if isinstance(pack.get('jc_score_odds'), dict) else {}
+    scores = _as_dict(pack.get('jc_score_odds'))
     if not scores:
         return 0
     return _okooo_apply_jc_score_fill(
@@ -24946,8 +24969,8 @@ def _ensure_mobile_six(rec, mid, force=False):
         if six_market_fetch_blocked(rec):
             _WATER_FULL_SCRAPE_IDS.add(str(mid))
         return True
-    existing = rec.get('six_market_mobile') if isinstance(rec.get('six_market_mobile'), dict) else {}
-    _hit = existing.get('boards_hit') if isinstance(existing.get('boards_hit'), dict) else {}
+    existing = _as_dict(rec.get('six_market_mobile'))
+    _hit = _as_dict(existing.get('boards_hit'))
     _urls = [str(u) for u in (existing.get('fetch_urls') or [])]
     _stale_url = bool(_urls) and all(
         ('odds.php' in u and ('Type=Asian' in u or 'Type=Overunder' in u or 'Type=OU' in u))
@@ -27973,20 +27996,21 @@ def _fixed_bonus_from_okooo_jc_official(
 def seed_direction_lock_from_cs(rec):
     """用已抓到的市均×竞彩算出市短方向锁。不联网，不写终裁。"""
     rec = rec if isinstance(rec, dict) else {}
-    if DeepSeekAnalyzer is None:
+    analyzer = _ensure_deepseek_analyzer()
+    if analyzer is None:
         return {}
-    bundle = rec.get('pipeline_report_bundle') if isinstance(rec.get('pipeline_report_bundle'), dict) else {}
-    payload = bundle.get('ds_payload') if isinstance(bundle.get('ds_payload'), dict) else {}
+    bundle = _as_dict(rec.get('pipeline_report_bundle'))
+    payload = _as_dict(bundle.get('ds_payload'))
     if payload:
-        lock = DeepSeekAnalyzer.matrix_direction_lock(payload)
+        lock = analyzer.matrix_direction_lock(payload)
         if lock.get('locked'):
-            discrete = payload.get('wdl_discrete_vector') if isinstance(payload.get('wdl_discrete_vector'), dict) else {}
+            discrete = _as_dict(payload.get('wdl_discrete_vector'))
             return {'direction_lock': lock, 'wdl_discrete_vector': discrete}
-    existing = rec.get('direction_lock') if isinstance(rec.get('direction_lock'), dict) else {}
+    existing = _as_dict(rec.get('direction_lock'))
     if existing.get('locked') and existing.get('direction') in ('胜', '平', '负'):
-        discrete = rec.get('wdl_discrete_vector') if isinstance(rec.get('wdl_discrete_vector'), dict) else {}
+        discrete = _as_dict(rec.get('wdl_discrete_vector'))
         return {'direction_lock': existing, 'wdl_discrete_vector': discrete}
-    heat = rec.get('score_market_heat') if isinstance(rec.get('score_market_heat'), dict) else {}
+    heat = _as_dict(rec.get('score_market_heat'))
     if not heat.get('ranking'):
         page = rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg')
         if isinstance(page, dict) and page:
@@ -28015,9 +28039,9 @@ def seed_direction_lock_from_cs(rec):
     ]
     if not short_rows:
         return {}
-    matrix = DeepSeekAnalyzer.build_mkt_short_wdl_matrix(short_rows)
-    discrete = matrix.get('discrete_vector') if isinstance(matrix.get('discrete_vector'), dict) else {}
-    lock = DeepSeekAnalyzer.matrix_direction_lock(
+    matrix = analyzer.build_mkt_short_wdl_matrix(short_rows)
+    discrete = _as_dict(matrix.get('discrete_vector'))
+    lock = analyzer.matrix_direction_lock(
         {'mkt_short_wdl_matrix': matrix, 'wdl_discrete_vector': discrete},
         discrete,
         matrix,
@@ -28027,7 +28051,7 @@ def seed_direction_lock_from_cs(rec):
     return {
         'direction_lock': lock,
         'wdl_discrete_vector': discrete,
-        'counts': matrix.get('counts') if isinstance(matrix.get('counts'), dict) else {},
+        'counts': _as_dict(matrix.get('counts')),
     }
 
 
@@ -28036,16 +28060,17 @@ def lookup_direction_lock_payload(history=None, fid='', extra=None):
 
     本场刚装载的 direction_lock 优先于旧研判包。旧包里的方向不能把本场胜改成负。
     """
-    if DeepSeekAnalyzer is None:
+    analyzer = _ensure_deepseek_analyzer()
+    if analyzer is None:
         return {}
 
     def _current_lock(src):
         if not isinstance(src, dict):
             return {}
-        lock = src.get('direction_lock') if isinstance(src.get('direction_lock'), dict) else {}
+        lock = _as_dict(src.get('direction_lock'))
         if not (lock.get('locked') and lock.get('direction') in ('胜', '平', '负')):
             return {}
-        discrete = src.get('wdl_discrete_vector') if isinstance(src.get('wdl_discrete_vector'), dict) else {}
+        discrete = _as_dict(src.get('wdl_discrete_vector'))
         slim = {'direction_lock': lock}
         if discrete:
             slim['wdl_discrete_vector'] = discrete
@@ -28062,9 +28087,9 @@ def lookup_direction_lock_payload(history=None, fid='', extra=None):
         current = _current_lock(src)
         if current:
             return current
-        bundle = src.get('pipeline_report_bundle') if isinstance(src.get('pipeline_report_bundle'), dict) else {}
-        payload = bundle.get('ds_payload') if isinstance(bundle.get('ds_payload'), dict) else {}
-        if payload and DeepSeekAnalyzer.matrix_direction_lock(payload).get('locked'):
+        bundle = _as_dict(src.get('pipeline_report_bundle'))
+        payload = _as_dict(bundle.get('ds_payload'))
+        if payload and analyzer.matrix_direction_lock(payload).get('locked'):
             return payload
     return {}
 
@@ -28072,9 +28097,10 @@ def lookup_direction_lock_payload(history=None, fid='', extra=None):
 def filter_scores_to_direction_lock(scores, payload, limit=3):
     """预测比分名单只留方向锁内的项。无锁时原样返回。"""
     raw = list(scores or [])
-    if DeepSeekAnalyzer is None or not isinstance(payload, dict) or not payload:
+    analyzer = _ensure_deepseek_analyzer()
+    if analyzer is None or not isinstance(payload, dict) or not payload:
         return raw
-    lock = DeepSeekAnalyzer.matrix_direction_lock(payload)
+    lock = analyzer.matrix_direction_lock(payload)
     if not lock.get('locked'):
         return raw
     direction = lock['direction']
@@ -28084,7 +28110,7 @@ def filter_scores_to_direction_lock(scores, payload, limit=3):
         if not tok or tok in ('N/A', '无'):
             continue
         try:
-            lab = DeepSeekAnalyzer._classify_score_wdl(tok)[1]
+            lab = analyzer._classify_score_wdl(tok)[1]
         except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback
             continue
         if lab == direction and tok not in kept:
@@ -28103,9 +28129,10 @@ def filter_scores_to_direction_lock(scores, payload, limit=3):
 
 def lock_probability_cluster(cluster, payload):
     """概率簇成员只留方向锁内的比分。无锁时原样返回。"""
-    if not isinstance(cluster, dict) or not payload or DeepSeekAnalyzer is None:
+    analyzer = _ensure_deepseek_analyzer()
+    if not isinstance(cluster, dict) or not payload or analyzer is None:
         return cluster
-    lock = DeepSeekAnalyzer.matrix_direction_lock(payload)
+    lock = analyzer.matrix_direction_lock(payload)
     if not lock.get('locked'):
         return cluster
     direction = lock['direction']
@@ -28122,7 +28149,7 @@ def lock_probability_cluster(cluster, payload):
         if not tok:
             continue
         try:
-            lab = DeepSeekAnalyzer._classify_score_wdl(tok)[1]
+            lab = analyzer._classify_score_wdl(tok)[1]
         except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback
             continue
         if lab == direction:
@@ -28196,10 +28223,10 @@ def _cs_heat_labels(rec):
     """手机表沿用默认源名。比分表页把 heat_source / channel 原样交给排行，避免标成手机。"""
     rec = rec if isinstance(rec, dict) else {}
     ch = str(rec.get('correct_score_channel') or '')
-    markets = rec.get('markets') if isinstance(rec.get('markets'), dict) else {}
-    if not markets and isinstance(rec.get('okooo_markets'), dict):
-        markets = rec.get('okooo_markets')
-    slot = markets.get('correct_score') if isinstance(markets, dict) and isinstance(markets.get('correct_score'), dict) else {}
+    markets = _as_dict(rec.get('markets'))
+    if not markets:
+        markets = _as_dict(rec.get('okooo_markets'))
+    slot = _as_dict(markets.get('correct_score'))
     src = str(slot.get('heat_source') or '')
     if ch in ('', 'mobile') and (not src or 'okooo_mobile_cs_' in src):
         return {}
@@ -28260,7 +28287,7 @@ def _is_legal_mobile_cs_heat(heat):
 def _resolve_compare_heat_from_history(rec):
     """从落盘记录取出可用于对比表的市均；非法源清空；允许手机或显式 fallback。"""
     rec = rec if isinstance(rec, dict) else {}
-    raw = rec.get('score_market_heat') if isinstance(rec.get('score_market_heat'), dict) else {}
+    raw = _as_dict(rec.get('score_market_heat'))
     if _is_legal_mobile_cs_heat(raw):
         out = dict(raw)
         out['pool31_forbidden'] = True
@@ -28273,7 +28300,7 @@ def _resolve_compare_heat_from_history(rec):
     ch0 = str(
         (raw or {}).get('channel')
         or rec.get('correct_score_channel')
-        or ((rec.get('okooo_markets') or {}) if isinstance(rec.get('okooo_markets'), dict) else {}).get('correct_score_channel')
+        or _as_dict(rec.get('okooo_markets')).get('correct_score_channel')
         or ''
     ).lower()
     # 历史 desktop / pool31 → 丢弃，禁止冒充
@@ -30439,10 +30466,13 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
             _mle_base_result = getattr(calc_lambda_from_odds, 'last_mle_result', None)
             try:
                 if isinstance(_mle_base_result, dict) and _mle_base_result.get('success'):
+                    _mle_lh = float(_mle_base_result.get('lambda_home') or 0.0)
+                    _mle_la = float(_mle_base_result.get('lambda_away') or 0.0)
+                    _mle_rho = float(_mle_base_result.get('rho_covariance') or 0.0)
                     print(
-                        f"      🧬 [MLE统一概率基座] λh={_mle_base_result['lambda_home']:.3f} "
-                        f"λa={_mle_base_result['lambda_away']:.3f} "
-                        f"ρ={_mle_base_result['rho_covariance']:.3f} "
+                        f"      🧬 [MLE统一概率基座] λh={_mle_lh:.3f} "
+                        f"λa={_mle_la:.3f} "
+                        f"ρ={_mle_rho:.3f} "
                         f"loss={_mle_base_result.get('loss'):.2e} "
                         f"约束={_mle_base_result.get('targets_used')}"
                     )
@@ -38737,8 +38767,8 @@ def _actual_wdl_from_score(actual):
 
 def _history_payload(info):
     info = info if isinstance(info, dict) else {}
-    bundle = info.get('pipeline_report_bundle') if isinstance(info.get('pipeline_report_bundle'), dict) else {}
-    payload = bundle.get('ds_payload') if isinstance(bundle.get('ds_payload'), dict) else {}
+    bundle = _as_dict(info.get('pipeline_report_bundle'))
+    payload = _as_dict(bundle.get('ds_payload'))
     return payload
 
 
@@ -38746,18 +38776,18 @@ def _positive_mkt_gap_count(source):
     """市均高于竞彩的比分项数。空的 DeepSeek 博弈标签不参与。不写 first_score。"""
     source = source if isinstance(source, dict) else {}
     payload = source
-    bundle = source.get('pipeline_report_bundle') if isinstance(source.get('pipeline_report_bundle'), dict) else {}
-    nested = bundle.get('ds_payload') if isinstance(bundle.get('ds_payload'), dict) else {}
+    bundle = _as_dict(source.get('pipeline_report_bundle'))
+    nested = _as_dict(bundle.get('ds_payload'))
     if nested:
         payload = nested
     elif isinstance(source.get('ds_payload'), dict):
-        payload = source.get('ds_payload')
+        payload = _as_dict(source.get('ds_payload'))
     scores = set()
     rows = []
-    cog = payload.get('inversion_cognition') if isinstance(payload.get('inversion_cognition'), dict) else {}
+    cog = _as_dict(payload.get('inversion_cognition'))
     rows.extend(cog.get('items') or [])
     rows.extend(payload.get('jc_cross_rows') or [])
-    full_rows = payload.get('direction_full_rows') if isinstance(payload.get('direction_full_rows'), dict) else {}
+    full_rows = _as_dict(payload.get('direction_full_rows'))
     for lab in ('胜', '平', '负'):
         rows.extend(full_rows.get(lab) or [])
     for row in rows:
@@ -38814,9 +38844,9 @@ def _direction_lock_ledger_line(info, index=None):
     """一场方向锁、博弈面、概率面的数据行。不改锁，不写 first_score。"""
     info = info if isinstance(info, dict) else {}
     payload = _history_payload(info)
-    lock = info.get('direction_lock') if isinstance(info.get('direction_lock'), dict) else {}
-    if not lock and isinstance(payload.get('direction_lock'), dict):
-        lock = payload.get('direction_lock')
+    lock = _as_dict(info.get('direction_lock'))
+    if not lock:
+        lock = _as_dict(payload.get('direction_lock'))
     direction = lock.get('direction') if lock.get('direction') in ('胜', '平', '负') else ''
     if not direction and info.get('predicted_result') in ('胜', '平', '负'):
         direction = info.get('predicted_result')
@@ -38834,13 +38864,13 @@ def _direction_lock_ledger_line(info, index=None):
         agree = '一致' if direction == actual_wdl else '不一致'
     else:
         agree = '无法核对'
-    matrix = payload.get('score_prob_matrix') if isinstance(payload.get('score_prob_matrix'), dict) else {}
-    wdl_pct = matrix.get('wdl_pct') if isinstance(matrix.get('wdl_pct'), dict) else {}
-    drop = payload.get('max_drop_wdl_matrix') if isinstance(payload.get('max_drop_wdl_matrix'), dict) else {}
+    matrix = _as_dict(payload.get('score_prob_matrix'))
+    wdl_pct = _as_dict(matrix.get('wdl_pct'))
+    drop = _as_dict(payload.get('max_drop_wdl_matrix'))
     drop_bits = []
-    directions = drop.get('directions') if isinstance(drop.get('directions'), dict) else {}
+    directions = _as_dict(drop.get('directions'))
     for lab in ('胜', '平', '负'):
-        block = directions.get(lab) if isinstance(directions.get(lab), dict) else {}
+        block = _as_dict(directions.get(lab))
         focus = '/'.join(str(sc) for sc in (block.get('focus_scores') or [])[:3])
         top = block.get('max_score')
         if isinstance(top, dict):
@@ -39998,7 +40028,7 @@ def auto_run():
             print(f"   ⚠️ [异常已捕获·pass降级 L33100] {_silent_err}")
         if _should_send_start_msg:
             send_tg("🚀 全自动实盘雷达启动...(已清除所有缓存，全新抓取）")
-            auto_run._last_start_tg_ts = _auto_run_start_ts
+            auto_run.__dict__['_last_start_tg_ts'] = _auto_run_start_ts
         clean_old_data()
         aligned = align_matches(get_official_matches())
         if aligned:
@@ -41885,14 +41915,14 @@ def listen():
 
     if not getattr(listen, '_started_logged', False):
         print("🎧 监控启动... (支持指令: 分析/复盘/熔炉/今日/详情/方向/冷门/比较/教训/状态/帮助)")
-        listen._started_logged = True
+        listen.__dict__['_started_logged'] = True
     _poll_lock_path = os.path.join(_tempfile_mod.gettempdir(), "blade_quant_tg_listen.lock")
     _poll_fh = None
     _wait_logged = False
     while _poll_fh is None:
         _poll_fh = _open_and_lock(_poll_lock_path)
         if _poll_fh is not None:
-            listen._poll_fh = _poll_fh
+            listen.__dict__['_poll_fh'] = _poll_fh
             print("   [TG] 本窗口开始接收指令", flush=True)
             break
         if not _wait_logged:
@@ -41934,11 +41964,11 @@ def listen():
                     _tg_resp = _sess.get(url, timeout=(5, 8))
                     _last_status = int(_tg_resp.status_code)
                     if _last_status == 200:
-                        listen._poll_prefer = _vf
+                        listen.__dict__['_poll_prefer'] = _vf
                         _conflict_logged = False
                         if not getattr(listen, '_tg_ready', False):
                             print("   [TG] 指令通道已接通", flush=True)
-                            listen._tg_ready = True
+                            listen.__dict__['_tg_ready'] = True
                         break
                     if _last_status == 409:
                         break
@@ -41986,7 +42016,7 @@ def start_bot_thread():
 if not _CLI_HEADLESS:
     start_bot_thread()
     if not getattr(threading, "_blade_ui_banner", False):
-        threading._blade_ui_banner = True
+        setattr(threading, "_blade_ui_banner", True)  # noqa: B010
         print("战情室页面开始渲染。浏览器打开上面的 Local URL。此窗口保持运行，不会回到提示符。", flush=True)
 
 
