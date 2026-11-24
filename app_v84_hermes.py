@@ -336,7 +336,6 @@ import requests
 # ================= 【泊松矢量化加速】numpy/scipy可用性探测 =================
 # 矢量化泊松计算依赖 numpy + scipy.special.factorial；若不可用则自动回退到纯Python循环
 try:
-    from scipy.special import factorial as _scipy_factorial
     # 预计算全局阶乘查找表（支持0~14进球，覆盖max_goals<=15的所有场景）
     _POISSON_VEC_FACT_MAX = 15
     _POISSON_VEC_FACT_TABLE = np.array([math.factorial(i) for i in range(_POISSON_VEC_FACT_MAX)], dtype=np.float64)
@@ -350,7 +349,6 @@ except Exception:
     _POISSON_VEC_FACT_TABLE = None
     _POISSON_VEC_LABELS = None
 # ===========================================================================
-import difflib
 import hashlib  # BladeQuant V2 决策封印哈希
 import json
 import re
@@ -510,14 +508,23 @@ def _downgrade_okooo_https(url):
         return ''
 
 
-# 【全局】带SSL绕过+代理自动降级的requests.get
+def _allow_insecure_ssl():
+    """Only disable TLS verification when the operator explicitly opts in."""
+    return str(os.environ.get('BLADE_ALLOW_INSECURE_SSL', '')).strip().lower() in (
+        '1', 'true', 'yes', 'on',
+    )
+
+
+# 【全局】带代理自动降级的requests.get；默认校验TLS，必要时由环境变量显式开启兼容模式。
 def safe_api_get(url, headers=None, timeout=20, params=None):
     """请求统一入口。欧洲库地址直接返回，不发请求、不打印。"""
     _u = str(url or "").lower()
     if "api-sports.io" in _u or "api-football" in _u:
         return None
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    _verify_tls = not _allow_insecure_ssl()
+    if not _verify_tls:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     _proxies_list = _http_routes()
     _net_errors = (
@@ -526,11 +533,11 @@ def safe_api_get(url, headers=None, timeout=20, params=None):
         requests.exceptions.Timeout,
         requests.exceptions.ProxyError,
     )
-    # 第一轮：HTTPS + verify=False（代理可用才先走，失败后直连且不吃环境代理）
+    # 第一轮：HTTPS（代理可用才先走，失败后直连且不吃环境代理）
     for proxies in _proxies_list:
         try:
             r = requests.get(url, headers=headers, timeout=timeout,
-                             proxies=proxies, verify=False, params=params)
+                             proxies=proxies, verify=_verify_tls, params=params)
         except _net_errors:
             if proxies is not _DIRECT_PROXIES:
                 _forget_dead_proxy()
@@ -1031,7 +1038,11 @@ class UnifiedConvergenceArbitrator:
         direction_margin = direction_probs[module_direction] - sorted(direction_probs.values())[-2] if len([v for v in direction_probs.values() if v > 0]) > 1 else direction_probs[module_direction]
         lock_side, lock_picks, lock = cls._lock_side_and_picks(match_context)
         ratio_audit = cls._mean_gap_ratio_audit(match_context, lock)
-        from convergence_arbitrator import ou_from_scores, resolve_cores, resolve_direction
+        from convergence_arbitrator import (
+            ou_from_scores,
+            resolve_cores,
+            resolve_direction,
+        )
         voted_direction, direction_resolution = resolve_direction(lock_side, module_direction)
         adapted = resolve_cores(lock if lock_side else {}, lock_picks if lock_side else [])
         clean_sheet = tuple(adapted.get('cover') or ())
@@ -1153,10 +1164,7 @@ class UnifiedConvergenceArbitrator:
                     h, a = parse_score(score_str)
                     net = h - a
                     # 亚盘方向一致性（主让为负）
-                    if ah_val < -0.5 and net >= 1:
-                        info['ah_consistent'] = True
-                        logic_bonus += 0.3
-                    elif ah_val > 0.5 and net <= -1:
+                    if ah_val < -0.5 and net >= 1 or ah_val > 0.5 and net <= -1:
                         info['ah_consistent'] = True
                         logic_bonus += 0.3
                     elif abs(ah_val) <= 0.5 and abs(net) <= 1:
@@ -2220,18 +2228,10 @@ openai_client = ds_client
 
 # DeepSeek 研判管线（独立模块；禁止在模块内反向 import hermes）
 try:
-    from blade_deepseek_pipeline import (  # noqa: E402
-        JCZQ_AWAY_WIN_OPTIONS,
-        JCZQ_DRAW_OPTIONS,
-        JCZQ_HOME_WIN_OPTIONS,
+    from blade_deepseek_pipeline import (
         JCZQ_MACRO_BAIT_SCORES,
-        JCZQ_OPTIONS_BY_WDL,
-        JCZQ_SOFT_BAIT_SCORES,
-        JCZQ_SOLID_CORE_SCORES,
-        JCZQ_WDL_UNIVERSE_CAP,
         DeepSeekAnalyzer,
         bind_hermes_runtime,
-        compute_bucket_odds_concentration,
         compute_score_occ,
         get_deepseek_analyzer,
     )
@@ -2290,9 +2290,9 @@ try:
         calc_bivariate_poisson_matrix,
         deepseek_flash_ml_brief,
         ensure_ml_bundle,
+        learn_match_after_result,
         ml_predict_enabled,
         predict_match_ml,
-        learn_match_after_result,
         train_daily_poisson,
     )
     if not getattr(sys, '_blade_ml_announced', False):
@@ -2496,7 +2496,7 @@ def _split_flash_review_sections(text):
 # 双变量泊松概率矩阵 + Deviation/IBI 双轨分级裁决，替代旧硬编码规则树
 # 在 AI 裁决庭调用之前执行量化路由预判，为终审提供额外决策参考
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 @dataclass
@@ -2525,7 +2525,7 @@ class VEMatchContext:
     core_margin: int = 1             # 核心锁定的净胜球分差预设
     f_zero_goal: bool = False        # 基本面校验：是否必然无法零封 (大开大合)
     f_blowout: bool = False          # 基本面校验：是否具备单边大屠杀潜力
-    raw_data: List[VEScoreNode] = field(default_factory=list)  # 该场的15池数据
+    raw_data: list[VEScoreNode] = field(default_factory=list)  # 该场的15池数据
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3512,7 +3512,7 @@ class LLMPromptRouter:
         except ValueError:
             return "Draw"
 
-    def dynamic_select_prototypes(self, nodes: List[VEScoreNode]) -> List[str]:
+    def dynamic_select_prototypes(self, nodes: list[VEScoreNode]) -> list[str]:
         """依据 15 池数据特征，动态路由高阶原型。
 
         Args:
@@ -3571,7 +3571,7 @@ class LLMPromptRouter:
 
         return active_prototypes
 
-    def get_triggered_mutation_labels(self, nodes: List[VEScoreNode]) -> List[str]:
+    def get_triggered_mutation_labels(self, nodes: list[VEScoreNode]) -> list[str]:
         """返回当前数据触发的高阶原型标签列表 (如 ['E', 'F'])"""
         triggered = []
         if not nodes:
@@ -3730,17 +3730,19 @@ def _build_tg_session(proxies=None, verify=True):
         _sess.mount('http://', _adapter)
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L2635] {_silent_err}")
-        pass
     if proxies:
         _sess.proxies.update(proxies)
     _sess.verify = verify
     return _sess
 
-# 全局持久化 Session：代理 / 直连 / SSL绕过 三套复用连接池
+# 全局持久化 Session：代理 / 直连连接池；SSL绕过只在显式允许时启用。
 _TG_SESSION_PROXY = _build_tg_session(proxies=TG_PROXIES, verify=True) if TG_PROXIES else None
-_TG_SESSION_PROXY_NOVERIFY = _build_tg_session(proxies=TG_PROXIES, verify=False) if TG_PROXIES else None
+_TG_SESSION_PROXY_NOVERIFY = (
+    _build_tg_session(proxies=TG_PROXIES, verify=False)
+    if TG_PROXIES and _allow_insecure_ssl() else None
+)
 _TG_SESSION_DIRECT = _build_tg_session(proxies=None, verify=True)
-_TG_SESSION_NOVERIFY = _build_tg_session(proxies=None, verify=False)
+_TG_SESSION_NOVERIFY = _build_tg_session(proxies=None, verify=False) if _allow_insecure_ssl() else None
 
 # ===== 博弈论模型配置 =====
 # 核心博弈模型（16个：原8个 + 新增8个）
@@ -4258,9 +4260,8 @@ class SafeJSONEncoder(json.JSONEncoder):
 
 def save_json(path, data):
     """线程安全地保存JSON文件（SafeJSONEncoder防止numpy/bool序列化报错）"""
-    with json_lock:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4, cls=SafeJSONEncoder)
+    with json_lock, open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4, cls=SafeJSONEncoder)
 
 
 def _normalize_feature_column_name(feature_name):
@@ -5170,11 +5171,19 @@ def _ensure_tg_proxy_session():
     _px = _local_proxies()
     if not _px:
         return
-    if TG_PROXIES == _px and _TG_SESSION_PROXY is not None and _TG_SESSION_PROXY_NOVERIFY is not None:
+    _needs_noverify = _allow_insecure_ssl()
+    if (
+        TG_PROXIES == _px
+        and _TG_SESSION_PROXY is not None
+        and (not _needs_noverify or _TG_SESSION_PROXY_NOVERIFY is not None)
+    ):
         return
     TG_PROXIES = _px
     _TG_SESSION_PROXY = _build_tg_session(proxies=TG_PROXIES, verify=True)
-    _TG_SESSION_PROXY_NOVERIFY = _build_tg_session(proxies=TG_PROXIES, verify=False)
+    _TG_SESSION_PROXY_NOVERIFY = (
+        _build_tg_session(proxies=TG_PROXIES, verify=False)
+        if _needs_noverify else None
+    )
 
 
 def _tg_listen_gate():
@@ -5196,13 +5205,13 @@ def _tg_fail_should_log():
 
 
 def _tg_post(url, payload):
-    """TG发送统一入口：智能重试 + 代理探测 + SSL绕过
+    """TG发送统一入口：智能重试 + 代理探测；SSL绕过需显式环境开关。
     返回: True=成功, False=网络失败, 'PARSE_ERROR'=HTML解析失败(需回退纯文本)
     修复 SSLError/MaxRetries 问题：
     1. 跳过不可用代理（启动时已探测）
     2. 直连失败后指数退避重试 3 次
-    3. 最终回退 SSL verify=False
-    连接超时不再对同一条直连路由连打三次，也不再改用 SSL 绕过重走同一条路由。
+    3. 仅当 BLADE_ALLOW_INSECURE_SSL=1 时才回退 SSL verify=False。
+    连接超时不再对同一条直连路由连打三次。
     """
     import time as _t
     _ensure_tg_proxy_session()
@@ -5213,7 +5222,8 @@ def _tg_post(url, payload):
     if TG_PROXIES:
         strategies.append((_TG_SESSION_PROXY, TG_PROXIES, True, TG_TIMEOUT, '代理'))
     strategies.append((_TG_SESSION_DIRECT, None, True, TG_TIMEOUT, '直连'))
-    strategies.append((_TG_SESSION_NOVERIFY, None, False, TG_TIMEOUT, 'SSL绕过'))
+    if _allow_insecure_ssl():
+        strategies.append((_TG_SESSION_NOVERIFY, None, False, TG_TIMEOUT, 'SSL绕过'))
 
     max_retries = 3
     for strat_idx, (session, proxies, verify, timeout, label) in enumerate(strategies):
@@ -5573,7 +5583,7 @@ class DeviationDrivenEngine:
             return []
 
     @staticmethod
-    def classify_and_score(ratio_data: List[Dict]) -> List[Dict]:
+    def classify_and_score(ratio_data: list[dict]) -> list[dict]:
         """按唯一 Tier 规则分级，并保留跨系统审计字段。"""
         try:
             classified_results = []
@@ -5647,7 +5657,7 @@ class DeviationDrivenEngine:
             return []
 
     @classmethod
-    def prioritize_allocation(cls, classified_results: List[Dict], total_budget: float) -> List[Dict]:
+    def prioritize_allocation(cls, classified_results: list[dict], total_budget: float) -> list[dict]:
         """排除 UNKNOWN，并按 score 权重覆盖 Tier 1 / Tier 2 全部有效选项。"""
         try:
             budget = max(0.0, float(total_budget or 0.0))
@@ -5843,7 +5853,6 @@ def clean_old_data():
                     continue
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L4801] {_silent_err}")
-                pass
         new_history[fid] = info
     if cleaned:
         save_json(HISTORY_FILE, new_history)
@@ -9024,7 +9033,6 @@ def build_kelly_odds_matrix(euro_odds_500=None, odds_1x2_dict=None, api_football
                 odds_matrix.append({'home': home, 'draw': draw, 'away': away, 'company': 'avg_1x2'})
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L6630] {_silent_err}")
-        pass
     return odds_matrix
 
 
@@ -9310,7 +9318,6 @@ def calibrate_lambdas_by_market(historical_lambda_h, historical_lambda_a, full_m
                 return float(parsed)
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L7018] {_silent_err}")
-            pass
         return None
 
     # —— 从 full_market_data 提取 API 盘口均值（可能为浅盘档位）——
@@ -9391,7 +9398,6 @@ def calibrate_lambdas_by_market(historical_lambda_h, historical_lambda_a, full_m
             print(f"   ⚠️ [软权重自洽平衡] 动态混合率调整异常，保留原权重: {_dmr_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L7098] {_silent_err}")
-            pass
 
     alpha_history = 1.0 - alpha_market
 
@@ -9419,7 +9425,6 @@ def calibrate_lambdas_by_market(historical_lambda_h, historical_lambda_a, full_m
             fused_lambda_a = max(0.1, new_a)
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L7123] {_silent_err}")
-        pass
 
     # —— 步骤3：偏移补偿只作用于融合后的 fused λ ——
     _comp_offset_h = float(offset_h or 0.0)
@@ -9467,7 +9472,6 @@ def calibrate_lambdas_by_market(historical_lambda_h, historical_lambda_a, full_m
                 final_lambda_h = max(final_lambda_h * (1.0 - _BIAS), 0.1)
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L7144] {_silent_err}")
-        pass
 
     # 深盘下限放在方向偏置之后。大小球 ≥ 3.0 时，总量不得停在「小球概率高于大球」的一侧。
     try:
@@ -9836,7 +9840,6 @@ def compute_ibi_smoothness_gradient(pool15_data, verbose=True):
                 print(f"   ⚠️ [IBI·KL散度检验] 升级层异常(已降级): {_kl_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L7605] {_silent_err}")
-                pass
 
     return result
 
@@ -10275,10 +10278,7 @@ class AsianHandicapEngine:
 
                                     net = h - a
                                     # 主让深盘，正路=主队大胜
-                                    if ah_val < 0 and net >= 2:
-                                        low_ibi_scores.append(score)
-                                    # 客让深盘，正路=客队大胜
-                                    elif ah_val > 0 and net <= -2:
+                                    if ah_val < 0 and net >= 2 or ah_val > 0 and net <= -2:
                                         low_ibi_scores.append(score)
                         except (TypeError, ValueError):
                             continue
@@ -10308,10 +10308,7 @@ class AsianHandicapEngine:
 
                                     net = h - a
                                     # 主让浅盘但主胜比分IBI高
-                                    if ah_val < 0 and net > 0:
-                                        high_ibi_scores.append(score)
-                                    # 客让浅盘但客胜比分IBI高
-                                    elif ah_val > 0 and net < 0:
+                                    if ah_val < 0 and net > 0 or ah_val > 0 and net < 0:
                                         high_ibi_scores.append(score)
                         except (TypeError, ValueError):
                             continue
@@ -11778,7 +11775,7 @@ class CrossValidationAnalysisEngine:
             try:
                 if _dscv_list:
                     _dscv_top3_txt = '、'.join(
-                        f"{str(_dr.get('score', '-'))}({float(_dr.get('score_weight', 0) or 0):.0f}分/{str(_dr.get('ibi_zone', '-') or '-')})"
+                        f"{_dr.get('score', '-')!s}({float(_dr.get('score_weight', 0) or 0):.0f}分/{_dr.get('ibi_zone', '-') or '-'!s})"
                         for _dr in _dscv_list[:3]
                     )
                     rl.append(
@@ -12121,7 +12118,6 @@ def compute_full_dimension_smoothness(pool15_enriched, ah_signal=None, direction
             print(f"   ⚠️ [全维度·KS检验] 升级层异常(已降级): {_ks_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L9028] {_silent_err}")
-            pass
 
     result['report_text'] = "\n".join(report_lines)
 
@@ -12180,8 +12176,7 @@ def update_strategy_weights(candidate_pool, overflow_candidates, direction_lock_
     max_weight = 0.0
     for item in candidate_pool:
         w = float(item.get('weight_multiplier', 1.0) or 1.0)
-        if w > max_weight:
-            max_weight = w
+        max_weight = max(max_weight, w)
     # 将受保护项的权重提升至主力权重的 90%（形成"顺势"决策）
     boost_weight = max(max_weight * 0.90, 1.0)
     boosted_scores = []
@@ -12280,7 +12275,6 @@ def execute_ibi_gradient_analysis(matrix_df, current_stage=None):
                 return _cached
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L9163] {_silent_err}")
-        pass
     if PipelineLifecycle.is_post_gate():
         print("   🛡️ [Lifecycle Lock] 强行拦截最末端特征回流套娃异常，直接吐出只读快照。")
         return None
@@ -12442,7 +12436,6 @@ def unified_account_checklist(first_score, second_score, match_context):
                 result['checklist_items'].append(f"⚖️ 纳什均衡判定异常(已降级): {_nash_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L9324] {_silent_err}")
-                pass
 
         return result
     except Exception as e:
@@ -13508,7 +13501,6 @@ class AdvancedGameModel(CoreQuantEngine):
                 }
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L10357] {_silent_err}")
-                pass
             return 0.0
 
     @classmethod
@@ -13637,7 +13629,6 @@ class AdvancedGameModel(CoreQuantEngine):
             self._refresh_ability_params()
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L10475] {_silent_err}")
-            pass
         return {
             'updated': True,
             'home_team': home_name,
@@ -14030,11 +14021,7 @@ class AdvancedBayesianEngine(AdvancedGameModel):
                     if exact_score in JCZQ_VALID_SET or '-' not in exact_score:
                         continue
                     home_goals, away_goals = parse_score(exact_score)
-                    if normalized_score == '胜其它' and home_goals > away_goals:
-                        probability += float(value or 0.0)
-                    elif normalized_score == '平其它' and home_goals == away_goals:
-                        probability += float(value or 0.0)
-                    elif normalized_score == '负其它' and home_goals < away_goals:
+                    if normalized_score == '胜其它' and home_goals > away_goals or normalized_score == '平其它' and home_goals == away_goals or normalized_score == '负其它' and home_goals < away_goals:
                         probability += float(value or 0.0)
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·continue降级 L10854] {_silent_err}")
@@ -14573,7 +14560,6 @@ def derive_markets_from_matrix(prob_dict, asian_handicap=None, ou_line=None,
             print(f"   ⚠️ [衍生盘口·真实λ同步] 泊松解析解异常，已安全降级为矩阵反推: {_ou_lam_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L12001] {_silent_err}")
-            pass
 
     # 【问题1修复·方向一致性自检】
     # 衍生盘口公式本身正确（adjusted_net=net+_ah，_ah<0 主让；total>_ou 大球）。
@@ -14607,7 +14593,6 @@ def derive_markets_from_matrix(prob_dict, asian_handicap=None, ou_line=None,
                 print(f"   ⚠️ [衍生盘口·方向自检] {sanity['note']}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L12034] {_silent_err}")
-                pass
         result['direction_sanity'] = sanity
     except Exception:
         result['direction_sanity'] = {'ah_conflict': False, 'ou_conflict': False, 'note': ''}
@@ -14910,7 +14895,7 @@ def _calc_total_goals_market_features(tg_implied_probs, tg_avg_odds):
         for key, value in tg_avg_odds.items():
             v = MathUtils.safe_float(value)
             if v is not None:
-                features[f'tg_avg_odds_{str(key)}'] = v
+                features[f'tg_avg_odds_{key!s}'] = v
     return features
 
 
@@ -15707,7 +15692,6 @@ def calc_dti(asian_handicap, cold_score, recent_draw_rate=0.25, league_name='',
     except Exception as _silent_err:
         # 兼容性兜底，任意异常均退回原始 DTI
         print(f"   ⚠️ [异常已捕获·pass降级 L13056] {_silent_err}")
-        pass
 
     # DTI 偏差惩罚 + 混合公式：
     #   ① DTI_new = DTI * (1 + |λ_home - λ_away| / (λ_home + λ_away))   ← 对λ偏差放大DTI
@@ -15728,7 +15712,6 @@ def calc_dti(asian_handicap, cold_score, recent_draw_rate=0.25, league_name='',
                 dti = max(0.02, min(0.95, dti))
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L13076] {_silent_err}")
-        pass
 
     # 【改进#1】DTI 实际比分离散度惩罚：DTI_new = DTI × exp(-|实际总进球 - 预期总进球| / 2)
     # - 回测/复盘阶段：传入 actual_total_goals 与 expected_total_goals，按实际偏差缩放；
@@ -15748,7 +15731,6 @@ def calc_dti(asian_handicap, cold_score, recent_draw_rate=0.25, league_name='',
             dti = max(0.02, min(0.95, dti * penalty))
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L13095] {_silent_err}")
-        pass
 
     return round(max(0.02, min(0.95, dti)), 3)
 
@@ -15978,7 +15960,6 @@ def apply_dynamic_lambda_adjustments(lam_h, lam_a, dynamic_context=None,
             lam_h_new *= 1.15
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L13324] {_silent_err}")
-        pass
 
     if aggressive_bias > 0:
         multi = 1.0 + aggressive_bias * 0.08
@@ -16060,7 +16041,6 @@ def apply_dynamic_lambda_adjustments(lam_h, lam_a, dynamic_context=None,
                     lam_a_new = (1.0 - blend_w) * lam_a_new + blend_w * lam_a_logit
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L13405] {_silent_err}")
-        pass
 
     # ==========================================================================
     # 💰 【漏洞2修复·隔离“基础托举”与“残差修正”】
@@ -16557,7 +16537,6 @@ def v10_anti_reverse_engineering_engine(pool15_data, kelly_variance_data=None,
 
     返回: dict, 包含所有分析结果
     """
-    import math
 
     # ── 安全初始化 ──
     result = {
@@ -16950,7 +16929,7 @@ class V14ScoreNode:
 @dataclass
 class TargetMatchContext:
     match_id: str
-    raw_31_data: List[Dict[str, float]]
+    raw_31_data: list[dict[str, float]]
 
 
 # ==========================================================================
@@ -16987,7 +16966,7 @@ class ScoreClusterGrouping:
     }
 
     @staticmethod
-    def _build_score_index(raw_data: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+    def _build_score_index(raw_data: list[dict[str, float]]) -> dict[str, dict[str, float]]:
         """将 raw_data 列表归一化为 {score: {theory_p, market_p, delta, ibi}} 索引。
         对比分键做 replace(':','-') 归一化，避免冒号/横杠不一致。
         """
@@ -17009,8 +16988,8 @@ class ScoreClusterGrouping:
         return idx
 
     @classmethod
-    def _compute_group_gradient(cls, group_scores: List[str],
-                                score_idx: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+    def _compute_group_gradient(cls, group_scores: list[str],
+                                score_idx: dict[str, dict[str, float]]) -> dict[str, Any]:
         """对一个有序组计算组内相邻比分的四维梯度（增减）特征向量。
         返回：
           {
@@ -17052,7 +17031,7 @@ class ScoreClusterGrouping:
         }
 
     @classmethod
-    def build_dual_axis_features(cls, raw_data: List[Dict[str, float]]) -> Dict[str, Any]:
+    def build_dual_axis_features(cls, raw_data: list[dict[str, float]]) -> dict[str, Any]:
         """主入口：对 raw_data 同时按方向维度(8组)与分差维度(6组)生成组内梯度特征向量。
         全程 try/except 降级保护：异常时返回空结构，不影响主流程。
         """
@@ -17260,7 +17239,6 @@ class BetfairSqueezeAnalyzer:
                 print(f"   \u26a0\ufe0f [量价背离β] 计算异常(已降级): {_vpd_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L14677] {_silent_err}")
-                pass
         return result
 
 
@@ -17748,7 +17726,9 @@ class RankTrackingMatrix:
                 _bait_cnt = len(_surviving_baits)
                 _bait_ratio = (_bait_cnt / _total_pool) if _total_pool > 0 else 0.0
                 try:
-                    from blade_deepseek_pipeline import check_rtm_collapse_guard as _rtm_guard
+                    from blade_deepseek_pipeline import (
+                        check_rtm_collapse_guard as _rtm_guard,
+                    )
                     _collapse, _collapse_scores = _rtm_guard(
                         {'bait_ratio': _bait_ratio}, lambda_home, lambda_away,
                     )
@@ -17903,7 +17883,6 @@ class RankTrackingMatrix:
                     print(f"   ⚠️ [RTM贝叶斯后验顺位] 升级层异常(已降级，不影响原矩阵): {_bayes_err}")
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L15227] {_silent_err}")
-                    pass
             result['ok'] = True
         except Exception as _e:
             result['error'] = str(_e)
@@ -18496,7 +18475,6 @@ class BettingStrategyExpertSystem:
                         final_utility *= (1.0 + 0.10 * _grad_info.get('smooth_score', 0.5))
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L15829] {_silent_err}")
-                pass
             # 【全维度合理性效用奖励】
             try:
                 _fdim_info = _full_dim_map.get(score)
@@ -18507,7 +18485,6 @@ class BettingStrategyExpertSystem:
                         final_utility *= 0.80  # 多维异常：-20%
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L15839] {_silent_err}")
-                pass
             if ledger_status == "危险区":
                 final_utility *= 0.5  # 危险区打半
 
@@ -18836,7 +18813,6 @@ class SkillMatchingEngine:
             feat['viscosity'] = str(match_data.get('match_viscosity', '') or '').upper()
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L16167] {_silent_err}")
-            pass
         return feat
 
     # 比较符号映射
@@ -19191,7 +19167,6 @@ class SkillMatchingEngine:
                     print(f"   ⚠️ [技能匹配·贝叶斯置信传播] 升级层异常(已降级): {_bp_err}")
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L16521] {_silent_err}")
-                    pass
         except Exception as _me:
             _result['error'] = str(_me)
             _result['summary'] = f'智能技能匹配引擎: 匹配异常(已降级) {_me}'
@@ -19533,7 +19508,6 @@ class MLEBivariatePoissonEngine:
                     best = res_lb
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L17026] {_silent_err}")
-                pass
         if best is None or not (float(best.fun) < 1e5):
             # scipy 不可用/优化失败：网格粗搜索兜底（仍是MLE思想，非代数反推）
             grid_best, grid_loss = None, float('inf')
@@ -20335,7 +20309,6 @@ def robust_feature_tensor_imputation(features_dict, match_context):
             print(f"   ⚠️ [robust_feature_tensor_imputation] 张量替补异常(已跳过): {_rfit_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L17907] {_silent_err}")
-            pass
 
     return features_dict
 
@@ -20427,14 +20400,12 @@ def build_synthetic_soft_output(pool15_enriched=None, prob_dict=None,
                   + " | 信号源=泊松0.5+DPS0.3+pool15·0.2（仅供KNN/MoE参照，不决策）")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L17996] {_silent_err}")
-            pass
         return _out
     except Exception as _syn_err:
         try:
             print(f"   ⚠️ [合成软输出] 构造异常(已降级): {_syn_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L18002] {_silent_err}")
-            pass
         _out["reason"] = f"合成软输出异常: {_syn_err}"
         return _out
 
@@ -20519,7 +20490,7 @@ class PhaseSpaceAnalyzer:
 class DynamicPoolSelector:
     """结合相空间定性，强制提权危险探针，剪枝僵尸节点，交付高纯度15池"""
     @staticmethod
-    def process_and_filter(raw_data: List[Dict[str, float]],
+    def process_and_filter(raw_data: list[dict[str, float]],
                            first_score: str = None, second_score: str = None,
                            rtm_result: dict = None):
         # 【全维度顺位追踪矩阵·精算表】解析铁锚/诱饵/物理奇点，作为提权/降权依据
@@ -20596,7 +20567,6 @@ class DynamicPoolSelector:
                 print(f"   ⚠️ [KMeans聚类] 降级跳过: {_ce}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L18291] {_silent_err}")
-                pass
 
         # 【全维度顺位追踪矩阵·精算表】提权/降权修正：
         # 铁锚→强制提为最高优先级(1)；诱饵/物理奇点→强制降为最低优先级(3)。
@@ -20613,7 +20583,6 @@ class DynamicPoolSelector:
                       f"物理奇点{sorted(_dps_singularity_set) or '无'}↓")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L18307] {_silent_err}")
-                pass
 
         # 基础按理论概率降序
         nodes.sort(key=lambda x: x.theory_p, reverse=True)
@@ -20721,7 +20690,6 @@ def compute_are_and_risk_chain(ranked_scores, prob_dict, odds_correct_score,
             result['final_result'] = '客胜'
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L18781] {_silent_err}")
-        pass
 
     # === 反逆向工程引擎(ARE) ===
     _are_result = None
@@ -21605,7 +21573,6 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
             )
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L19072] {_silent_err}")
-        pass
 
     # 将剪枝后的概率作为后续15进2与博弈论过滤的真实输入
     prob_dict = pruned_prob_dict
@@ -21667,14 +21634,12 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
             anomaly_payload_out.update(anomaly_pipeline_payload)
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L19133] {_silent_err}")
-            pass
     elif isinstance(anomaly_payload_out, list):
         try:
             anomaly_payload_out.clear()
             anomaly_payload_out.append(anomaly_pipeline_payload)
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L19139] {_silent_err}")
-            pass
     # ===== 【竞彩足球官方比分范围】严格限制为31种标准比分 ======
     # 使用全局常量 JCZQ_STANDARD_SCORES，超出范围的概率归入"其它"类
     BASE_31 = JCZQ_STANDARD_SCORES  # 28种标准比分 + 其它类
@@ -21921,19 +21886,11 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
                 _sig_multiplier = 0.1
 
         # Step1庄家敞口信号
-        if exposure_direction == 'home' and direction == 'Home':
-            support += 0.3
-        elif exposure_direction == 'away' and direction == 'Away':
-            support += 0.3
-        elif exposure_direction == 'draw' and direction == 'Draw':
+        if exposure_direction == 'home' and direction == 'Home' or exposure_direction == 'away' and direction == 'Away' or exposure_direction == 'draw' and direction == 'Draw':
             support += 0.3
         if exposure_score and s == exposure_score:
             support += 0.5
-        if defense_focus == 'home_win' and direction == 'Home':
-            support += 0.3
-        elif defense_focus == 'away_win' and direction == 'Away':
-            support += 0.3
-        elif defense_focus == 'draw' and direction == 'Draw':
+        if defense_focus == 'home_win' and direction == 'Home' or defense_focus == 'away_win' and direction == 'Away' or defense_focus == 'draw' and direction == 'Draw':
             support += 0.3
 
         # 泊松概率内部排名奖励（侧重数学模型而非市场）
@@ -21958,13 +21915,9 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
             elif ah_trajectory == 'home_weaken' and ou_trajectory == 'over_strengthen':
                 if direction == 'Away' and total_g >= 3:
                     support += 2
-        elif ah_trajectory == 'home_strengthen' and direction == 'Home':
+        elif ah_trajectory == 'home_strengthen' and direction == 'Home' or ah_trajectory == 'home_weaken' and direction == 'Away':
             support += 1
-        elif ah_trajectory == 'home_weaken' and direction == 'Away':
-            support += 1
-        if ou_trajectory == 'under_strengthen' and total_g <= 2:
-            support += 1
-        elif ou_trajectory == 'over_strengthen' and total_g >= 3:
+        if ou_trajectory == 'under_strengthen' and total_g <= 2 or ou_trajectory == 'over_strengthen' and total_g >= 3:
             support += 1
 
         # 【复盘改进#5】统一乘上 sigmoid(DTI_new,fusion_strength) 信号乘子
@@ -22089,11 +22042,7 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
 
         # ① Step1 庄家敞口方向加权：庄家敞口方向与比分方向一致
         exposure_match = False
-        if exposure_direction == 'home' and direction == 'Home':
-            exposure_match = True
-        elif exposure_direction == 'away' and direction == 'Away':
-            exposure_match = True
-        elif exposure_direction == 'draw' and direction == 'Draw':
+        if exposure_direction == 'home' and direction == 'Home' or exposure_direction == 'away' and direction == 'Away' or exposure_direction == 'draw' and direction == 'Draw':
             exposure_match = True
         if exposure_match:
             gt_score += 0.06
@@ -22101,11 +22050,7 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
 
         # ② 庄家防守重点加权：防守重点与比分方向一致时加权
         defense_match = False
-        if defense_focus == 'home_win' and direction == 'Home':
-            defense_match = True
-        elif defense_focus == 'away_win' and direction == 'Away':
-            defense_match = True
-        elif defense_focus == 'draw' and direction == 'Draw':
+        if defense_focus == 'home_win' and direction == 'Home' or defense_focus == 'away_win' and direction == 'Away' or defense_focus == 'draw' and direction == 'Draw':
             defense_match = True
         if defense_match:
             gt_score += 0.03
@@ -22281,9 +22226,7 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
             signal_weight *= 1.5
         signal_triggered = False
         if ah_trajectory != 'neutral' or ou_trajectory != 'neutral':
-            if ah_trajectory == 'home_strengthen' and direction == 'Home':
-                signal_triggered = True
-            elif ah_trajectory == 'home_weaken' and direction == 'Away':
+            if ah_trajectory == 'home_strengthen' and direction == 'Home' or ah_trajectory == 'home_weaken' and direction == 'Away':
                 signal_triggered = True
             if ou_trajectory == 'under_strengthen' and total_goals <= 2:
                 models_hit.append('信号小')
@@ -23140,7 +23083,6 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
             composite = float(composite) * float(_first_w)
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L20566] {_silent_err}")
-            pass
 
         final_scores[s] = {
             'composite': composite,
@@ -23422,7 +23364,6 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
             group_display = _bp3_note + "\n" + group_display
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L20939] {_silent_err}")
-        pass
 
     # 【LLM 数据静默逻辑已删除】不再篡改 prob_dict，直接向 LLM 提供真实的推演结论。
 
@@ -23566,7 +23507,6 @@ def ai_extract_from_page(page_text):
                     return obj
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L21031] {_silent_err}")
-                pass
             # 向后兼容：老格式直接返回数组文本，走原有正则提取逻辑
             match = re.search(r'\[(.*?)\]', content, re.DOTALL)
             if match:
@@ -23615,7 +23555,6 @@ def _500_clean_line(s):
             return -val if is_shou else val
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L21078] {_silent_err}")
-            pass
     slash_m = re.search(r'(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)', s_clean)
     if slash_m:
         val = (float(slash_m.group(1)) + float(slash_m.group(2))) / 2
@@ -23864,7 +23803,8 @@ def _500_parse_total_goals_table(soup):
 def scrape_500_detail(fixture_id_500, proxies=None):
     """手机澳客失败后的 500 析页兜底。委托 odds_fallback，禁止标 channel=mobile。"""
     try:
-        from odds_fallback import odds_fallback_enabled, scrape_500_detail as _fb_500
+        from odds_fallback import odds_fallback_enabled
+        from odds_fallback import scrape_500_detail as _fb_500
         if not odds_fallback_enabled():
             return {}
         return _fb_500(fixture_id_500, proxies=proxies) or {}
@@ -23878,38 +23818,30 @@ def scrape_500_detail(fixture_id_500, proxies=None):
 # 手机比分市均：独立模块 okooo_mobile_cs（竞足预热→/cs/ 302体，allow_redirects=False）
 try:
     import importlib
+
     import okooo_mobile_cs as _okooo_cs_mod
     if not hasattr(_okooo_cs_mod, 'six_market_fetch_blocked'):
         _okooo_cs_mod = importlib.reload(_okooo_cs_mod)
-    from okooo_mobile_cs import (  # noqa: E402
-        _okooo_apply_cs_pack_to_result,
+    from okooo_mobile_cs import (
         _okooo_apply_jc_score_fill,
-        _okooo_compute_cs_books_avg,
-        _okooo_decode_html,
-        _okooo_default_proxies,
-        _okooo_mobile_ua,
         _okooo_only_data_mode,
-        _okooo_pace_request,
-        _okooo_parse_cs_page,
-        _okooo_pick_proxy,
+        apply_mobile_books_lines,
         build_score_market_heat_ranking,
         detect_six_market_contradictions,
         finish_match_water_scrape,
         load_six_market_contradictions,
         missing_six_market_waters,
         save_six_market_contradictions,
-        apply_mobile_books_lines,
         scrape_okooo_mobile_ah_ou_books,
-        seed_mobile_ah_ou_books,
         scrape_okooo_mobile_cs_zuizhi,
         scrape_okooo_mobile_exchange_pnl,
         scrape_okooo_mobile_lineup,
         scrape_okooo_mobile_six_markets,
+        seed_mobile_ah_ou_books,
     )
     six_market_fetch_blocked = getattr(_okooo_cs_mod, 'six_market_fetch_blocked', None)
     if not callable(six_market_fetch_blocked):
-        def six_market_fetch_blocked(rec):
-            return False
+        six_market_fetch_blocked = lambda rec: False
 except Exception as _okooo_cs_imp_err:
     print(f"   ⚠️ [澳客手机CS] 模块加载失败: {_okooo_cs_imp_err}")
 
@@ -24042,7 +23974,13 @@ def _okooo_http_get(url, headers=None, timeout=15, proxies=None):
     _proxy_try = proxies if proxies is not None else (_local_proxies() or _DIRECT_PROXIES)
     for _px in [_proxy_try, None]:
         try:
-            resp = session.get(url, headers=_headers, proxies=_px, timeout=timeout, verify=False)
+            resp = session.get(
+                url,
+                headers=_headers,
+                proxies=_px,
+                timeout=timeout,
+                verify=not _allow_insecure_ssl(),
+            )
             if _okooo_list_page_ok(url, resp):
                 return resp
         except Exception:
@@ -24811,7 +24749,7 @@ def _attach_mobile_ah_ou_books(rec, match_id, proxies=None):
             'changes_direction': False,
         }
     rec['mobile_ah_ou_books'] = pack
-    ah_n = len(((pack.get('asian_handicap') or {}).get('companies') or []))
+    ah_n = len((pack.get('asian_handicap') or {}).get('companies') or [])
     ou_pack = pack.get('over_under') or {}
     ou_companies = ou_pack.get('companies') or []
     ou_n = len(ou_companies)
@@ -25179,7 +25117,9 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                     _ensure_mobile_six(rec, mid)
                     # 手机市均抓到后也必须走双源互补，确认比分进入整合包
                     try:
-                        from odds_fallback import ensure_dual_source_before_judgment as _ensure_dual
+                        from odds_fallback import (
+                            ensure_dual_source_before_judgment as _ensure_dual,
+                        )
                         _gate = _ensure_dual(rec)
                         print(
                             f"   ✅ [双源互补] ready={_gate.get('ready')} "
@@ -25211,7 +25151,7 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
             if _fenxi.get('available'):
                 _notes = _fenxi.get('analysis_notes') or []
                 print(
-                    f"   ✅ [500析页] pages={len((_fenxi.get('pages') or {}))} "
+                    f"   ✅ [500析页] pages={len(_fenxi.get('pages') or {})} "
                     f"notes={len(_notes)} channel=fallback_500"
                 )
                 for _n in _notes[:4]:
@@ -25228,12 +25168,14 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                 f"fenxi={bool(_fenxi.get('available'))}"
             )
             try:
-                from odds_fallback import ensure_dual_source_before_judgment as _ensure_dual
+                from odds_fallback import (
+                    ensure_dual_source_before_judgment as _ensure_dual,
+                )
                 _gate = _ensure_dual(rec)
                 print(
                     f"   ✅ [双源互补] ready={_gate.get('ready')} "
                     f"mobile_cs_entered={_gate.get('mobile_cs_entered')} "
-                    f"fill500={len((_gate.get('filled_from_500') or []))} "
+                    f"fill500={len(_gate.get('filled_from_500') or [])} "
                     f"reason={_gate.get('reason')}"
                 )
             except Exception as _dual_fb_e:
@@ -25382,7 +25324,9 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
     )
     # 抓取结束即做双源整合骨架：手机市均必须进入 dual_source_facts（500 在 analyze 再并入）
     try:
-        from odds_fallback import ensure_dual_source_before_judgment as _ensure_dual_scrape
+        from odds_fallback import (
+            ensure_dual_source_before_judgment as _ensure_dual_scrape,
+        )
         _gate_sc = _ensure_dual_scrape(result)
         if _gate_sc.get('mobile_cs_entered'):
             print(
@@ -25435,9 +25379,11 @@ def scrape_betfair_profit_loss(match_info):
     Returns:
         dict: 必发盈亏数据结构
     """
-    import urllib3
     from bs4 import BeautifulSoup
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    _verify_tls = not _allow_insecure_ssl()
+    if not _verify_tls:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     result = {
         'available': False,
@@ -25464,7 +25410,7 @@ def scrape_betfair_profit_loss(match_info):
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     }
     _max_retries = 2
-    _timeout = 15
+    _verify_tls = not _allow_insecure_ssl()
     
     def _request_with_retry(url, headers=None, timeout=15, referer=None):
         """代理端口活着才走 7897，拒绝连接时改直连，不把环境代理再带上。"""
@@ -25477,7 +25423,7 @@ def scrape_betfair_profit_loss(match_info):
             for _px in _http_routes():
                 try:
                     resp = requests.get(url, headers=_h, proxies=_px,
-                                       timeout=timeout, verify=False)
+                                       timeout=timeout, verify=_verify_tls)
                     if resp.status_code == 200:
                         return resp
                 except Exception:
@@ -26127,7 +26073,7 @@ class TelegramReportGenerator:
         try:
             response = requests.post(self.api_url, json=payload, timeout=10)
             response.raise_for_status()
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException:
             # 静默处理或对接系统的错误日志模块
             pass
 # ================== 【END TelegramReportGenerator】 ==================
@@ -26204,7 +26150,6 @@ def build_topology_json_payload(match_name, home_team, away_team, asian_handicap
     Returns:
         dict: 空间拓扑与流动性账本 JSON payload，异常时返回 None
     """
-    import json as _json
     from datetime import datetime as _dt
 
     try:
@@ -26529,11 +26474,13 @@ def get_official_matches():
         ]
 
         def _safe_get(url, headers, timeout=20):
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            _verify_tls = not _allow_insecure_ssl()
+            if not _verify_tls:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             for proxies in _PROXIES_LIST:
                 try:
-                    return requests.get(url, headers=headers, timeout=timeout, proxies=proxies, verify=False)
+                    return requests.get(url, headers=headers, timeout=timeout, proxies=proxies, verify=_verify_tls)
                 except Exception:
                     continue
             return None
@@ -26686,7 +26633,6 @@ def _csp_get_runtime_setting(name, default):
             return val
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L23166] {_silent_err}")
-        pass
     return default
 
 
@@ -26772,7 +26718,6 @@ def _build_csp_pipeline_summary(state):
 
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L23251] {_silent_err}")
-            pass
         return '\n'.join(lines)
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·return ''降级 L23254] {_silent_err}")
@@ -27149,7 +27094,6 @@ def _normalize_odds_snapshot(odds_dict):
                 continue
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L23635] {_silent_err}")
-        pass
     return snapshot
 
 
@@ -27279,7 +27223,6 @@ def analyze_odds_movement(prev_snapshot, curr_snapshot):
                 )
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L23765] {_silent_err}")
-            pass
 
         result.update({
             'available': True,
@@ -27296,7 +27239,6 @@ def analyze_odds_movement(prev_snapshot, curr_snapshot):
             print(f"   \u26a0\ufe0f [赔率波动分析] 异常(已降级): {_aom_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L23781] {_silent_err}")
-            pass
     return result
 
 
@@ -27357,7 +27299,6 @@ def build_odds_movement_tg_section(movement_result, prev_time='', curr_time='',
                     _lines.append(f"   ⚠️ 一致性检验：最大降幅比分【{_max_drop}】与当前预测【{_pred}】不一致，需警惕资金背离")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L23841] {_silent_err}")
-            pass
 
         # 方向性研判
         _verdict = movement_result.get('direction_verdict', '') or '数据不足'
@@ -27374,7 +27315,6 @@ def build_odds_movement_tg_section(movement_result, prev_time='', curr_time='',
                 )
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L23857] {_silent_err}")
-            pass
 
         return "\n".join(_lines)
     except Exception as _bom_err:
@@ -27382,7 +27322,6 @@ def build_odds_movement_tg_section(movement_result, prev_time='', curr_time='',
             print(f"   \u26a0\ufe0f [赔率波动TG段落] 拼装异常(已降级): {_bom_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L23864] {_silent_err}")
-            pass
         return ""
 
 
@@ -27449,7 +27388,6 @@ def _compute_ibi_series_from_snapshot(snapshot, theory_probs=None):
                 ibi_map[_s] = round(_p_mkt / (1.0 / max(len(_inv), 1)), 4)
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L23930] {_silent_err}")
-        pass
     return ibi_map
 
 
@@ -27596,7 +27534,6 @@ def analyze_ibi_derivative(ibi_timeline, theory_probs=None):
             print(f"   \u26a0\ufe0f [IBI动能雷达] 求导异常(已降级): {_ibi_deriv_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L24076] {_silent_err}")
-            pass
     return result
 
 
@@ -27753,7 +27690,6 @@ def analyze_cross_market_hologram(odds_1x2_dict=None, asian_handicap=None,
             print(f"   \u26a0\ufe0f [跨盘口全息雷达] 异常(已降级): {_cmh_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L24232] {_silent_err}")
-            pass
     return result
 
 
@@ -27873,7 +27809,6 @@ def analyze_micro_granularity_deception(pool15_enriched=None, asian_handicap=Non
             print(f"   \u26a0\ufe0f [微观颗粒度] 异常(已降级): {_mgd_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L24355] {_silent_err}")
-            pass
     return result
 
 
@@ -29451,11 +29386,11 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                     str(second_score or ''),
                     str(big_small or ''),
                     str(pred_dir_str or ''),
-                    _hashlib_pipe.md5(
+                    _hashlib_pipe.sha256(
                         (tg_report or '').encode('utf-8', 'ignore')
                     ).hexdigest(),
                 ])
-                history[fid]['tg_report_sig'] = _hashlib_pipe.md5(
+                history[fid]['tg_report_sig'] = _hashlib_pipe.sha256(
                     _sig_payload.encode('utf-8', 'ignore')
                 ).hexdigest()
                 if second_score:
@@ -29853,14 +29788,12 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
             PipelineLifecycle.advance("INITIALIZATION")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L24530] {_silent_err}")
-            pass
         # 该容器会贯穿 12 个阶段，最终作为 Telegram 报告 / Step3 prompt 的唯一数据源。
         # 🔒 Pipeline Lock：重置特征空间快照（每场比赛独立）
         try:
             FeatureSpaceSnapshot.reset()
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L24536] {_silent_err}")
-            pass
         try:
             csp_pipeline = build_csp_pipeline_state(
                 fid=fid, cn_name=cn_name, league_name=league_name,
@@ -29912,7 +29845,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                                 odds_1x2_dict['Away'] = float(v['odd'])
                         except Exception as _silent_err:
                             print(f"   ⚠️ [异常已捕获·pass降级 L24679] {_silent_err}")
-                            pass
                 elif bet['name'] == 'Goals Over/Under' and len(bet['values']) >= 2:
                     try:
                         ou_line = standardize_ou_line(float(str(bet['values'][0]['value']).replace('Over ', '').replace('Under ', '')))
@@ -29942,7 +29874,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                                 odds_correct_score[score_val] = float(v['odd'])
                         except Exception as _silent_err:
                             print(f"   ⚠️ [异常已捕获·pass降级 L24708] {_silent_err}")
-                            pass
 
         # ===== 【新增】500彩票网详情页数据抓取（优先级最高） =====
         data_500 = {}
@@ -29970,7 +29901,8 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
             try:
                 # 析·数据分析：积分/交锋/近况/场均/赛程/阵型 → fallback_500_shuju（研判事实，不写 first_score）
                 try:
-                    from odds_fallback import attach_500_shuju_to_rec, odds_fallback_enabled as _fb_on
+                    from odds_fallback import attach_500_shuju_to_rec
+                    from odds_fallback import odds_fallback_enabled as _fb_on
                     if _fb_on() and isinstance(rec, dict):
                         rec['fixture_id_500'] = fixture_id_500
                         _shuju_pack = attach_500_shuju_to_rec(rec, force=False)
@@ -30004,7 +29936,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                         _sj = _clean.get('shuju') if isinstance(_clean, dict) else None
                         if isinstance(rec, dict) and isinstance(_sj, dict) and _sj.get('available'):
                             if not (isinstance(rec.get('fallback_500_shuju'), dict) and rec['fallback_500_shuju'].get('available')):
-                                from odds_fallback import attach_500_shuju_to_rec as _att
                                 # 已在上面抓过；此处仅在 fenxi 内嵌 shuju 可用且 rec 空时回填
                                 rec['fallback_500_shuju'] = {
                                     'available': True,
@@ -30436,7 +30367,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 print(f"      ⚠️ [robust_feature_tensor_imputation·API精确覆盖] 调用异常(已跳过): {_rfit_api2_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L25035] {_silent_err}")
-                pass
 
         _mle_base_result = None
         if odds_1x2_dict:
@@ -30454,7 +30384,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                     )
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L25052] {_silent_err}")
-                pass
         elif pred_home_pct is not None and pred_away_pct is not None:
             # 次选：将API方向百分比作为1x2隐含概率喂给同一MLE基座（魔法乘数×2.5已废弃）
             try:
@@ -30557,7 +30486,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 print(f"      ⚠️ [近期状态] 近期状态因子处理异常已跳过: {_e_recent}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L25152] {_silent_err}")
-                pass
 
         # =====================================================
         # 【LambdaCalibrator】λ 逆向推导校准器
@@ -30650,7 +30578,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 print(f"      ⚠️ [Shannon Entropy Guard] 防火墙异常已跳过: {_e_shannon}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L25224] {_silent_err}")
-                pass
             _shannon_guard = {
                 'poisoned': False, 'mode': None, 'entropy': None,
                 'ou_line': None, 'penalty_weight': 1.0,
@@ -30799,7 +30726,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                         print(f"      ⚠️ [Shannon Entropy Guard·降权锁] 应用异常已跳过: {_e_lock}")
                     except Exception as _silent_err:
                         print(f"   ⚠️ [异常已捕获·pass降级 L25393] {_silent_err}")
-                        pass
 
                 _sample_n = len(_calib_full_markets) if _calib_full_markets else (1 if _ref_ah_for_calib is not None else 0)
                 lambda_calibration_payload.update({
@@ -30848,7 +30774,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                     )
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L25439] {_silent_err}")
-                    pass
             else:
                 if not lambda_calibration_payload.get('reason'):
                     lambda_calibration_payload['reason'] = '无澳客 AH/OU 真值盘口，已优雅降级返回原始 λ'
@@ -30856,7 +30781,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                     print(f"      ℹ️ [LambdaCalibrator] {lambda_calibration_payload['reason']}")
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L25446] {_silent_err}")
-                    pass
         except Exception as _e_lambda_calib:
             lambda_calibration_payload['available'] = False
             lambda_calibration_payload['reason'] = f'LambdaCalibrator 异常: {_e_lambda_calib}'
@@ -30864,7 +30788,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 print(f"      ⚠️ [LambdaCalibrator] 异常已跳过: {_e_lambda_calib}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L25453] {_silent_err}")
-                pass
 
         # =====================================================
         # 【架构升级·λ校准系统性偏移检测（记录侧）】
@@ -30907,7 +30830,6 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 print(f"      ⚠️ [λ偏移补偿] 异常(已降级跳过): {_lbc_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L25499] {_silent_err}")
-                pass
 
         # =====================================================================
         # 【进球期望校准】泊松矩阵之前。手机大小球 ≥ 3.0 且 λ 总量低于该盘泊松均衡下限时，
@@ -31038,7 +30960,7 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
         feature_completeness = feature_vector.get('feature_completeness_ratio', 0.0)
         # ml_prediction 统一保存机器学习训练状态、预测结果与回退原因，便于历史记录和UI展示复用
         ml_prediction = {
-            'enabled': bool(False),
+            'enabled': False,
             'used': False,
             'reason': '',
             'training_status': '',
@@ -31804,7 +31726,6 @@ trap_signal: true/false（是否存在陷阱信号）
                         }
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L26363] {_silent_err}")
-                    pass
         except Exception as _bf_inject_err:
             print(f"   ⚠️ [必发增益·末端注入] 异常，安全跳过: {_bf_inject_err}")
 
@@ -32976,7 +32897,6 @@ trap_signal: true/false（是否存在陷阱信号）
                 )
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L27304] {_silent_err}")
-                pass
 
         game_theory_log = game_theory_note  # 保存博弈论日志
 
@@ -33015,7 +32935,7 @@ Top5比分及概率：
 {'【500网总进球市场】' + chr(10) + tg_market_text if tg_market_text else ''}
 {'【近期战绩】' + chr(10) + recent_form_text if recent_form_text else ''}
 {'【伤停信息】' + chr(10) + injury_text if injury_text else ''}
-{'【衍生盘口映射】' + chr(10) + f"1X2概率: 主{derived_markets['1x2']['home']:.1%}/平{derived_markets['1x2']['draw']:.1%}/客{derived_markets['1x2']['away']:.1%}" + chr(10) + f"大小球{standardize_ou_line(ou_line)}: 大{derived_markets['ou']['over']:.1%}/小{derived_markets['ou']['under']:.1%}" + (chr(10) + "总进球分布Top4: " + ' / '.join([f"{str(k)}球:{v:.1%}" for k, v in sorted(derived_markets.get('total_goals', {}).items(), key=lambda x: x[1], reverse=True)[:4]]) if derived_markets.get('total_goals') else '') + (chr(10) + f"亚盘{standardize_ah_line(asian_handicap)}: 主{derived_markets['ah']['home_win']:.1%}/走{derived_markets['ah']['draw']:.1%}/客{derived_markets['ah']['away_win']:.1%}" if asian_handicap else '') if derived_markets else ''}
+{'【衍生盘口映射】' + chr(10) + f"1X2概率: 主{derived_markets['1x2']['home']:.1%}/平{derived_markets['1x2']['draw']:.1%}/客{derived_markets['1x2']['away']:.1%}" + chr(10) + f"大小球{standardize_ou_line(ou_line)}: 大{derived_markets['ou']['over']:.1%}/小{derived_markets['ou']['under']:.1%}" + (chr(10) + "总进球分布Top4: " + ' / '.join([f"{k!s}球:{v:.1%}" for k, v in sorted(derived_markets.get('total_goals', {}).items(), key=lambda x: x[1], reverse=True)[:4]]) if derived_markets.get('total_goals') else '') + (chr(10) + f"亚盘{standardize_ah_line(asian_handicap)}: 主{derived_markets['ah']['home_win']:.1%}/走{derived_markets['ah']['draw']:.1%}/客{derived_markets['ah']['away_win']:.1%}" if asian_handicap else '') if derived_markets else ''}
 
 """
         # 构建庄家敞口和升降水轨迹的结构化摘要（用于Step3提示词开头）
@@ -33367,7 +33287,9 @@ Top5比分及概率：
                 if _db:
                     print(f"         · {_db[:160]}")
                 try:
-                    from odds_index_math import apply_six_cs_settlement_v2_to_rec as _set_v2_fn
+                    from odds_index_math import (
+                        apply_six_cs_settlement_v2_to_rec as _set_v2_fn,
+                    )
                     _sv2 = _set_v2_fn(rec)
                     if isinstance(_sv2, dict) and _sv2.get('available'):
                         print(
@@ -33652,14 +33574,12 @@ Top5比分及概率：
                         history[str(fid)]['odds_1x2_home_prev'] = float(_cur_home_odd_persist)
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L27726] {_silent_err}")
-                pass
             # 【临场加密抓取·分钟级序列继承】保留上一次分析继承到的 odds_timeline
             try:
                 if '_prev_odds_timeline' in locals() and _prev_odds_timeline:
                     history[str(fid)]['odds_timeline'] = _prev_odds_timeline
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L27732] {_silent_err}")
-                pass
             # 跨时段波动分析（首次无 prev 时 available=False）
             _odds_movement_result = analyze_odds_movement(_prev_odds_snapshot, _curr_odds_snapshot)
             history[str(fid)]['odds_movement'] = _odds_movement_result
@@ -33678,7 +33598,6 @@ Top5比分及概率：
             PipelineLifecycle.advance("OPERATIONAL_FINAL")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L27750] {_silent_err}")
-            pass
         # 仅调用反逆向工程引擎与风控链矩阵这两个独立模块，产出 or_prediction 供报告依据。
         try:
             or_prediction = compute_are_and_risk_chain(
@@ -35131,6 +35050,8 @@ Top5比分及概率：
                             _cold_kept.append(_cold_text)
                 _arbitration_result['cold_hedge_scores'] = _cold_kept
                 _arbitration_result['writes_first_score'] = False
+                _old_first = first_score
+                _old_second = second_score
                 if _cold_kept:
                     _cold_note = (
                         f"[冷门压赔保留] {' / '.join(_cold_kept)}。"
@@ -35148,8 +35069,6 @@ Top5比分及概率：
                     print(f"   ⏸️ [统一收敛仲裁] 产出高风险大比分 {_arb_first}/{_arb_second}，"
                           f"暂缓覆写，待 Hard Risk Gate 终审")
                 else:
-                    _old_first = first_score
-                    _old_second = second_score
                     # 终裁只归 deepseek-flash 的 N9。仲裁结果只进事实包，不写 first_score。
                     _arbitration_result['suggested_first'] = _arb_first
                     _arbitration_result['suggested_second'] = _arb_second
@@ -35329,7 +35248,6 @@ Top5比分及概率：
             PipelineLifecycle.advance("POST_GATE_CORRECTION")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L29132] {_silent_err}")
-            pass
 
         # 【空值占位符硬性覆写阻尼线】路由空洞自愈
         try:
@@ -35426,7 +35344,7 @@ Top5比分及概率：
             print(f"   🔏 [决策封印] 决策JSON已冻结 hash={_frozen_decision.get('decision_hash', '')[:12]}…")
             # —— 呈现层：LLM 仅生成解释，禁止反向干预数学结果 ——
             _raw_match_features = {
-                'match': match_name if 'match_name' in locals() else '',
+                'match': locals().get('match_name', ''),
                 'injuries': injury_text if 'injury_text' in locals() else '',
                 'form': locals().get('form_summary') or '',
                 'asian_handicap': standardize_ah_line(asian_handicap) if 'asian_handicap' in locals() else None,
@@ -35572,7 +35490,6 @@ Top5比分及概率：
             PipelineLifecycle.advance("FINAL_REPORT_OUT")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L29256] {_silent_err}")
-            pass
         _tg_appendix_parts = []
 
 
@@ -35600,7 +35517,6 @@ Top5比分及概率：
                         _goal_n = int(str(_tg_k).replace('prob_', '').replace('+', '').replace('plus', ''))
                         _tg_dist[_goal_n] = float(_tg_v)
                     # 合成每个比分的市场概率 = P(总进球=n) * P(方向) * 比分分配权重
-                    from math import comb
                     for _s_key in [f"{h}-{a}" for h in range(8) for a in range(8)]:
                         try:
                             _hg, _ag = parse_score(_s_key)
@@ -36583,7 +36499,6 @@ Top5比分及概率：
                     _full_chart.append(_expert_tg_text)
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L29822] {_silent_err}")
-                pass
         # 【智能技能匹配引擎】TG报告视角9
         if '_matched_skills' in locals() and _matched_skills:
             try:
@@ -36592,7 +36507,6 @@ Top5比分及概率：
                     _full_chart.append(_skill_tg_text)
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L29830] {_silent_err}")
-                pass
         _full_chart.append("\n".join(_judgment_lines))  # 【加权平均值 & 综合研判】TG输出已关闭
 
         if _full_chart:
@@ -36992,7 +36906,6 @@ Top5比分及概率：
                 print(f"   ⚠️ [TG 视角10推理链] 拼装异常(已降级): {_reason_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L30197] {_silent_err}")
-                pass
         # 视角10文字输出已重新打开
         _VIEW10_TG_TEXT_ENABLED = True
         try:
@@ -38306,11 +38219,11 @@ Top5比分及概率：
                 str(second_score),
                 str(big_small) if 'big_small' in locals() else '',
                 str(pred_dir_str) if 'pred_dir_str' in locals() else '',
-                _hashlib_dedup.md5(
+                _hashlib_dedup.sha256(
                     (tg_report_html or tg_report or '').encode('utf-8', 'ignore')
                 ).hexdigest(),
             ])
-            _tg_cur_sig = _hashlib_dedup.md5(_sig_payload.encode('utf-8', 'ignore')).hexdigest()
+            _tg_cur_sig = _hashlib_dedup.sha256(_sig_payload.encode('utf-8', 'ignore')).hexdigest()
             _prev_sig = ''
             try:
                 if str(fid) in history and isinstance(history[str(fid)], dict):
@@ -38508,7 +38421,6 @@ Top5比分及概率：
             save_json(_ml_features_file, _ml_features)
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L30853] {_silent_err}")
-            pass
 
         # 优先返回 DeepSeek 终裁①（emit 已回写 history）；否则回落模型首选项
         try:
@@ -38528,7 +38440,6 @@ Top5比分及概率：
             send_tg(f"⚠️【分析异常】{cn_name}\n错误: {str(e)[:200]}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L30864] {_silent_err}")
-            pass
         return None
     finally:
         try:
@@ -38751,7 +38662,6 @@ def _rank_in_list(target, ordered_list):
             return norm.index(t) + 1
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L31065] {_silent_err}")
-        pass
     return None
 
 
@@ -39124,10 +39034,10 @@ def _ledger_skill_fact_lines(records):
     """执行台账阻断和博弈信号稀疏检测。失败时只记未执行。"""
     try:
         from blade_deepseek_pipeline import (
-            batch_ledger_integrity_gate,
-            detect_sparse_game_signals,
-            count_log_mismatches,
             apply_game_surface_policy,
+            batch_ledger_integrity_gate,
+            count_log_mismatches,
+            detect_sparse_game_signals,
             review_direction_lock_recognition,
         )
         gate = batch_ledger_integrity_gate(records)
@@ -39539,9 +39449,7 @@ class ModelPerformanceAnalyzer:
                         _model_report_view_gaps(clean_report)
                         or _ledger_gaps(clean_report, match_n)
                         or _per_match_review_gaps(clean_report, match_n, identity_names)
-                    ):
-                        performance_report = clean_report
-                    elif clean_report and (
+                    ) or clean_report and (
                         _model_report_view_gaps(performance_report)
                         or _ledger_gaps(performance_report, match_n)
                         or _per_match_review_gaps(performance_report, match_n, identity_names)
@@ -39609,7 +39517,6 @@ def post_match_review():
                         _seen_matches[_mn] = (fid, info)
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L32681] {_silent_err}")
-                    pass
     completed = {fid: info for fid, info in [v for v in _seen_matches.values()]}
     # 【修复】仅统计今日赛事（根据比赛时间判断）
     _today_completed = {}
@@ -39810,7 +39717,6 @@ def post_match_review():
             send_tg(f"📊【全维度复盘·全局统计摘要】deepseek-flash 失败: {_gs_err}")
         except Exception as _silent_err:
             print(f"   ⚠️ [复盘摘要] {_silent_err}")
-            pass
 
     # AI提炼今日教训（单独发送）
     if total_count > 0:
@@ -39981,7 +39887,6 @@ def auto_run():
                     _known_pkls.append(_kf)
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L33032] {_silent_err}")
-                    pass
             _to_remove = set()
             for _pat in _pkl_patterns:
                 try:
@@ -39989,7 +39894,6 @@ def auto_run():
                         _to_remove.add(_f)
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L33039] {_silent_err}")
-                    pass
             for _kf_path in _known_pkls:
                 if _kf_path and os.path.exists(_kf_path):
                     _to_remove.add(_kf_path)
@@ -40052,7 +39956,6 @@ def auto_run():
                 print("   ⏭️ [幂等防护] 跟上次启动消息间隔<5min，跳过重复发送")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L33100] {_silent_err}")
-            pass
         if _should_send_start_msg:
             send_tg("🚀 全自动实盘雷达启动...(已清除所有缓存，全新抓取）")
             auto_run._last_start_tg_ts = _auto_run_start_ts
@@ -40069,7 +39972,6 @@ def auto_run():
                         return datetime.strptime(fd[:19], "%Y-%m-%dT%H:%M:%S")
                     except Exception as _silent_err:
                         print(f"   ⚠️ [异常已捕获·pass降级 L33116] {_silent_err}")
-                        pass
                 # 无时间时按赛号数字兼容
                 cn = obj.get('cn_name', '')
                 m = re.search(r'(\d+)', cn)
@@ -40103,7 +40005,6 @@ def auto_run():
                             _display_time = datetime.strptime(_display_time[:19], "%Y-%m-%dT%H:%M:%S").strftime("%Y-%m-%d %H:%M")
                         except Exception as _silent_err:
                             print(f"   ⚠️ [异常已捕获·pass降级 L33131] {_silent_err}")
-                            pass
                     print(f"       开赛时间: {_display_time or '未知'}")
                     first = analyze_match(obj, i, total, all_first_scores=all_first_scores)
                     if first:
@@ -40827,7 +40728,6 @@ def handle_tg_command(msg_text):
                         extra += f"\nℹ️ λ校准: 降级({_calib_info.get('reason')})"
                 except Exception as _silent_err:
                     print(f"   ⚠️ [异常已捕获·pass降级 L33912] {_silent_err}")
-                    pass
                 group_disp = info.get('group_display', '')
                 if group_disp and '可能比分波胆' in group_disp:
                     grp_lines = group_disp.split('\n')
@@ -41624,14 +41524,12 @@ def daily_result_learning_report():
             send_tg(f"⚠️ 每日赛果学习报告生成失败：{str(_e)[:200]}", parse_mode=None)
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L34547] {_silent_err}")
-            pass
         return _err
     finally:
         try:
             daily_learn_lock.release()
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L34553] {_silent_err}")
-            pass
 
 
 # ================= 11. 监听循环（含定时任务） =================
@@ -41658,7 +41556,6 @@ def daily_noon_analysis_report():
             send_tg(f"⚠️ 【每日12:00定时任务】执行异常: {str(e)[:200]}")
         except Exception as _silent_err:
             print(f"   ⚠️ [异常已捕获·pass降级 L34579] {_silent_err}")
-            pass
 
 
 # =====================================================================
@@ -41907,7 +41804,6 @@ def listen():
         schedule.clear()
     except Exception as _silent_err:
         print(f"   ⚠️ [异常已捕获·pass降级 L34588] {_silent_err}")
-        pass
     # 恢复心跳定时任务，改为每5分钟执行一次（降低API调用频率）
     schedule.every(5).minutes.do(live_heartbeat)
     def _start_with_ctx(target_fn):
@@ -42465,7 +42361,9 @@ if not _CLI_HEADLESS:
     # —— 运维（合并回溯/取分/删除）——
     st.sidebar.markdown("---")
     try:
-        from blade_monitor_panel import render_monitor_sidebar_controls as _bq_mon_sidebar
+        from blade_monitor_panel import (
+            render_monitor_sidebar_controls as _bq_mon_sidebar,
+        )
         _bq_mon_sidebar(page_history(), is_history_match_not_started)
     except Exception as _bq_mon_sb_err:
         st.sidebar.caption(f"盘口控制台未加载: {_bq_mon_sb_err}")
@@ -42751,7 +42649,6 @@ if not _CLI_HEADLESS:
                 st.warning(f"⚠️ AI预测/精算表面板渲染异常（已降级）: {_panel_err}")
             except Exception as _silent_err:
                 print(f"   ⚠️ [异常已捕获·pass降级 L35338] {_silent_err}")
-                pass
 
 
     # ===== 侧边栏：近7日命中率趋势图 =====
@@ -43541,7 +43438,9 @@ if not _CLI_HEADLESS:
 
     with tab_mon:
         try:
-            from blade_monitor_panel import render_blade_monitor_dashboard as _bq_mon_dash
+            from blade_monitor_panel import (
+                render_blade_monitor_dashboard as _bq_mon_dash,
+            )
 
             _bq_mon_dash(page_history(), is_history_match_not_started)
         except Exception as _bq_mon_err:
