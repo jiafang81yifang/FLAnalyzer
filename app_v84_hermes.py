@@ -4494,6 +4494,17 @@ class MathUtils:
         return parse_score(score_text)
 
 
+def safe_num(value, default=0.0):
+    """Typed numeric coercion for dynamic values; mirrors MathUtils.safe_float fallback."""
+    number = MathUtils.safe_float(value, default)
+    return float(default if number is None else number)
+
+
+def coerce_float(value, default=0.0):
+    """Alias for dict.get/dynamic payload call sites."""
+    return safe_num(value, default)
+
+
 def save_features_to_db(match_record, feature_vector=None):
     """将单场比赛特征向量与赛果写入SQLite特征库。"""
     if not isinstance(match_record, dict):
@@ -7061,7 +7072,7 @@ class GameTheoryBattleEngine:
             # ── 检查1：比分①进球总数 vs 大小球预判 ──
             if first_score and ou_verdict and '-' in first_score and '其它' not in first_score:
                 h1, a1 = parse_score(first_score)
-                if h1 is not None:
+                if h1 is not None and a1 is not None:
                     score1_ou = ou_verdict_from_score_safe(first_score, std_ou_line)
                     if score1_ou and ou_verdict and score1_ou != ou_verdict and score1_ou != '走盘' and ou_verdict != '走盘':
                         score_ou_ok = False
@@ -7072,7 +7083,7 @@ class GameTheoryBattleEngine:
             # ── 检查2：比分①净胜球 vs 亚盘预判 ──
             if first_score and ah_verdict and ah_line is not None and '-' in first_score and '其它' not in first_score:
                 h1, a1 = parse_score(first_score)
-                if h1 is not None:
+                if h1 is not None and a1 is not None:
                     settle = AsianHandicapEngine.settle_bet(h1, a1, float(ah_line))
                     mult = settle.get('multiplier', 0.0)
                     if mult > 0:
@@ -8150,7 +8161,7 @@ class StateMagnitudeCalibrator:
             if not actual_node or '-' not in actual_node:
                 continue
             _an_h, _an_a = parse_score(actual_node)
-            if _an_h is None:
+            if _an_h is None or _an_a is None:
                 continue
             actual_magnitude = _an_h + _an_a
             expected_magnitude = float(info.get('expected_magnitude', info.get('predicted_total_goals', 0)) or 0)
@@ -8206,7 +8217,7 @@ class TopologyDeltaMatrixAnalyzer:
         try:
             cleaned = node_coordinate.replace('[', '').replace(']', '').replace(',', '-')
             _nc_h, _nc_a = parse_score(cleaned)
-            if _nc_h is None:
+            if _nc_h is None or _nc_a is None:
                 return 0
             return _nc_h - _nc_a
         except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -8387,6 +8398,8 @@ class TelegramReportFormatter:
 
 
             except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback
+                continue
+            if home_g is None or away_g is None:
                 continue
 
             # 兼容两种字段名：theory/intrinsic_potential，market/market_conversion，ibi/institutional_resistance，delta/topological_deviation
@@ -8741,6 +8754,8 @@ def generate_31pool_theory_vs_market_chart(match_data):
             try:
                 _h, _a = parse_score(_sc_s)
             except (ValueError, IndexError):
+                continue
+            if _h is None or _a is None:
                 continue
             _pv = max(0.0, float(_p or 0.0))
             if _h > _a:
@@ -9571,15 +9586,16 @@ def calibrate_lambdas_by_market(historical_lambda_h, historical_lambda_a, full_m
 
     # 深盘下限放在方向偏置之后。大小球 ≥ 3.0 时，总量不得停在「小球概率高于大球」的一侧。
     try:
-        _floor_total = _ou_line_lambda_floor(avg_ou_line)
+        _floor_total = coerce_float(_ou_line_lambda_floor(avg_ou_line))
         _now_total = float(final_lambda_h) + float(final_lambda_a)
         lifted_h, lifted_a, _lifted = _lift_lambda_pair_to_floor(
             final_lambda_h, final_lambda_a, _floor_total
         )
         if _lifted:
-            _coeff = _floor_total / float(avg_ou_line) if float(avg_ou_line) else 0.0
+            _avg_ou_line = coerce_float(avg_ou_line)
+            _coeff = _floor_total / _avg_ou_line if _avg_ou_line else 0.0
             print(
-                f"   📐 [λ下限·盘口对齐] OU={float(avg_ou_line):.2f} "
+                f"   📐 [λ下限·盘口对齐] OU={_avg_ou_line:.2f} "
                 f"下限={_floor_total:.3f}(系数{_coeff:.3f}) > 合计{_now_total:.3f}，"
                 f"按攻防比抬到 {lifted_h:.3f}/{lifted_a:.3f}"
             )
@@ -9669,6 +9685,8 @@ def shannon_entropy_smooth_guard(lam_h, lam_a, ou_line, lambda_shared=0.0,
                 _h, _a = parse_score(_sc)
             except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                 print(f"   ⚠️ [异常已捕获·continue降级 L7227] {_silent_err}")
+                continue
+            if _h is None or _a is None:
                 continue
             _k = _h + _a
             _total_dist[_k] = _total_dist.get(_k, 0.0) + float(_p)
@@ -9812,6 +9830,8 @@ def compute_ibi_smoothness_gradient(pool15_data, verbose=True):
             h, a = parse_score(score)
 
         except (ValueError, IndexError, TypeError):
+            continue
+        if h is None or a is None:
             continue
         total_goals = h + a
         if h > a:
@@ -10371,6 +10391,8 @@ class AsianHandicapEngine:
                                 # 判断该比分是否为正路（与盘口方向一致）
                                 if '-' in str(score) and '其它' not in str(score):
                                     h, a = parse_score(score)
+                                    if h is None or a is None:
+                                        continue
 
                                     net = h - a
                                     # 主让深盘，正路=主队大胜
@@ -10401,6 +10423,8 @@ class AsianHandicapEngine:
                             if float(ibi_val) >= self.IBI_HIGH_THRESHOLD:  # noqa: SIM102 - intentional degraded-mode guard or structure-preserving fallback
                                 if '-' in str(score) and '其它' not in str(score):
                                     h, a = parse_score(score)
+                                    if h is None or a is None:
+                                        continue
 
                                     net = h - a
                                     # 主让浅盘但主胜比分IBI高
@@ -10479,7 +10503,7 @@ class AsianHandicapEngine:
 
             line_val = float(_line)
             htype = self.classify_handicap(line_val)
-            htype_cn = {'half': '半球系', 'whole': '整数系', 'quarter': '季度系'}.get(htype, '未知')
+            htype_cn = {'half': '半球系', 'whole': '整数系', 'quarter': '季度系'}.get(htype or '', '未知')
 
             # ── 虚拟比分处理 ──
             if '其它' in sc or '其他' in sc:
@@ -10513,7 +10537,7 @@ class AsianHandicapEngine:
             if '-' not in sc:
                 return fallback
             h, a = parse_score(sc)
-            if h is None:
+            if h is None or a is None:
                 return fallback
             settle = self.settle_bet(h, a, line_val)
             result_map = {
@@ -10570,7 +10594,7 @@ class AsianHandicapEngine:
             if '其它' in str(score_str) or '-' not in str(score_str):
                 continue
             h, a = parse_score(score_str)
-            if h is None:
+            if h is None or a is None:
                 continue
             settle = AsianHandicapEngine.settle_bet(h, a, _ah)
             mult = settle.get('multiplier', 0.0)
@@ -10689,7 +10713,7 @@ class JingCaiHandicapEngine:
             if '-' not in str(score_str):
                 continue
             h, a = parse_score(score_str)
-            if h is None:
+            if h is None or a is None:
                 continue
             p = float(prob)
             adjusted_net = (h - a) + hc
@@ -10951,6 +10975,8 @@ def _dscv_check_macro_direction(score_str, direction):
             home, away = parse_score(_s)
         except (ValueError, TypeError):
             return False  # 兼容处理非标准比分格式
+        if home is None or away is None:
+            return False
         if _d == '主胜':
             return home > away
         elif _d == '客胜':
@@ -11824,6 +11850,8 @@ class CrossValidationAnalysisEngine:
                     if '其它' in sc:
                         return '主胜' if '胜' in sc else ('平局' if '平' in sc else '客胜')
                     _h, _a = parse_score(sc)
+                    if _h is None or _a is None:
+                        return None
                     return '主胜' if _h > _a else ('平局' if _h == _a else '客胜')
                 except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                     return None
@@ -12018,6 +12046,8 @@ def compute_full_dimension_smoothness(pool15_enriched, ah_signal=None, direction
             h, a = parse_score(score)
 
         except (ValueError, IndexError, TypeError):
+            continue
+        if h is None or a is None:
             continue
         margin = abs(h - a)
         total_goals = h + a
@@ -12243,6 +12273,8 @@ def calculate_total_goals(score_str):
         return 0
     try:
         h, a = parse_score(score_str)
+        if h is None or a is None:
+            return 0
 
         return h + a
     except (ValueError, IndexError, TypeError):
@@ -12413,6 +12445,10 @@ def unified_account_checklist(first_score, second_score, match_context):
         # 解析比分
         h1, a1 = parse_score(first_score)
         h2, a2 = parse_score(second_score)
+        if h1 is None or a1 is None or h2 is None or a2 is None:
+            result['passed'] = False
+            result['checklist_items'].append("⚠️ 比分解析失败，跳过自洽对账")
+            return result
         total1, total2 = h1 + a1, h2 + a2
 
         # 提取对账参数
@@ -13052,6 +13088,8 @@ class ShannonEntropyEngine:
             if '-' not in score:
                 return '未知'
             home, away = parse_score(score)
+            if home is None or away is None:
+                return '未知'
             return f'净胜{abs(home - away)}球'
         except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             print(f"   ⚠️ [异常已捕获·return '未知'降级 L9801] {_silent_err}")
@@ -13685,8 +13723,8 @@ class AdvancedGameModel(CoreQuantEngine):
             home_state['defense_strength'], away_state['defense_strength'],
         ], dtype=float)
         prior_logs = np.log(np.clip(prior_strengths, self.MIN_STRENGTH, self.MAX_STRENGTH))
-        base_home = max(0.05, MathUtils.safe_float(base_home_lambda))
-        base_away = max(0.05, MathUtils.safe_float(base_away_lambda))
+        base_home = max(0.05, coerce_float(base_home_lambda))
+        base_away = max(0.05, coerce_float(base_away_lambda))
         prior_sigma = 0.35
 
         def negative_log_posterior(log_params):
@@ -13819,7 +13857,7 @@ class AdvancedGameModel(CoreQuantEngine):
                 if value is None:
                     value = record.get('ventropy_entropy_delta')
                 try:
-                    value = float(value)
+                    value = coerce_float(value)
                 except (TypeError, ValueError):
                     continue
                 if math.isfinite(value):
@@ -13988,8 +14026,8 @@ class AdvancedBayesianEngine(AdvancedGameModel):
             for container in containers:
                 for home_key, away_key in key_pairs:
                     try:
-                        home_xg = float(container.get(home_key))
-                        away_xg = float(container.get(away_key))
+                        home_xg = coerce_float(container.get(home_key))
+                        away_xg = coerce_float(container.get(away_key))
                         if (math.isfinite(home_xg) and math.isfinite(away_xg)
                                 and home_xg >= 0.0 and away_xg >= 0.0):
                             return home_xg, away_xg, f'{home_key}/{away_key}'
@@ -14118,6 +14156,8 @@ class AdvancedBayesianEngine(AdvancedGameModel):
                     if exact_score in JCZQ_VALID_SET or '-' not in exact_score:
                         continue
                     home_goals, away_goals = parse_score(exact_score)
+                    if home_goals is None or away_goals is None:
+                        continue
                     if normalized_score == '胜其它' and home_goals > away_goals or normalized_score == '平其它' and home_goals == away_goals or normalized_score == '负其它' and home_goals < away_goals:
                         probability += float(value or 0.0)
                 except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -14164,16 +14204,16 @@ class AdvancedBayesianEngine(AdvancedGameModel):
                     base_away,
                     feature_vector=feature_vector,
                 )
-                posterior_home_lambda = float(dynamic.get('home_lambda', base_home) or base_home)
-                posterior_away_lambda = float(dynamic.get('away_lambda', base_away) or base_away)
+                posterior_home_lambda = coerce_float(dynamic.get('home_lambda', base_home) or base_home)
+                posterior_away_lambda = coerce_float(dynamic.get('away_lambda', base_away) or base_away)
             else:
                 dynamic = {
                     'home_lambda': MathUtils.safe_float(base_home),
                     'away_lambda': MathUtils.safe_float(base_away),
                     'reason': '球队名称缺失，沿用当前λ',
                 }
-                posterior_home_lambda = float(dynamic['home_lambda'])
-                posterior_away_lambda = float(dynamic['away_lambda'])
+                posterior_home_lambda = coerce_float(dynamic['home_lambda'])
+                posterior_away_lambda = coerce_float(dynamic['away_lambda'])
 
             xg_result = self.integrate_xg_data(
                 match,
@@ -14507,7 +14547,7 @@ def derive_markets_from_matrix(prob_dict, asian_handicap=None, ou_line=None,
         if '-' not in str(score_str) or '其它' in str(score_str):
             continue
         h, a = parse_score(score_str)
-        if h is None:
+        if h is None or a is None:
             continue
         total = h + a
         net = h - a  # 主队净胜球
@@ -14587,7 +14627,7 @@ def derive_markets_from_matrix(prob_dict, asian_handicap=None, ou_line=None,
         approx_lam_a = 0.0
         for _s_str, _p in prob_dict.items():
             _hh, _aa = parse_score(_s_str)
-            if _hh is None:
+            if _hh is None or _aa is None:
                 continue
             try:
                 approx_lam_h += _hh * float(_p)
@@ -14665,12 +14705,12 @@ def derive_markets_from_matrix(prob_dict, asian_handicap=None, ou_line=None,
     # （翻转会掩盖上游 λ 错误），真正的修复在 LambdaCalibrator 的深盘 λ 校正。
     try:
         sanity = {'ah_conflict': False, 'ou_conflict': False, 'note': ''}
-        _ah_line = float(_ah)
-        _ou_line = float(_ou)
-        _ah_home = result['ah'].get('home_win', 0.0)
-        _ah_away = result['ah'].get('away_win', 0.0)
-        _ou_over = result['ou'].get('over', 0.0)
-        _ou_under = result['ou'].get('under', 0.0)
+        _ah_line = coerce_float(_ah)
+        _ou_line = coerce_float(_ou)
+        _ah_home = coerce_float(result['ah'].get('home_win', 0.0))
+        _ah_away = coerce_float(result['ah'].get('away_win', 0.0))
+        _ou_over = coerce_float(result['ou'].get('over', 0.0))
+        _ou_under = coerce_float(result['ou'].get('under', 0.0))
         # 深盘主让（_ah<=-1.5）时，理论上主赢盘概率应显著高于客赢盘
         if _ah_line <= -1.5 and _ah_away > _ah_home:
             sanity['ah_conflict'] = True
@@ -14840,7 +14880,11 @@ def _calc_dispersion_features(euro_odds_rows):
         if len(instant_values) >= 2:
             features[f'dispersion_{outcome}_var_instant'] = float(np.var(instant_values))
             features[f'dispersion_{outcome}_range_instant'] = float(max(instant_values) - min(instant_values))
-    valid_vars = [features.get(f'dispersion_{x}_var_instant') for x in ['home', 'draw', 'away'] if features.get(f'dispersion_{x}_var_instant') is not None]
+    valid_vars = [
+        coerce_float(features.get(f'dispersion_{x}_var_instant'))
+        for x in ['home', 'draw', 'away']
+        if features.get(f'dispersion_{x}_var_instant') is not None
+    ]
     if valid_vars:
         features['dispersion_max_var_instant'] = float(max(valid_vars))
     return features
@@ -14961,7 +15005,7 @@ def _calc_h2h_features(head_to_head):
 
 def _calc_total_goals_market_features(tg_implied_probs, tg_avg_odds):
     """从总进球市场提取主流分布特征。"""
-    features = {
+    features: dict[str, Any] = {
         'tg_market_entropy': None,
         'tg_market_peak_bucket': None,
         'tg_market_peak_prob': None,
@@ -15211,6 +15255,8 @@ def estimate_cold_score(score_str, odds_1x2_dict, asian_handicap):
         h, a = parse_score(score_str)
     except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         print(f"   ⚠️ [异常已捕获·return 0降级 L12486] {_silent_err}")
+        return 0
+    if h is None or a is None:
         return 0
     cold_score = 0
     if h == a:
@@ -16285,7 +16331,7 @@ def calculate_synthetic_spread(odds_1x2_dict=None, asian_handicap=None,
                 for s, p in prob_dict.items():
                     try:
                         h, a = parse_score(s)
-                        if h is None:
+                        if h is None or a is None:
                             continue
                         total = h + a
                         if total > line:
@@ -17196,11 +17242,11 @@ class BetfairSqueezeAnalyzer:
         }
 
         # 2. 计算最大亏损方 (庄家的死亡敞口)
-        worst_outcome = min(profits, key=profits.get)
+        worst_outcome = min(profits, key=lambda key: profits[key])
         max_loss = profits[worst_outcome]
 
         # 3. 计算最大盈利方 (庄家的诱导靶点)
-        best_outcome = max(profits, key=profits.get)
+        best_outcome = max(profits, key=lambda key: profits[key])
         max_profit = profits[best_outcome]
 
         # 如果盈亏极差巨大（亏损超过 200万，盈利超过 200万）
@@ -17261,19 +17307,19 @@ class BetfairSqueezeAnalyzer:
                             for _k in ('Home', 'home', 'H'):
                                 if _k in _o:
                                     try:
-                                        return float(_o[_k])
+                                        return coerce_float(_o[_k])
                                     except (TypeError, ValueError):
                                         continue
                         _sp = _slice.get('price')
                         try:
-                            return float(_sp) if _sp is not None else None
+                            return coerce_float(_sp) if _sp is not None else None
                         except (TypeError, ValueError):
                             return None
                     _p_prev = _pick_price(_first)
                     _p_curr = _pick_price(_last)
                     try:
-                        _v_prev = float(_first.get('volume')) if _first.get('volume') is not None else None
-                        _v_curr = float(_last.get('volume')) if _last.get('volume') is not None else None
+                        _v_prev = coerce_float(_first.get('volume')) if _first.get('volume') is not None else None
+                        _v_curr = coerce_float(_last.get('volume')) if _last.get('volume') is not None else None
                     except (TypeError, ValueError):
                         _v_prev = _v_curr = None
             # 退化：6小时切片直接传参
@@ -17628,7 +17674,7 @@ class RankTrackingMatrix:
                 if any(k in str(score_str) for k in ('胜其它', '平其它', '负其它', '其它')):
                     return None
                 _h, _a = parse_score(score_str)
-                if _h is None:
+                if _h is None or _a is None:
                     return None
                 return abs(_h - _a)
             except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -17778,9 +17824,10 @@ class RankTrackingMatrix:
                 _deep_handicap = (_ah_val_rtm is not None and abs(_ah_val_rtm) >= 2.0)
                 _over_momentum = (_ou_traj == 'over_strengthen')
                 if _deep_handicap and _over_momentum:
+                    _ah_float_rtm = coerce_float(_ah_val_rtm)
                     # 让球方向：ah<=-2.0 为主队深让(穿盘方向=主胜net>0)；ah>=2.0 为客队深让(穿盘方向=客胜net<0)
-                    _home_deep = _ah_val_rtm <= -2.0
-                    _away_deep = _ah_val_rtm >= 2.0
+                    _home_deep = _ah_float_rtm <= -2.0
+                    _away_deep = _ah_float_rtm >= 2.0
                     _still_baits = []
                     for _b in _surviving_baits:
                         _bsc = str(_b.get('Score', '')).strip()
@@ -17792,6 +17839,9 @@ class RankTrackingMatrix:
                             _bh, _ba = parse_score(_bsc)
 
                         except (ValueError, IndexError):
+                            _still_baits.append(_b)
+                            continue
+                        if _bh is None or _ba is None:
                             _still_baits.append(_b)
                             continue
                         _net = _bh - _ba
@@ -18187,7 +18237,7 @@ class RankTrackingMatrix:
                     _n_mk = len(_mk_scores)
                     def _parse_ha(_s):
                         _h, _a = parse_score(_s)
-                        if _h is None:
+                        if _h is None or _a is None:
                             return None
                         return _h, _a
                     _ha_list = [_parse_ha(s) for s in _mk_scores]
@@ -18418,6 +18468,8 @@ class BettingStrategyExpertSystem:
                     continue
                 try:
                     _ph, _pa = parse_score(_isc)
+                    if _ph is None or _pa is None:
+                        continue
 
                     if _ph > _pa:
                         _agg_home += _ith
@@ -18486,16 +18538,19 @@ class BettingStrategyExpertSystem:
                     side = 'Draw'
             else:
                 h, a = parse_score(score)
-                try:
-
-                    if h > a:
-                        side = 'Home'
-                    elif h < a:
-                        side = 'Away'
-                    else:
-                        side = 'Draw'
-                except (ValueError, IndexError):
+                if h is None or a is None:
                     side = 'Draw'
+                else:
+                    try:
+
+                        if h > a:
+                            side = 'Home'
+                        elif h < a:
+                            side = 'Away'
+                        else:
+                            side = 'Draw'
+                    except (ValueError, IndexError):
+                        side = 'Draw'
 
             # 协议 3: 奇点熔断检查
             melt_status = cls.protocol_topological_melt(delta_pos, ibi)
@@ -18524,6 +18579,8 @@ class BettingStrategyExpertSystem:
                         _dyn_prob = _wp_away
                     if _dyn_prob is not None and _es_deep_handicap and '其它' not in score:
                         _sh, _sa = parse_score(score)
+                        if _sh is None or _sa is None:
+                            continue
 
                         _snet = _sh - _sa
                         _stot = _sh + _sa
@@ -18966,11 +19023,11 @@ class SkillMatchingEngine:
                         _ibi_dev = abs(_max_ibi - 1.0)
                         if _is_pct:
                             _ibi_dev *= 100.0
-                        if cls._CMP_OPS.get(_op, lambda a, b: a > b)(_ibi_dev, _num):
+                        if cls._CMP_OPS.get(_op or '>', lambda a, b: a > b)(_ibi_dev, _num):
                             return (True, 1.0)
                         return (False, 0.0)
                     # 直接阈值
-                    if cls._CMP_OPS.get(_op, lambda a, b: a > b)(_max_ibi, _num):
+                    if cls._CMP_OPS.get(_op or '>', lambda a, b: a > b)(_max_ibi, _num):
                         return (True, 1.0)
                     return (False, 0.0)
                 # 无数值的 IBI 关键词软命中
@@ -18980,7 +19037,7 @@ class SkillMatchingEngine:
             if '理论概率' in cond or ('市场隐含' in cond and '偏离' in cond):
                 if _num is not None:
                     _dev = feat.get('max_dev_pct', 0.0)
-                    if cls._CMP_OPS.get(_op, lambda a, b: a > b)(_dev, _num):
+                    if cls._CMP_OPS.get(_op or '>', lambda a, b: a > b)(_dev, _num):
                         return (True, 1.0)
                     return (False, 0.0)
                 return (True, 0.5)
@@ -19014,7 +19071,7 @@ class SkillMatchingEngine:
                 if _ah_abs is None:
                     return (False, 0.0)
                 if _num is not None:
-                    if cls._CMP_OPS.get(_op, lambda a, b: a >= b)(_ah_abs, _num):
+                    if cls._CMP_OPS.get(_op or '>', lambda a, b: a >= b)(_ah_abs, _num):
                         return (True, 1.0)
                     return (False, 0.0)
                 return (True, 0.5)
@@ -19025,7 +19082,7 @@ class SkillMatchingEngine:
                 if _ou is None:
                     return (False, 0.0)
                 if _num is not None:
-                    if cls._CMP_OPS.get(_op, lambda a, b: a >= b)(_ou, _num):
+                    if cls._CMP_OPS.get(_op or '>', lambda a, b: a >= b)(_ou, _num):
                         return (True, 1.0)
                     return (False, 0.0)
                 return (True, 0.5)
@@ -19033,7 +19090,7 @@ class SkillMatchingEngine:
             # ---- Δ偏差(delta) ----
             if 'delta' in cond.lower() or ('偏差' in cond) or (_op and ('Δ' in cond)):
                 if _num is not None:
-                    if cls._CMP_OPS.get(_op, lambda a, b: a > b)(feat.get('max_abs_delta_pct', 0.0), _num):
+                    if cls._CMP_OPS.get(_op or '>', lambda a, b: a > b)(feat.get('max_abs_delta_pct', 0.0), _num):
                         return (True, 1.0)
                     return (False, 0.0)
                 return (True, 0.4)
@@ -19390,6 +19447,7 @@ class MLEBivariatePoissonEngine:
         log_lh = _log(lam_h)
         log_la = _log(lam_a)
         log_lr = _log(rho) if rho > 1e-12 else None
+        log_lr_value = log_lr if log_lr is not None else 0.0
         base = -(lam_h + lam_a + rho)
         for h in range(n):
             for a in range(n):
@@ -19402,7 +19460,7 @@ class MLEBivariatePoissonEngine:
                           + (h - k) * log_lh - _lgamma(h - k + 1)
                           + (a - k) * log_la - _lgamma(a - k + 1))
                     if k > 0:
-                        lg += k * log_lr - _lgamma(k + 1)
+                        lg += k * log_lr_value - _lgamma(k + 1)
                     s += _exp(lg)
                 mat[h, a] = s
         total = mat.sum()
@@ -19698,6 +19756,8 @@ class KLDivergenceAnomalyDetector:
             return 'draw'
         try:
             h, a = parse_score(s)
+            if h is None or a is None:
+                return None
 
             return 'home' if h > a else ('away' if h < a else 'draw')
         except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -19752,7 +19812,8 @@ class KLDivergenceAnomalyDetector:
             }
             if any(v is None for v in pls.values()):
                 return None
-            vols = {k: abs(v) + 1e-6 for k, v in pls.items()}
+            vols = {k: abs(coerce_float(v)) + 1e-6 for k, v in pls.items()}
+        vols = {k: coerce_float(v) for k, v in vols.items()}
         total = sum(vols.values())
         if total <= 0:
             return None
@@ -19836,7 +19897,7 @@ class KLDivergenceAnomalyDetector:
             }
             out['exposures'] = exposures
             out['available'] = True
-            worst_dir = min(exposures, key=exposures.get)
+            worst_dir = min(exposures, key=lambda key: exposures[key])
             worst_exposure = exposures[worst_dir]
             has_death_exposure = (volume >= self.min_volume
                                   and worst_exposure < self.exposure_threshold)
@@ -20320,7 +20381,7 @@ class BladeQuantEngine:
                     return target_direction == 'DRAW'
                 return False
             h, a = parse_score(score_str)
-            if h is None:
+            if h is None or a is None:
                 return False
             if h > a:
                 return target_direction == 'HOME'
@@ -20532,7 +20593,9 @@ def build_binary_mask_matrix(score_list, veto_direction=None, extra_kill_scores=
             else:
                 try:
                     _h, _a = parse_score(_sc_norm)
-                    if _vd == "home":
+                    if _h is None or _a is None:
+                        _m = 1
+                    elif _vd == "home":
                         _m = 0 if ((_a > _h) or (_h == _a)) else 1
                     else:
                         _m = 0 if ((_h > _a) or (_h == _a)) else 1
@@ -20558,6 +20621,8 @@ def mask_penalty_score(score_str, veto_direction=None):
                 return 1.0 if ("胜" in _s) else 0.4
             return 0.4
         _h, _a = parse_score(_s)
+        if _h is None or _a is None:
+            return 0.4
         if _h == _a:
             return 0.7
         if _vd == "home":
@@ -20632,7 +20697,7 @@ class DynamicPoolSelector:
                 priority = 3
 
             nodes.append(V14ScoreNode(
-                score_str=d["score"], theory_p=d["theory_p"], market_p=d["market_p"],
+                score_str=str(d["score"]), theory_p=d["theory_p"], market_p=d["market_p"],
                 delta=delta, ibi=ibi, priority=priority, phase_zone=zone
             ))
         _ban_dps_n = int(_ban_dps['theory_le_1'] + _ban_dps['market_0'] + _ban_dps['delta_0'])
@@ -20780,7 +20845,8 @@ def compute_are_and_risk_chain(ranked_scores, prob_dict, odds_correct_score,
         result['final_score'] = _first
         if '-' in str(_first):
             _h, _a = parse_score(_first)
-            result['final_result'] = '主胜' if _h > _a else ('平局' if _h == _a else '客胜')
+            if _h is not None and _a is not None:
+                result['final_result'] = '主胜' if _h > _a else ('平局' if _h == _a else '客胜')
         elif '胜其它' in str(_first):
             result['final_result'] = '主胜'
         elif '平其它' in str(_first):
@@ -21179,6 +21245,8 @@ def build_probability_cluster(prob_dict, first_score, second_score,
                 for _rs in rd_scores:
                     try:
                         _rh, _ra = parse_score(_rs)
+                        if _rh is None or _ra is None:
+                            continue
                         _rd_totals.append(_rh + _ra)
                         _rd_dirs.append('home' if _rh > _ra else ('away' if _rh < _ra else 'draw'))
                     except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback
@@ -21299,6 +21367,8 @@ def run_structured_parsing_order(prob_dict, odds_correct_score, odds_1x2_dict,
                 if '-' not in _scs or '其' in _scs:
                     continue
                 _hg, _ag = parse_score(_scs)
+                if _hg is None or _ag is None:
+                    continue
                 _d = 'home' if _hg > _ag else ('away' if _hg < _ag else 'draw')
                 _dir_theory[_d] += float(_p)
                 _mk_p = (_cs_market_raw.get(_scs, 0.0) / _cs_market_total) if _cs_market_total > 0 else None
@@ -21324,8 +21394,8 @@ def run_structured_parsing_order(prob_dict, odds_correct_score, odds_1x2_dict,
         if _market_total > 0.5:
             _dir_market_n = {k: v / _market_total for k, v in _dir_market.items()}
             _gaps = {k: _dir_market_n[k] - _dir_theory_n[k] for k in _dir_theory_n}
-            _overload_dir = max(_gaps, key=_gaps.get)   # 市场超配（庄家风险最大→防守端）
-            _shield_dir = min(_gaps, key=_gaps.get)     # 市场欠配（庄家盈利垫→可能被阻吓端）
+            _overload_dir = max(_gaps, key=lambda key: _gaps[key])   # 市场超配（庄家风险最大→防守端）
+            _shield_dir = min(_gaps, key=lambda key: _gaps[key])     # 市场欠配（庄家盈利垫→可能被阻吓端）
             cs_diag = {
                 'available': True,
                 'dir_theory': {k: round(v, 4) for k, v in _dir_theory_n.items()},
@@ -21402,6 +21472,8 @@ def run_structured_parsing_order(prob_dict, odds_correct_score, odds_1x2_dict,
                         if '-' not in _scs or '其' in _scs:
                             continue
                         _hg, _ag = parse_score(_scs)
+                        if _hg is None or _ag is None:
+                            continue
                         _exp_margin += (_hg - _ag) * float(_p)
                     except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback
                         continue
@@ -21450,6 +21522,8 @@ def run_structured_parsing_order(prob_dict, odds_correct_score, odds_1x2_dict,
                         if '-' not in _scs or '其' in _scs:
                             continue
                         _hg, _ag = parse_score(_scs)
+                        if _hg is None or _ag is None:
+                            continue
                         _exp_total += (_hg + _ag) * float(_p)
                     except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback
                         continue
@@ -23534,6 +23608,8 @@ def calc_big_small(prob_dict, ou_line, lam_h=None, lam_a=None, market_over_odds=
                     continue
                 try:
                     h, a = parse_score(score_str)
+                    if h is None or a is None:
+                        continue
 
                     p = float(prob or 0.0)
                     _lam_h_approx += h * p
@@ -23869,7 +23945,7 @@ def _500_parse_total_goals_table(soup):
             odds_vals = [_500_clean_num(cell.get_text(' ', strip=True)) for cell in odds_cells[:8]]
             if len(odds_vals) < 8 or any(v is None for v in odds_vals):
                 continue
-            entry = {'company': company}
+            entry: dict[str, Any] = {'company': company}
             for idx, tg_key in enumerate(tg_keys):
                 entry[f'odds_{tg_key}'] = odds_vals[idx]
             entries.append(entry)
@@ -24988,19 +25064,22 @@ def _ensure_mobile_six(rec, mid, force=False):
     _has_1x2 = bool(isinstance(existing.get('odds_1x2'), dict) and existing.get('odds_1x2'))
     _has_ah = existing.get('asian_handicap') is not None or bool(_hit.get('亚盘让球'))
     _has_ou = existing.get('ou_line') is not None or bool(_hit.get('大小球'))
+    _total_goals_odds = existing.get('total_goals_odds')
     _has_tg = (
-        isinstance(existing.get('total_goals_odds'), dict)
-        and len(existing.get('total_goals_odds')) >= 4
+        isinstance(_total_goals_odds, dict)
+        and len(_total_goals_odds) >= 4
         and existing.get('total_goals_source') == '手机竞足→更多玩法→总进球'
     )
+    _htft_odds = existing.get('htft_odds')
     _has_hf = (
-        isinstance(existing.get('htft_odds'), dict)
-        and len(existing.get('htft_odds')) >= 6
+        isinstance(_htft_odds, dict)
+        and len(_htft_odds) >= 6
         and existing.get('htft_source') == '手机竞足→更多玩法→半全场'
     )
+    _jc_score_odds = existing.get('jc_score_odds')
     _has_sc = (
-        isinstance(existing.get('jc_score_odds'), dict)
-        and len(existing.get('jc_score_odds')) >= 20
+        isinstance(_jc_score_odds, dict)
+        and len(_jc_score_odds) >= 20
         and existing.get('jc_score_source') == '手机竞足→更多玩法→胜平负比分'
     )
     _core_ok = bool(
@@ -25517,7 +25596,8 @@ def scrape_betfair_profit_loss(match_info):
         for _retry in range(_max_retries):
             for _px in _http_routes():
                 try:
-                    resp = requests.get(url, headers=_h, proxies=_px,
+                    _proxies = cast(dict[str, str] | None, None if _px is _DIRECT_PROXIES else _px)
+                    resp = requests.get(url, headers=_h, proxies=_proxies,
                                        timeout=timeout, verify=_verify_tls)
                     if resp.status_code == 200:
                         return resp
@@ -26021,8 +26101,9 @@ def _generate_betfair_analysis_hint(bf_data):
     
     # 找出庄家最大亏损方向（最负值）
     pl_map = {'主胜': h_pl, '平局': d_pl, '客胜': a_pl}
-    min_pl_dir = min(pl_map, key=pl_map.get)
-    max_pl_dir = max(pl_map, key=pl_map.get)
+    pl_map = {key: coerce_float(value) for key, value in pl_map.items()}
+    min_pl_dir = min(pl_map, key=lambda key: pl_map[key])
+    max_pl_dir = max(pl_map, key=lambda key: pl_map[key])
     min_pl_val = pl_map[min_pl_dir]
     max_pl_val = pl_map[max_pl_dir]
     
@@ -26375,6 +26456,8 @@ def build_topology_json_payload(match_name, home_team, away_team, asian_handicap
                 elif '-' in sc_str or ':' in sc_str:
                     try:
                         h, a = parse_score(sc_str)
+                        if h is None or a is None:
+                            continue
 
                         if h > a:
                             intrinsic_home += p_val
@@ -26406,6 +26489,8 @@ def build_topology_json_payload(match_name, home_team, away_team, asian_handicap
                     elif '-' in sc_str or ':' in sc_str:
                         try:
                             h, a = parse_score(sc_str)
+                            if h is None or a is None:
+                                continue
 
                             if h > a:
                                 market_home += mp
@@ -27058,14 +27143,14 @@ class MarketDefenseInsightAnalyzer:
             except (IndexError, TypeError, ValueError, AttributeError):
                 continue
         if theoretical:
-            theoretical = {key: idx for idx, key in enumerate(sorted(theoretical, key=theoretical.get), 1)}
+            theoretical = {key: idx for idx, key in enumerate(sorted(theoretical, key=lambda key: theoretical[key]), 1)}
 
         market_odds = {}
         if isinstance(odds_correct_score, dict):
             for raw_key, raw_value in odds_correct_score.items():
                 key = cls._score_key(raw_key)
                 try:
-                    value = float(raw_value.get('odds', raw_value.get('odd')) if isinstance(raw_value, dict) else raw_value)
+                    value = coerce_float(raw_value.get('odds', raw_value.get('odd')) if isinstance(raw_value, dict) else raw_value)
                     if key and '其它' not in key and '其他' not in key and value > 1.0:
                         market_odds[key] = value
                 except (TypeError, ValueError, AttributeError):
@@ -27076,7 +27161,7 @@ class MarketDefenseInsightAnalyzer:
                     continue
                 key = cls._score_key(row.get('score', row.get('option', row.get('name'))))
                 try:
-                    value = float(row.get('odds', row.get('odd', row.get('value'))))
+                    value = coerce_float(row.get('odds', row.get('odd', row.get('value'))))
                     if key and '其它' not in key and '其他' not in key and value > 1.0:
                         market_odds[key] = value
                 except (TypeError, ValueError):
@@ -27204,7 +27289,7 @@ def _score_direction(score_str):
                 return 'away'
             return None
         _h, _a = parse_score(_s)
-        if _h is None:
+        if _h is None or _a is None:
             return None
         if _h > _a:
             return 'home'
@@ -28767,7 +28852,7 @@ def collect_report_analysis_facts(scope):
         except (TypeError, ValueError):
             return None
 
-    facts = {'writes_first_score': False, 'copies_direction_lock': False}
+    facts: dict[str, Any] = {'writes_first_score': False, 'copies_direction_lock': False}
     hist_h, hist_a = num(scope.get('_hist_lam_h')), num(scope.get('_hist_lam_a'))
     cal_h, cal_a = num(scope.get('_calib_lam_h')), num(scope.get('_calib_lam_a'))
     if hist_h is not None or cal_h is not None:
@@ -28781,7 +28866,7 @@ def collect_report_analysis_facts(scope):
         }
     llm = scope.get('llm_features')
     if isinstance(llm, dict) and llm:
-        slim = {}
+        slim: dict[str, Any] = {}
         for key, value in list(llm.items())[:24]:
             if isinstance(value, (str, int, float, bool)) or value is None:
                 slim[str(key)[:40]] = value
@@ -38808,7 +38893,10 @@ def _positive_mkt_gap_count(source):
         if gap is None:
             gap = row.get('delta') if row.get('delta') is not None else row.get('diff')
         try:
-            gap_n = float(gap)
+            gap_n_opt = MathUtils.safe_float(gap)
+            if gap_n_opt is None:
+                continue
+            gap_n = gap_n_opt
         except (TypeError, ValueError):
             continue
         token = str(row.get('score') or '').replace('：', '-').replace(':', '-').strip()
@@ -38826,7 +38914,11 @@ def _positive_mkt_gap_count(source):
             token = str(score or '').replace('：', '-').replace(':', '-').strip()
             jc = official.get(score, official.get(token))
             try:
-                if token and float(avg) - float(jc) > 0:
+                avg_num = MathUtils.safe_float(avg)
+                jc_num = MathUtils.safe_float(jc)
+                if avg_num is None or jc_num is None:
+                    continue
+                if token and avg_num - jc_num > 0:
                     scores.add(token)
             except (TypeError, ValueError):
                 continue
@@ -38862,8 +38954,8 @@ def _direction_lock_ledger_line(info, index=None):
     if not direction and info.get('predicted_result') in ('胜', '平', '负'):
         direction = info.get('predicted_result')
     try:
-        lam_h = float(info.get('lambda_home') if info.get('lambda_home') not in (None, '') else info.get('lam_h'))
-        lam_a = float(info.get('lambda_away') if info.get('lambda_away') not in (None, '') else info.get('lam_a'))
+        lam_h = coerce_float(info.get('lambda_home') if info.get('lambda_home') not in (None, '') else info.get('lam_h'))
+        lam_a = coerce_float(info.get('lambda_away') if info.get('lambda_away') not in (None, '') else info.get('lam_a'))
         ratio = round(lam_h / max(lam_a, 1e-9), 3)
         lam_text = f'{lam_h:.3f}/{lam_a:.3f}'
     except (TypeError, ValueError):
@@ -38887,7 +38979,7 @@ def _direction_lock_ledger_line(info, index=None):
         if isinstance(top, dict):
             top_text = str(top.get('score') or '')
             try:
-                top_text = f"{top_text}{float(top.get('drop_pct')):+.1f}%"
+                top_text = f"{top_text}{coerce_float(top.get('drop_pct')):+.1f}%"
             except (TypeError, ValueError):
                 top_text = top_text or ''
         else:
@@ -39063,8 +39155,8 @@ def _ledger_skill_record(info, index=None):
     direction = lock.get('direction') if lock.get('direction') in ('胜', '平', '负') else None
     log_type = str(lock.get('log_code') or '').strip() or None
     try:
-        lam_h = float(info.get('lambda_home') if info.get('lambda_home') not in (None, '') else info.get('lam_h'))
-        lam_a = float(info.get('lambda_away') if info.get('lambda_away') not in (None, '') else info.get('lam_a'))
+        lam_h = coerce_float(info.get('lambda_home') if info.get('lambda_home') not in (None, '') else info.get('lam_h'))
+        lam_a = coerce_float(info.get('lambda_away') if info.get('lambda_away') not in (None, '') else info.get('lam_a'))
     except (TypeError, ValueError):
         lam_h = None
         lam_a = None
@@ -41026,7 +41118,7 @@ def _dl_margin_group_of(score):
                 return _gname
         # 未在静态表中：按净胜球绝对值动态归类
         _h, _a = parse_score(_s)
-        if _h is None:
+        if _h is None or _a is None:
             return "其它"
         _diff = abs(_h - _a)
         return {0: "平局", 1: "净胜1球", 2: "净胜2球", 3: "净胜3球",
@@ -42262,11 +42354,11 @@ def backfill_historical_data(days=30):
                             _bf_trip = _extract_prob_triplet(_bf_odds_src)
                             if _bf_trip.get('home') is not None and _bf_trip.get('away') is not None:
                                 if pred_home is None:
-                                    pred_home = float(_bf_trip['home'])
+                                    pred_home = coerce_float(_bf_trip['home'])
                                 if pred_away is None:
-                                    pred_away = float(_bf_trip['away'])
+                                    pred_away = coerce_float(_bf_trip['away'])
                                 if pred_draw is None and _bf_trip.get('draw') is not None:
-                                    pred_draw = float(_bf_trip['draw'])
+                                    pred_draw = coerce_float(_bf_trip['draw'])
                                 print(f"   🩹 [FeatureStore·API概率回填] 惰性数据缺失→欧赔转化概率 fixture_id={fixture_id}")
                     except Exception as _bf_fill_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                         print(f"   ⚠️ [FeatureStore·API概率回填] 异常(已跳过): {_bf_fill_err}")
@@ -43044,7 +43136,7 @@ if not _CLI_HEADLESS:
 
             def _calc_actual_direction(_score_text):
                 _home_score, _away_score = parse_score(_score_text)
-                if _home_score is None:
+                if _home_score is None or _away_score is None:
                     return ''
                 return '胜' if _home_score > _away_score else ('平' if _home_score == _away_score else '负')
 
@@ -43757,6 +43849,8 @@ if not _CLI_HEADLESS:
                                                 sh, sa = parse_score(score_str)
                                             except (ValueError, IndexError):
                                                 sh, sa = 0, 0
+                                            if sh is None or sa is None:
+                                                sh, sa = 0, 0
                                             total_goals = sh + sa
                                             if sh > sa:
                                                 direction = "主胜"
@@ -43836,8 +43930,9 @@ if not _CLI_HEADLESS:
                                 if _ou_line_t4 is None:
                                     sorted_by_d3d4 = list(sorted_by_prob)
                                 else:
+                                    _ou_line_t4_num = coerce_float(_ou_line_t4)
                                     sorted_by_d3d4 = sorted(top15, key=lambda x: (
-                                        ((x[1].get('prob', 0) if isinstance(x[1], dict) else 0) * max(0.2, 1 - abs(sum(_parsed) - _ou_line_t4) * 0.25))
+                                        ((x[1].get('prob', 0) if isinstance(x[1], dict) else 0) * max(0.2, 1 - abs(sum(_parsed) - _ou_line_t4_num) * 0.25))
                                         if (_parsed := _safe_parse_score(x[0])) else 0.0
                                     ), reverse=True)[:3]
 
@@ -43874,7 +43969,9 @@ if not _CLI_HEADLESS:
                                         tg_prob = _tg_dist_t4.get(total_goals, _tg_dist_t4.get(str(total_goals), 0)) if _tg_dist_t4 else 0
                                         tg_market_prob = _tg_probs_market_t4.get(f'prob_{total_goals}') if _tg_probs_market_t4 else None
 
-                                    if total_goals > _ou_line_t4:
+                                    if _ou_line_t4 is None:
+                                        ou_bucket = "未知"
+                                    elif total_goals > _ou_line_t4:
                                         ou_bucket = "大球"
                                     elif total_goals < _ou_line_t4:
                                         ou_bucket = "小球"
@@ -43882,8 +43979,10 @@ if not _CLI_HEADLESS:
                                         ou_bucket = "走水"
 
                                     ou_match_flag = "✅" if (
-                                        (total_goals > _ou_line_t4 and _ou_model_over_t4 > 0.55) or
+                                        _ou_line_t4 is not None and
+                                        ((total_goals > _ou_line_t4 and _ou_model_over_t4 > 0.55) or
                                         (total_goals < _ou_line_t4 and _ou_model_under_t4 > 0.55)
+                                        )
                                     ) else ""
 
                                     if tg_market_prob is None or tg_market_prob <= 0 or tg_prob <= 0:
@@ -44025,6 +44124,8 @@ if not _CLI_HEADLESS:
                                             _h, _a = _parsed
                                             _total = _h + _a
                                             _prob = _si.get('prob', 0)
+                                            if _ou_line_t4 is None:
+                                                continue
                                             if _total > _ou_line_t4:
                                                 _over_count += 1
                                                 _over_prob_sum += _prob
