@@ -2,6 +2,13 @@
 from __future__ import annotations
 from typing import Any
 
+_FIXED_CACHE: dict[str, Any] = {}
+
+
+def get(key: Any, default: Any = None) -> Any:
+    """Compatibility helper for module-level cache lookups."""
+    return _FIXED_CACHE.get(str(key), default)
+
 
 def _odds_value(value: Any) -> float | None:
     try:

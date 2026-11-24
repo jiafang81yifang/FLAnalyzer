@@ -42112,6 +42112,7 @@ def listen():
                         break
                     if _last_status == 409:
                         break
+                    _poll_err = f"{_label}: HTTP {_last_status}"
                     _tg_resp = None
                 except Exception as _poll_err_exc:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                     _tg_resp = None
