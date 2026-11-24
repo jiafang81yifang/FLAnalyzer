@@ -313,6 +313,12 @@ def _legacy_eng_log(msg):
     except Exception:
         pass
 
+
+def strip_tg_color_marks(text):
+    """Fallback used when blade_deepseek_pipeline is unavailable."""
+    return str(text or '')
+
+
 import pandas as pd
 import streamlit as st
 

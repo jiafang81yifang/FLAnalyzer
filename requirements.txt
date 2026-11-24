@@ -9,3 +9,4 @@ scipy
 beautifulsoup4
 httpx
 urllib3
+tornado
