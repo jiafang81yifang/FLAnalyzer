@@ -14,6 +14,57 @@ from typing import Any
 _STORE = Path('reports/six_market_contradictions.json')
 
 
+# ---- HTTP/cache helpers ----
+def _cache_dir() -> Path:
+    import os
+    d=Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cache_path(kind: str, match_id: Any) -> Path:
+    safe=re.sub(r'[^A-Za-z0-9_.-]+', '_', str(match_id or 'unknown'))
+    return _cache_dir() / f'{kind}_{safe}.json'
+
+
+def _proxy_dict(proxies: Any = None) -> dict[str, str] | None:
+    import os
+    if isinstance(proxies, dict):
+        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}
+    proxy = str(proxies or os.environ.get('OKOOO_PROXY') or os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY') or '').strip()
+    return {'http': proxy, 'https': proxy} if proxy else None
+
+
+def _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:
+    import time
+    import requests
+    headers={'User-Agent':'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36','Accept-Language':'zh-CN,zh;q=0.9'}
+    last=''
+    for attempt in range(max(1, retries)):
+        try:
+            sess=session or requests
+            resp=sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)
+            if resp.status_code == 200 and resp.text:
+                resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'
+                return resp.text
+            last=f'HTTP {resp.status_code}'
+        except Exception as exc:  # noqa: BLE001 - network retry wrapper
+            last=str(exc)[:160]
+        time.sleep(min(4, 2 ** attempt))
+    raise RuntimeError(last or 'empty response')
+
+
+def _parse_score_odds_from_text(text: str) -> dict[str, float]:
+    odds={}
+    # Handles compact HTML/text containing score followed by decimal odds.
+    for score, odd in re.findall(r'(?:>|\b)(\d+\s*[-:：]\s*\d+)(?:<|\b)[^\d]{0,80}([1-9]\d?(?:\.\d+)?)', text):
+        try:
+            odds[score.replace('：','-').replace(':','-').replace(' ', '')]=float(odd)
+        except ValueError:
+            continue
+    return odds
+
+
 def _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:
     return bool(kwargs.get('data_only', False))
 
@@ -77,19 +128,45 @@ def _unavailable(reason: str, **extra: Any) -> dict[str, Any]:
 
 def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:
     html = kwargs.get('html') or kwargs.get('text')
-    if html:
-        # Minimal odds extraction from supplied HTML/text.
-        odds = {}
-        for score, odd in re.findall(r'(\d+\s*[-:：]\s*\d+)[^0-9]{0,20}([1-9]\d?(?:\.\d+)?)', str(html)):
-            odds[score.replace('：','-').replace(':','-').replace(' ', '')] = float(odd)
-        heat = build_score_market_heat_ranking(odds)
-        heat.update({'correct_score_available': bool(odds), 'match_id': str(match_id or '')})
-        return heat
-    return _unavailable('external_okooo_mobile_cs_fetch_not_configured', match_id=str(match_id or ''))
+    cache = _cache_path('cs', match_id)
+    if not html and cache.exists():
+        try:
+            return json.loads(cache.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    if not html and match_id:
+        url = kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/cs/'
+        try:
+            html = _http_get(str(url), proxies=proxies, session=session)
+        except Exception as exc:
+            return _unavailable('external_okooo_mobile_cs_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160])
+    odds = _parse_score_odds_from_text(str(html or ''))
+    heat = build_score_market_heat_ranking(odds)
+    heat.update({'correct_score_available': bool(odds), 'match_id': str(match_id or ''), 'raw_count': len(odds)})
+    if odds:
+        cache.write_text(json.dumps(heat, ensure_ascii=False, indent=2), encoding='utf-8')
+    return heat if odds else _unavailable('okooo_mobile_cs_no_score_odds_found', match_id=str(match_id or ''))
 
 
 def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:
-    return _unavailable('external_okooo_six_market_fetch_not_configured', match_id=str(match_id or ''), boards_hit={})
+    cache=_cache_path('six', match_id)
+    if cache.exists():
+        try: return json.loads(cache.read_text(encoding='utf-8'))
+        except Exception: pass
+    html=kwargs.get('html') or kwargs.get('text')
+    if not html and match_id:
+        try:
+            html=_http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)
+        except Exception as exc:
+            return _unavailable('external_okooo_six_market_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160], boards_hit={})
+    text=str(html or '')
+    ou_match=re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\d+(?:\.\d+)?)', text, re.I)
+    ah_match=re.search(r'(?:让球|亚盘|Handicap)[^+\-0-9]{0,20}([+\-]?\d+(?:\.\d+)?)', text, re.I)
+    pack={'available': bool(ou_match or ah_match), 'channel': 'mobile', 'match_id': str(match_id or ''), 'ou_line': float(ou_match.group(1)) if ou_match else None, 'asian_handicap': float(ah_match.group(1)) if ah_match else None, 'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)}}
+    if pack['available']:
+        cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')
+        return pack
+    return _unavailable('okooo_six_market_no_lines_found', match_id=str(match_id or ''), boards_hit={})
 
 
 def scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:

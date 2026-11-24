@@ -47,19 +47,118 @@ def calc_bivariate_poisson_matrix(lam_h: Any, lam_a: Any, lambda_shared: Any = 0
     return out
 
 
+
+# ---- Persistent training bundle ----
+def _models_dir() -> str:
+    import os
+    return os.environ.get('MODELS_DIR') or os.environ.get('FLANALYZER_MODELS_DIR') or 'models'
+
+
+def _bundle_path() -> str:
+    import os
+    return os.path.join(_models_dir(), 'blade_ml_bundle.pkl')
+
+
+def _extract_training_rows(history: Any) -> list[dict[str, Any]]:
+    rows=[]
+    source = history.values() if isinstance(history, dict) else (history or [])
+    for rec in source:
+        if not isinstance(rec, dict):
+            continue
+        score=str(rec.get('actual_score') or '').replace(' (进行中)', '').replace(':','-')
+        if '-' not in score:
+            continue
+        try:
+            h,a=[int(x.strip()) for x in score.split('-',1)]
+        except Exception:
+            continue
+        rows.append({
+            'lam_h': _safe_float(rec.get('lam_h') or rec.get('lambda_home'), 1.2),
+            'lam_a': _safe_float(rec.get('lam_a') or rec.get('lambda_away'), 0.9),
+            'ou_line': _safe_float(rec.get('ou_line'), 2.5),
+            'ah_line': _safe_float(rec.get('asian_handicap') or rec.get('ah_line'), 0.0),
+            'home_goals': h,
+            'away_goals': a,
+        })
+    return rows
+
+
+def train_from_history(history: Any, save: bool = True) -> dict[str, Any]:
+    rows=_extract_training_rows(history)
+    bundle={'trained': False, 'rows': len(rows), 'sklearn_ok': SKLEARN_OK, 'model_type': 'poisson_mean', 'created_from': 'history'}
+    if not rows:
+        bundle.update({'home_mean': 1.2, 'away_mean': 0.9, 'reason': 'no_completed_scores'})
+    else:
+        bundle['home_mean']=sum(r['home_goals'] for r in rows)/len(rows)
+        bundle['away_mean']=sum(r['away_goals'] for r in rows)/len(rows)
+        bundle['trained']=True
+        if SKLEARN_OK and len(rows) >= 5:
+            try:
+                from sklearn.ensemble import GradientBoostingRegressor  # type: ignore
+                X=[[r['lam_h'], r['lam_a'], r['ou_line'], r['ah_line']] for r in rows]
+                yh=[r['home_goals'] for r in rows]
+                ya=[r['away_goals'] for r in rows]
+                mh=GradientBoostingRegressor(random_state=42).fit(X, yh)
+                ma=GradientBoostingRegressor(random_state=43).fit(X, ya)
+                bundle.update({'model_type': 'gradient_boosting', 'home_model': mh, 'away_model': ma})
+            except Exception as exc:  # noqa: BLE001 - optional sklearn training fallback
+                bundle['train_warning']=str(exc)[:160]
+    if save:
+        save_bundle(bundle)
+    return bundle
+
+
+def save_bundle(bundle: dict[str, Any]) -> bool:
+    import os, pickle
+    os.makedirs(_models_dir(), exist_ok=True)
+    with open(_bundle_path(), 'wb') as fh:
+        pickle.dump(bundle, fh)
+    return True
+
+
+def load_bundle() -> dict[str, Any] | None:
+    import os, pickle
+    path=_bundle_path()
+    if not os.path.exists(path):
+        return None
+    with open(path, 'rb') as fh:
+        bundle=pickle.load(fh)
+    return bundle if isinstance(bundle, dict) else None
+
+
+def _predict_lambdas_from_bundle(bundle: dict[str, Any], info: dict[str, Any]) -> tuple[float, float]:
+    base=[_safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2)),
+          _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)),
+          _safe_float(info.get('ou_line'), 2.5),
+          _safe_float(info.get('asian_handicap') or info.get('ah_line'), 0.0)]
+    if bundle.get('model_type') == 'gradient_boosting' and bundle.get('home_model') and bundle.get('away_model'):
+        try:
+            return max(0.05, float(bundle['home_model'].predict([base])[0])), max(0.05, float(bundle['away_model'].predict([base])[0]))
+        except Exception:
+            pass
+    return max(0.05, _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2))), max(0.05, _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)))
+
+
 def ensure_ml_bundle(force_train: bool = False) -> dict[str, Any]:
-    return {'enabled': True, 'reason': 'local_poisson_fallback', 'poisson': None, 'sample_count': 0, 'sklearn_ok': SKLEARN_OK}
+    bundle = None if force_train else load_bundle()
+    if bundle is None:
+        return {'enabled': True, 'reason': 'no_trained_bundle', 'poisson': None, 'sample_count': 0, 'sklearn_ok': SKLEARN_OK, 'bundle_path': _bundle_path()}
+    return {'enabled': True, 'reason': 'trained_bundle_loaded', 'poisson': bundle, 'sample_count': int(bundle.get('rows') or 0), 'sklearn_ok': SKLEARN_OK, 'bundle_path': _bundle_path()}
 
 
 def predict_match_ml(match_info: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
     info = match_info if isinstance(match_info, dict) else {}
-    lam_h = _safe_float(info.get('lam_h') or info.get('lambda_home'), 1.2)
-    lam_a = _safe_float(info.get('lam_a') or info.get('lambda_away'), 0.9)
+    bundle = load_bundle()
+    if bundle:
+        lam_h, lam_a = _predict_lambdas_from_bundle(bundle, info)
+    else:
+        lam_h = _safe_float(info.get('lam_h') or info.get('lambda_home'), 1.2)
+        lam_a = _safe_float(info.get('lam_a') or info.get('lambda_away'), 0.9)
     matrix = calc_bivariate_poisson_matrix(lam_h, lam_a, max_goals=7)
     preferred = max(matrix, key=matrix.get) if matrix else ''
     sorted_scores = sorted(matrix.items(), key=lambda kv: kv[1], reverse=True)[:8]
     return {
-        'enabled': True, 'used': True, 'reason': 'local_poisson_fallback',
+        'enabled': True, 'used': True, 'reason': 'trained_bundle' if bundle else 'local_poisson_fallback',
         'preferred_score': preferred, 'top_scores': sorted_scores,
         'poisson_lambda': {'home': lam_h, 'away': lam_a},
         'expected_total_goals': round(lam_h + lam_a, 4),
@@ -71,7 +170,16 @@ def learn_match_after_result(info: Any) -> dict[str, Any]:
 
 
 def train_daily_poisson(force: bool = True) -> tuple[bool, str, int, int]:
-    return True, 'local_poisson_fallback_no_training_needed', 0, 0
+    import json, os
+    hist_path=os.environ.get('HISTORY_FILE', 'match_history.json')
+    history={}
+    if os.path.exists(hist_path):
+        try:
+            history=json.load(open(hist_path, encoding='utf-8'))
+        except Exception:
+            history={}
+    bundle=train_from_history(history, save=True)
+    return bool(bundle.get('trained')), str(bundle.get('model_type') or 'poisson_mean'), int(bundle.get('rows') or 0), 4
 
 
 def deepseek_flash_ml_brief(*args: Any, **kwargs: Any) -> str:

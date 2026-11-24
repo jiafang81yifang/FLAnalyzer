@@ -380,5 +380,118 @@ class DeepSeekAnalyzer:
         return {'total': total, 'hits': hits, 'hit_rate': (hits / total if total else 0.0)}
 
 
+
+# ---- Real DeepSeek/OpenAI-compatible client helpers ----
+def _env(name: str, default: str = '') -> str:
+    import os
+    return os.environ.get(name, default).strip()
+
+
+def deepseek_config() -> dict[str, Any]:
+    return {
+        'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),
+        'base_url': (_env('DEEPSEEK_BASE_URL') or _env('OPENAI_BASE_URL') or 'https://api.deepseek.com').rstrip('/'),
+        'chat_model': _env('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),
+        'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),
+        'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),
+    }
+
+
+def assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:
+    """Build OpenAI-compatible messages for review/learning style calls."""
+    messages: list[dict[str, str]] = []
+    sys_text = str(system or '你是足球量化分析助手，输出必须简洁、可审计、不得编造外部数据。')
+    messages.append({'role': 'system', 'content': sys_text})
+    body_parts = []
+    if task:
+        body_parts.append(f'任务: {task}')
+    if facts is not None:
+        import json
+        body_parts.append('事实数据:\n' + json.dumps(facts, ensure_ascii=False, default=str))
+    if user:
+        body_parts.append(str(user))
+    messages.append({'role': 'user', 'content': '\n\n'.join(body_parts) or '请基于已有事实给出本地分析。'})
+    return messages
+
+
+def _local_analysis(messages: Any, json_mode: bool = False) -> Any:
+    joined = '\n'.join(str(m.get('content', '')) for m in (messages or []) if isinstance(m, dict))
+    if json_mode:
+        return {'available': False, 'provider': 'local', 'summary': '未配置 DEEPSEEK_API_KEY，已使用本地确定性分析。', 'input_chars': len(joined)}
+    return f'本地确定性分析：未配置 DEEPSEEK_API_KEY，已基于现有事实生成降级摘要（输入{len(joined)}字）。'
+
+
+def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bool = False,
+                             json_mode: bool = False, max_retries: int = 3,
+                             temperature: float = 0.2, timeout: float | None = None) -> Any:
+    """Call DeepSeek/OpenAI-compatible chat completions when a key is configured.
+
+    Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import
+    and tests never require paid credentials.
+    """
+    cfg = deepseek_config()
+    if not cfg['api_key']:
+        return _local_analysis(messages, json_mode=json_mode)
+    import json
+    import time
+    import requests
+    url = f"{cfg['base_url']}/v1/chat/completions"
+    payload: dict[str, Any] = {
+        'model': model or cfg['chat_model'],
+        'messages': list(messages or []),
+        'temperature': temperature,
+        'stream': bool(stream),
+    }
+    if json_mode:
+        payload['response_format'] = {'type': 'json_object'}
+    headers = {'Authorization': f"Bearer {cfg['api_key']}", 'Content-Type': 'application/json'}
+    last_err: Exception | None = None
+    for attempt in range(max(1, int(max_retries or 1))):
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout or cfg['timeout'], stream=stream)
+            if resp.status_code == 429 and attempt < max_retries - 1:
+                time.sleep(min(30, 2 ** attempt)); continue
+            resp.raise_for_status()
+            if stream:
+                chunks=[]
+                for raw in resp.iter_lines(decode_unicode=True):
+                    if not raw or not str(raw).startswith('data:'):
+                        continue
+                    data=str(raw)[5:].strip()
+                    if data == '[DONE]':
+                        break
+                    try:
+                        obj=json.loads(data)
+                        chunks.append(obj.get('choices', [{}])[0].get('delta', {}).get('content', ''))
+                    except json.JSONDecodeError:
+                        continue
+                text=''.join(chunks)
+            else:
+                obj=resp.json()
+                text=obj.get('choices', [{}])[0].get('message', {}).get('content', '')
+            if json_mode:
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return {'available': True, 'provider': 'deepseek', 'raw': text}
+            return text
+        except Exception as exc:  # noqa: BLE001 - network/API retry wrapper
+            last_err = exc
+            if attempt < max_retries - 1:
+                time.sleep(min(30, 2 ** attempt))
+    if json_mode:
+        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}
+    return f'DeepSeek调用失败，已降级：{str(last_err or "unknown")[:160]}'
+
+
+def deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:
+    result = deepseek_chat_completion(messages, json_mode=True, **kwargs)
+    return result if isinstance(result, dict) else {'available': False, 'raw': str(result)}
+
+
+def run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:
+    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))
+
+
 def get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:
     return DeepSeekAnalyzer()
