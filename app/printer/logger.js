@@ -99,8 +99,8 @@ module.exports    = function(logger){
   europeOdds = function (match){
     logger.log('欧赔'.column(CONFIG.COLUMN_HEADER)+('主胜'.column()+'平局'.column()+'主负'.column()+'赔付率'.column()).grey);
     _.forEach(COMPANY.europe,function (comp){
-      var data  = match.odds.europe[comp.name];
-      if(data.first&&data.first[0]){
+      var data  = match.odds && match.odds.europe ? match.odds.europe[comp.name] : undefined;
+      if(data&&data.first&&data.first[0]){
         var ud    = updown(data),
             first = data.first.concat();
         ud.push(converter.claimRatio(data.now).column());
@@ -113,8 +113,8 @@ module.exports    = function(logger){
   asiaOdds = function (match){
     logger.log('亚盘'.column(CONFIG.COLUMN_HEADER)+('主胜'.column(CONFIG.COLUMN_YAPAN_LEFT,'right')+'盘口'.column(CONFIG.COLUMN_PANKOU,'center')+'主负'.column()).grey);
     _.forEach(COMPANY.asia,function (comp){
-      var data  = match.odds.asia[comp.name];
-      if(data.first&&data.first[0]){
+      var data  = match.odds && match.odds.asia ? match.odds.asia[comp.name] : undefined;
+      if(data&&data.first&&data.first[0]){
         var ud    = updown(data,true),
             first = data.first.map(String);
         first = [first[0].column(CONFIG.COLUMN_YAPAN_LEFT,'right'),CONFIG.PANKOU[first[1]].column(CONFIG.COLUMN_PANKOU,'center'),first[2].column()];
@@ -124,7 +124,7 @@ module.exports    = function(logger){
     });
   },
   bwinProfits = function (match){
-    if(match.bwin[0]){
+    if(match.bwin&&match.bwin[0]){
       var bwin = _.clone(match.bwin);
       for(var i=0;i<bwin.length;i++){
         if(bwin[i]<-500000){
@@ -190,13 +190,15 @@ module.exports    = function(logger){
 
   },
   scoreAndPredict = function (match){
-    if(match.score.full.home!==undefined){
+    if(match.score&&match.score.full&&match.score.full.home!==undefined){
       printHDA('终场比分',[match.score.full.home,':',match.score.full.away].column(CONFIG.COLUMN_SCORE));
-      printHDA('半场比分'.grey,[match.score.half.home,':',match.score.half.away].column(CONFIG.COLUMN_SCORE),true);
+      if(match.score.half){
+        printHDA('半场比分'.grey,[match.score.half.home,':',match.score.half.away].column(CONFIG.COLUMN_SCORE),true);
+      }
     }
   },
   scoreBanner = function (match){
-    if(match.score.full.home!==undefined){
+    if(match.score&&match.score.full&&match.score.full.home!==undefined){
       var score = (match.score.full.home+':'+match.score.full.away).split('');
       score = score.map(cli.score);
       var banner = '';
@@ -286,7 +288,7 @@ module.exports    = function(logger){
       update = update||false;
       var dot = { false: ' •'.red, true:' •'.green };
       if(data.mid){
-        logger.log(dot[update], data.shortcut?data.shortcut.grey:'', data.home.name+(data.neutral?'(中)'.dim.red:''),'VS'.grey, data.away.name, (data.score.full.home!==undefined?('('+data.score.full.home+':'+data.score.full.away+')'):'').grey);
+        logger.log(dot[update], data.shortcut?data.shortcut.grey:'', data.home.name+(data.neutral?'(中)'.dim.red:''),'VS'.grey, data.away.name, (data.score&&data.score.full&&data.score.full.home!==undefined?('('+data.score.full.home+':'+data.score.full.away+')'):'').grey);
       }else if(data.tid){
         logger.log(dot[update], data.name+(data.fullname?('/'+data.fullname).gray:'')+('/'+data.tid).dim.gray);
       }else if(data.gid){

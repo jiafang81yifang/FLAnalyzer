@@ -14,7 +14,8 @@ var Match       = require('../models/match'),
 
 var FIRST_DATE  = require('../configs/spider').first_date;
 
-mongoose.connect(dbconfig.url);
+mongoose.set('strictQuery', false);
+mongoose.connect(dbconfig.url).catch(function () {});
 mongoose.connection.on('error', function (err) {
   printer.error('mongo_conn',err);
 }); 

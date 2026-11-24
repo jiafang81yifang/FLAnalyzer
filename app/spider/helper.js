@@ -6,7 +6,6 @@ var parser      = require('../utils/parser');
 needle.defaults({
   open_timeout:2500,
   read_timeout:5000,
-  json:true,
   headers:{
     'X-Requested-With': 'XMLHttpRequest',
     'Accept-Encoding': 'gzip, deflate, sdch'
@@ -15,7 +14,7 @@ needle.defaults({
 exports.step = function (steps,skip,printer){
   return function(){
     //跳过步骤
-    while(_.indexOf(skip,steps[0].code)!=-1){
+    while(steps.length>0&&_.indexOf(skip,steps[0].code)!=-1){
       steps.shift();
     }
     //如果剩余步骤
@@ -47,10 +46,10 @@ exports.poster = function(printer){
     handler(url,function (response){
       var result;
       //修整竞彩成交量数据
-      var body = parser.jsonfix(response.body);
+      var body = typeof response.body === 'string' ? parser.jsonfix(response.body) : response.body;
       //解析出错自动重试
       try{
-        result = JSON.parse(body);
+        result = typeof body === 'string' ? JSON.parse(body) : body;
       }catch (err) {
         printer.error('json',err);
         return jsonHandler(url,step);

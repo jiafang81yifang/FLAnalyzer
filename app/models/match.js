@@ -220,19 +220,23 @@ MatchSchema.statics.getByTeam = function (team, query, limit, callback){
     q = {$or:[{'home.tid':team.tid},{'away.tid':team.tid}],done:true};
   }
   if(query.game){
-    q['game.gid'] = game.gid;
+    q['game.gid'] = query.game.gid || query.game;
   }
   this.find(q).lt('time',query.time).limit(limit).sort({time:-1}).exec(callback);
 }
+
+MatchSchema.statics.getMatchesByTeam = MatchSchema.statics.getByTeam;
 
 MatchSchema.statics.getByTeams = function (teams, query, limit, callback){
   query.time = query.time||Date.now();
   var q = {$or:[{'home.tid':teams[0].tid,'away.tid':teams[1].tid},{'home.tid':teams[1].tid,'away.tid':teams[0].tid}],done:true};
   if(query.game){
-    q['game.gid'] = game.gid;
+    q['game.gid'] = query.game.gid || query.game;
   }
   this.find(q).lt('time',query.time).limit(limit).sort({time:-1}).exec(callback);
 }
+
+MatchSchema.statics.getMatchesByTeams = MatchSchema.statics.getByTeams;
 
 MatchSchema.statics.getByGame = function (game, limit, callback){
   this.find({'game.name': game}).limit(limit).sort({time:-1}).exec(callback);
