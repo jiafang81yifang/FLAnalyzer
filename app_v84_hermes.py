@@ -5969,6 +5969,8 @@ def detect_cup_mode(match_name, first_leg_score=None):
 
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         return ("杯赛常规", 1.0, 1.0, "首回合比分解析失败")
+    if h1 is None or a1 is None:
+        return ("杯赛常规", 1.0, 1.0, "首回合比分解析失败")
 
     diff = h1 - a1  # 正数=主队首回合领先，负数=主队首回合落后
 
@@ -6754,7 +6756,7 @@ class GameTheoryBattleEngine:
                     # 计算分差组
                     diff_group = None
                     h, a = parse_score(score_str)
-                    if h is not None:
+                    if h is not None and a is not None:
                         diff_group = h - a
                     elif '胜其它' in score_str:
                         diff_group = 3  # 虚拟分差
@@ -6875,7 +6877,7 @@ class GameTheoryBattleEngine:
                     continue
 
                 h, a = parse_score(score_str)
-                if h is None:
+                if h is None or a is None:
                     continue
 
                 total = h + a
@@ -6965,7 +6967,7 @@ class GameTheoryBattleEngine:
                     continue
 
                 h, a = parse_score(score_str)
-                if h is None:
+                if h is None or a is None:
                     continue
 
                 net = h - a
@@ -7719,7 +7721,7 @@ class GoalExpectationCalibrator:
                     continue
                 try:
                     _ps_h, _ps_a = parse_score(actual)
-                    actual_goals = _ps_h + _ps_a if _ps_h is not None else 0
+                    actual_goals = _ps_h + _ps_a if _ps_h is not None and _ps_a is not None else 0
                 except (ValueError, IndexError):
                     continue
                 weighted_goals = float(info.get('weighted_goals', 0) or 0)
@@ -8017,7 +8019,7 @@ def extract_ucl_special_features(match_data, data_500, liquidity_ledger):
             first_leg_score = match_data.get("first_leg_score") or ""
             if "-" in str(first_leg_score) and leg_mode == 2.0:
                 _flh, _fla = parse_score(first_leg_score)
-                if _flh is not None:
+                if _flh is not None and _fla is not None:
                     ucl_features['feat_first_leg_residual_gap'] = float(_flh - _fla)
                 else:
                     ucl_features['feat_first_leg_residual_gap'] = 0.0
@@ -8107,6 +8109,8 @@ class MultiModalConfidenceGate:
                     if '-' in node_str and '其它' not in node_str:
                         try:
                             val_pos, val_neg = parse_score(node_str)
+                            if val_pos is None or val_neg is None:
+                                continue
 
                             if val_pos > val_neg:
                                 anchor_vector_axes.add('axis_positive')
@@ -25238,7 +25242,7 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                 'api_fixture_id': rec.get('api_fixture_id'),
             })
             # 500 盘口线只进 fallback_* 对照，不写入 six_market_mobile。
-            _fenxi = rec.get('fallback_500_fenxi') if isinstance(rec.get('fallback_500_fenxi'), dict) else {}
+            _fenxi = _as_dict(rec.get('fallback_500_fenxi'))
             if _fenxi.get('available'):
                 _notes = _fenxi.get('analysis_notes') or []
                 print(
@@ -26055,7 +26059,7 @@ def _generate_betfair_analysis_hint(bf_data):
                     kelly.get('odds_draw') or bf_data.get('odds_draw'),
                     kelly.get('odds_away') or bf_data.get('odds_away'),
                 )
-            risk = kelly.get('risk') if isinstance(kelly.get('risk'), dict) else {}
+            risk = _as_dict(kelly.get('risk'))
             label = {'home': '主胜', 'draw': '平局', 'away': '客胜'}
             for side in ('home', 'draw', 'away'):
                 kv = kelly.get(side)
@@ -28337,8 +28341,8 @@ def _resolve_compare_heat_from_history(rec):
         return _empty_mobile_cs_heat(f'fallback_rebuild_miss:{src0 or ch0 or "empty"}')
 
     # 手机 dual 已写入市均但 channel 漏标时，仍按手机重建
-    _dual0 = rec.get('dual_source_facts') if isinstance(rec.get('dual_source_facts'), dict) else {}
-    _dual_cs0 = _dual0.get('correct_score') if isinstance(_dual0.get('correct_score'), dict) else {}
+    _dual0 = _as_dict(rec.get('dual_source_facts'))
+    _dual_cs0 = _as_dict(_dual0.get('correct_score'))
     _mobile_entered = bool(_dual_cs0.get('mobile_entered')) or bool(
         rec.get('dual_source_mobile_cs_entered')
     )
@@ -28352,7 +28356,7 @@ def _resolve_compare_heat_from_history(rec):
     cs_rows = []
     page_avg = None
     try:
-        _om = rec.get('okooo_markets') if isinstance(rec.get('okooo_markets'), dict) else {}
+        _om = _as_dict(rec.get('okooo_markets'))
         _cs = _om.get('correct_score')
         if isinstance(_cs, list) and _cs:
             cs_rows = list(_cs)
@@ -28362,7 +28366,7 @@ def _resolve_compare_heat_from_history(rec):
         for _cand in (
             rec.get('correct_score_page_avg'),
             rec.get('correct_score_books_avg'),
-            _dual_cs0.get('books_avg') if isinstance(_dual_cs0.get('books_avg'), dict) else None,
+            _as_dict(_dual_cs0.get('books_avg')),
             rec.get('odds_correct_score'),
         ):
             if not isinstance(_cand, dict) or not _cand:
@@ -28961,13 +28965,14 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
             return None
 
     _ds_payload = dict(bundle.get('ds_payload') or {})
+    _stage2_analyzer = _ensure_deepseek_analyzer()
 
     def _cs31_audit_of(payload):
         pack = payload.get('theo_mkt_31_pack') if isinstance(payload, dict) else None
         rows = pack.get('rows') if isinstance(pack, dict) else None
-        if DeepSeekAnalyzer is None:
+        if _stage2_analyzer is None:
             return {'complete': False, 'missing': ['analyzer_missing']}
-        return DeepSeekAnalyzer.audit_theo_mkt_31_rows(rows)
+        return _stage2_analyzer.audit_theo_mkt_31_rows(rows)
 
     _cs31_audit = _cs31_audit_of(_ds_payload)
     if not _cs31_audit.get('complete') and isinstance(rec, dict):
@@ -28982,24 +28987,30 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                     _flat0.extend([r for r in (_dfr0.get(_lab) or []) if isinstance(r, dict)])
             if not _flat0:
                 _flat0 = [r for r in (_ds_payload.get('jc_cross_rows') or []) if isinstance(r, dict)]
-            _extra0 = DeepSeekAnalyzer._collect_legal_cs_market_odds(
-                {
-                    **_ds_payload,
-                    'correct_score_page_avg': rec.get('correct_score_page_avg'),
-                    'correct_score_books_avg': rec.get('correct_score_books_avg'),
-                    'correct_score_site_avg': rec.get('correct_score_site_avg'),
-                    'markets': rec.get('markets') or rec.get('okooo_markets'),
-                },
-                _flat0,
-            )
-            if _flat0 or _extra0:
-                _pack_fix = DeepSeekAnalyzer.build_theo_mkt_31_pack(
+            if _stage2_analyzer is None:
+                _extra0 = {}
+            else:
+                _extra0 = _stage2_analyzer._collect_legal_cs_market_odds(
+                    {
+                        **_ds_payload,
+                        'correct_score_page_avg': rec.get('correct_score_page_avg'),
+                        'correct_score_books_avg': rec.get('correct_score_books_avg'),
+                        'correct_score_site_avg': rec.get('correct_score_site_avg'),
+                        'markets': rec.get('markets') or rec.get('okooo_markets'),
+                    },
                     _flat0,
-                    home=str(_ds_payload.get('home') or ''),
-                    away=str(_ds_payload.get('away') or ''),
-                    match_name=str(_ds_payload.get('match') or cn_name or ''),
-                    extra_market_odds=_extra0,
                 )
+            if _flat0 or _extra0:
+                if _stage2_analyzer is None:
+                    _pack_fix = {}
+                else:
+                    _pack_fix = _stage2_analyzer.build_theo_mkt_31_pack(
+                        _flat0,
+                        home=str(_ds_payload.get('home') or ''),
+                        away=str(_ds_payload.get('away') or ''),
+                        match_name=str(_ds_payload.get('match') or cn_name or ''),
+                        extra_market_odds=_extra0,
+                    )
                 _ds_payload['theo_mkt_31_pack'] = _pack_fix
                 if isinstance(bundle.get('ds_payload'), dict):
                     bundle['ds_payload']['theo_mkt_31_pack'] = _pack_fix
@@ -29534,8 +29545,8 @@ def emit_mkt_over_theo_matches_digest():
         prejudge = rec.get('system_theo_mkt_prejudge') if isinstance(rec.get('system_theo_mkt_prejudge'), dict) else {}
         if pos_n is None:
             try:
-                bundle = rec.get('pipeline_report_bundle') if isinstance(rec.get('pipeline_report_bundle'), dict) else {}
-                dsp = bundle.get('ds_payload') if isinstance(bundle.get('ds_payload'), dict) else {}
+                bundle = _as_dict(rec.get('pipeline_report_bundle'))
+                dsp = _as_dict(bundle.get('ds_payload'))
                 pos_n = dsp.get('mkt_over_theo_count')
                 if not prejudge:
                     prejudge = dsp.get('system_theo_mkt_prejudge') or {}
@@ -29632,10 +29643,10 @@ def _lowest_odds_label(odds_map):
 def _fusion_display_score_pair(payload):
     """汇总只读融合已收口的这一对。不写 first_score。"""
     payload = payload if isinstance(payload, dict) else {}
-    fusion = payload.get('open_system_fusion') if isinstance(payload.get('open_system_fusion'), dict) else {}
+    fusion = _as_dict(payload.get('open_system_fusion'))
     blank = ('', '未出', '未给出', '未形成')
     for key in ('dual_prejudge', 'score_pair'):
-        pack = fusion.get(key) if isinstance(fusion.get(key), dict) else {}
+        pack = _as_dict(fusion.get(key))
         first = str(pack.get('first') or '').strip()
         second = str(pack.get('second') or '').strip()
         if first in blank:
@@ -29650,21 +29661,21 @@ def _batch_result_card_from_payload(rec, payload, first_score='', second_score='
     """汇总卡。只抄已落锁方向、大小球、概率面和已收口比分，不另写 first_score。"""
     rec = rec if isinstance(rec, dict) else {}
     payload = payload if isinstance(payload, dict) else {}
-    lock = payload.get('direction_lock') if isinstance(payload.get('direction_lock'), dict) else {}
+    lock = _as_dict(payload.get('direction_lock'))
     direction = lock.get('direction') if lock.get('locked') and lock.get('direction') in ('胜', '平', '负') else ''
-    close = payload.get('direction_lock_score_close') if isinstance(payload.get('direction_lock_score_close'), dict) else {}
+    close = _as_dict(payload.get('direction_lock_score_close'))
     ou = str(close.get('ou_tendency') or rec.get('predicted_ou') or rec.get('big_small') or '')
-    prob = payload.get('score_prob_matrix') if isinstance(payload.get('score_prob_matrix'), dict) else {}
-    wdl_pct = prob.get('wdl_pct') if isinstance(prob.get('wdl_pct'), dict) else {}
+    prob = _as_dict(payload.get('score_prob_matrix'))
+    wdl_pct = _as_dict(prob.get('wdl_pct'))
     prob_text = ' / '.join(
         f'{lab}{_pct_text(wdl_pct.get(lab)) or "未出"}' for lab in ('胜', '平', '负')
     )
-    board = payload.get('cross_market_board') if isinstance(payload.get('cross_market_board'), dict) else {}
-    six = board.get('six_market_mobile') if isinstance(board.get('six_market_mobile'), dict) else {}
-    if not six and isinstance(payload.get('six_market_mobile'), dict):
-        six = payload.get('six_market_mobile')
-    if not six and isinstance(rec.get('six_market_mobile'), dict):
-        six = rec.get('six_market_mobile')
+    board = _as_dict(payload.get('cross_market_board'))
+    six = _as_dict(board.get('six_market_mobile'))
+    if not six:
+        six = _as_dict(payload.get('six_market_mobile'))
+    if not six:
+        six = _as_dict(rec.get('six_market_mobile'))
     others = []
     if six.get('jc_handicap') not in (None, ''):
         others.append(f"竞彩让球{six.get('jc_handicap')}")
@@ -29722,8 +29733,8 @@ def emit_batch_prediction_digest():
             or rec.get('batch_result_card')
         ):
             continue
-        bundle = rec.get('pipeline_report_bundle') if isinstance(rec.get('pipeline_report_bundle'), dict) else {}
-        payload = bundle.get('ds_payload') if isinstance(bundle.get('ds_payload'), dict) else {}
+        bundle = _as_dict(rec.get('pipeline_report_bundle'))
+        payload = _as_dict(bundle.get('ds_payload'))
         card = _batch_result_card_from_payload(rec, payload)
         name = str(rec.get('match') or rec.get('cn_name') or '')
         kick = str(rec.get('time') or rec.get('kickoff') or rec.get('match_time') or '')
@@ -38927,6 +38938,7 @@ def _ledger_gaps(text, count):
 def _review_match_facts(info, index=None):
     """单场完赛事实。只列数字与已落盘字段，不写复盘、解决方法或代码。不写 first_score。"""
     info = info if isinstance(info, dict) else {}
+    analyzer = _ensure_deepseek_analyzer()
     name = str(info.get('match') or '未知')
     actual = str(info.get('actual_score') or '').replace(' (进行中)', '').strip()
     pred1 = str(info.get('predicted_score') or info.get('first_score') or '').strip()
@@ -38968,7 +38980,7 @@ def _review_match_facts(info, index=None):
         lines.append("比分池: " + " | ".join(bits))
     lines.append(_direction_lock_ledger_line(info, index))
     try:
-        judged = DeepSeekAnalyzer.build_direction_lock_judgment_report(info) if DeepSeekAnalyzer is not None else {}
+        judged = analyzer.build_direction_lock_judgment_report(info) if analyzer is not None else {}
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         judged = {}
     if isinstance(judged, dict) and judged.get('verdict'):
@@ -38994,7 +39006,7 @@ def _review_match_facts(info, index=None):
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         lines.append('市短市热对照: 未形成')
     try:
-        _dual = DeepSeekAnalyzer.build_system_ml_dual_matrix_pack(info if isinstance(info, dict) else {})
+        _dual = analyzer.build_system_ml_dual_matrix_pack(info if analyzer is not None else {})
         lines.append(
             '两套矩阵识别: 前8最多【{}】占比胜{:.1f}%/平{:.1f}%/负{:.1f}%；'
             '前15进球主导【{}】少球{:.1f}%/多球{:.1f}%；市短vs市热={}；均差vs市短市热={}。不改方向锁。'.format(
@@ -39012,17 +39024,17 @@ def _review_match_facts(info, index=None):
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         lines.append('两套矩阵识别: 未形成')
     try:
-        origin = DeepSeekAnalyzer.classify_result_score_origin(info, actual)
+        origin = analyzer.classify_result_score_origin(info, actual) if analyzer is not None else {}
         lines.append(str(origin.get('line') or '比分出处: 未形成'))
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         lines.append('比分出处: 未形成')
     try:
-        reason = DeepSeekAnalyzer.explain_score_hot_short_reason(info, actual)
+        reason = analyzer.explain_score_hot_short_reason(info, actual) if analyzer is not None else {}
         lines.append(str(reason.get('line') or '市热市短原因: 未形成'))
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         lines.append('市热市短原因: 未形成')
     try:
-        ou_reason = DeepSeekAnalyzer.explain_match_ou_bounds(info, actual)
+        ou_reason = analyzer.explain_match_ou_bounds(info, actual) if analyzer is not None else {}
         lines.append(str(ou_reason.get('line') or '大小球分析: 未形成'))
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         lines.append('大小球分析: 未形成')
@@ -39045,9 +39057,9 @@ def _ledger_skill_record(info, index=None):
     """把一场已落盘事实收成台账记录。缺的字段留空，不补造。"""
     info = info if isinstance(info, dict) else {}
     payload = _history_payload(info)
-    lock = info.get('direction_lock') if isinstance(info.get('direction_lock'), dict) else {}
-    if not lock and isinstance(payload.get('direction_lock'), dict):
-        lock = payload.get('direction_lock')
+    lock = _as_dict(info.get('direction_lock'))
+    if not lock:
+        lock = _as_dict(payload.get('direction_lock'))
     direction = lock.get('direction') if lock.get('direction') in ('胜', '平', '负') else None
     log_type = str(lock.get('log_code') or '').strip() or None
     try:
@@ -39062,12 +39074,12 @@ def _ledger_skill_record(info, index=None):
         check_result = '一致' if direction == actual_wdl else '不一致'
     else:
         check_result = None
-    matrix = payload.get('score_prob_matrix') if isinstance(payload.get('score_prob_matrix'), dict) else {}
-    wdl_pct = matrix.get('wdl_pct') if isinstance(matrix.get('wdl_pct'), dict) else None
+    matrix = _as_dict(payload.get('score_prob_matrix'))
+    wdl_pct = _as_dict(matrix.get('wdl_pct')) or None
     if not wdl_pct:
         wdl_pct = None
-    drop = payload.get('max_drop_wdl_matrix') if isinstance(payload.get('max_drop_wdl_matrix'), dict) else {}
-    directions = drop.get('directions') if isinstance(drop.get('directions'), dict) else {}
+    drop = _as_dict(payload.get('max_drop_wdl_matrix'))
+    directions = _as_dict(drop.get('directions'))
     drop_curve = {}
     for lab in ('胜', '平', '负'):
         block = directions.get(lab) if isinstance(directions.get(lab), dict) else {}
