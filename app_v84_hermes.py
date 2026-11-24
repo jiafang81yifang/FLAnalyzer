@@ -21574,7 +21574,7 @@ def run_structured_parsing_order(prob_dict, odds_correct_score, odds_1x2_dict,
         return out
 
 
-def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,
+def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; semantic split is unsafe in this monolithic decision matrix.
                          odds_correct_score=None, ai_report="",
                          lam_h=1.2, lam_a=0.9, cup_mode=False,
                          ai_fund_signal=None, ai_handicap_signal=None,
@@ -28487,7 +28487,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
     六盘口若为空壳/旧 odds.php 入口，允许补抓手机亚指+大小后再组板。
     """
     rec = rec if isinstance(rec, dict) else {}
-    _ensure_deepseek_analyzer()
+    deepseek_analyzer = _ensure_deepseek_analyzer()
     fid = str(fid or rec.get('fixture_id') or rec.get('id') or '')
     match_name = str(cn_name or rec.get('match') or rec.get('cn_name') or '')
     bj_time = str(rec.get('time') or rec.get('kickoff') or '')
@@ -28497,7 +28497,27 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
     big_small = rec.get('predicted_ou') or rec.get('big_small') or ''
     pred_dir_str = rec.get('predicted_result') or ''
     ou_line = rec.get('ou_line')
-    title_line = DeepSeekAnalyzer.format_tg_match_header(
+    if deepseek_analyzer is None:
+        return {
+            'title_line': f"📌 {match_name} {bj_time}".strip(),
+            'mkt_desc_lines': [],
+            'desc_lines': [],
+            'heat_tg_lines': [],
+            'jc_vs_hot_tg_lines': [],
+            'wdl_matrix_tg_lines': [],
+            'theo_mkt_31_tg_lines': [],
+            'mkt_over_theo_tg_lines': [],
+            'ds_payload': {'available': False, 'reason': 'deepseek_analyzer_missing'},
+            'first_score': first_score,
+            'second_score': second_score,
+            'big_small': big_small,
+            'pred_dir_str': pred_dir_str,
+            'cn_name': match_name,
+            'ou_line': ou_line,
+            'ou_pred': big_small,
+            'mng_result': {},
+        }
+    title_line = deepseek_analyzer.format_tg_match_header(
         match_name,
         kickoff=bj_time,
         match_no=str(rec.get('no') or rec.get('local_id') or ''),
@@ -28521,7 +28541,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
     except Exception as _dual_rb_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         print(f"   ⚠️ [重建] 双源互补跳过: {_dual_rb_err}")
     try:
-        _sv2_exist = rec.get('six_cs_settlement_v2') if isinstance(rec.get('six_cs_settlement_v2'), dict) else {}
+        _sv2_exist = _as_dict(rec.get('six_cs_settlement_v2'))
         if not _sv2_exist.get('available'):
             from odds_index_math import apply_six_cs_settlement_v2_to_rec as _set_v2_rb
             _set_v2_rb(rec)
@@ -28638,7 +28658,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
             }) or []
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         _theory_rows_rb = []
-    ds_payload = DeepSeekAnalyzer.build_jc_cross_only_payload(
+    ds_payload = deepseek_analyzer.build_jc_cross_only_payload(
         {
             'match': match_name,
             'kickoff': bj_time,
@@ -28717,7 +28737,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
     ds_payload['compare_heat_source'] = heat.get('source') if isinstance(heat, dict) else ''
     ds_payload['compare_heat_available'] = bool(isinstance(heat, dict) and heat.get('available'))
     try:
-        DeepSeekAnalyzer.attach_score_odds_cold_hedge(
+        deepseek_analyzer.attach_score_odds_cold_hedge(
             ds_payload,
             rec.get('unified_arbitration') if isinstance(rec, dict) else None,
         )
@@ -28732,7 +28752,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
     try:
         _board_src = dict(rec) if isinstance(rec, dict) else {}
         _board_src['ou_line'] = ou_line if ou_line is not None else _board_src.get('ou_line')
-        _cmb = DeepSeekAnalyzer.build_cross_market_board(
+        _cmb = deepseek_analyzer.build_cross_market_board(
             _board_src,
             first_score=first_score,
             second_score=second_score,
@@ -28754,7 +28774,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
             theo_mkt_31_tg_lines = list(ds_payload.get('theo_mkt_31_tg_lines') or [])
             mkt_over_theo_tg_lines = list(ds_payload.get('mkt_over_theo_tg_lines') or [])
             if not wdl_matrix_tg_lines and isinstance(ds_payload.get('mkt_short_wdl_matrix'), dict):
-                wdl_matrix_tg_lines = DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(
+                wdl_matrix_tg_lines = deepseek_analyzer.format_mkt_short_wdl_matrix_tg_lines(
                     ds_payload.get('mkt_short_wdl_matrix') or {},
                     home=str(ds_payload.get('home') or ''),
                     away=str(ds_payload.get('away') or ''),
@@ -28762,7 +28782,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
                 ds_payload['wdl_matrix_tg_lines'] = wdl_matrix_tg_lines
             hot_matrix_tg_lines = list(ds_payload.get('hot_matrix_tg_lines') or [])
             if not hot_matrix_tg_lines:
-                hot_matrix_tg_lines = DeepSeekAnalyzer.format_mkt_hot_wdl_matrix_tg_lines(ds_payload)
+                hot_matrix_tg_lines = deepseek_analyzer.format_mkt_hot_wdl_matrix_tg_lines(ds_payload)
                 ds_payload['hot_matrix_tg_lines'] = hot_matrix_tg_lines
             # 31全表和市热超理论专表都进 TG
             if not theo_mkt_31_tg_lines:
@@ -28775,7 +28795,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
                     if not _flat:
                         _flat = [r for r in (ds_payload.get('jc_cross_rows') or []) if isinstance(r, dict)]
                     if _flat:
-                        _extra_mkt = DeepSeekAnalyzer._collect_legal_cs_market_odds(
+                        _extra_mkt = deepseek_analyzer._collect_legal_cs_market_odds(
                             {
                                 **(ds_payload if isinstance(ds_payload, dict) else {}),
                                 'correct_score_page_avg': (rec.get('correct_score_page_avg') if isinstance(rec, dict) else None),
@@ -28786,7 +28806,7 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
                             },
                             _flat,
                         )
-                        _pack31 = DeepSeekAnalyzer.build_theo_mkt_31_pack(
+                        _pack31 = deepseek_analyzer.build_theo_mkt_31_pack(
                             _flat,
                             home=str(ds_payload.get('home') or ''),
                             away=str(ds_payload.get('away') or ''),
@@ -28798,10 +28818,10 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
                         ds_payload['mkt_over_theo_rows'] = _pack31.get('pos_rows') or []
                         ds_payload['mkt_over_theo_count'] = int(_pack31.get('pos_count') or 0)
                         if not theo_mkt_31_tg_lines:
-                            theo_mkt_31_tg_lines = DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(_pack31)
+                            theo_mkt_31_tg_lines = deepseek_analyzer.format_theo_mkt_31_tg_lines(_pack31)
                             ds_payload['theo_mkt_31_tg_lines'] = theo_mkt_31_tg_lines
                         if not mkt_over_theo_tg_lines:
-                            mkt_over_theo_tg_lines = DeepSeekAnalyzer.format_mkt_over_theo_tg_lines(_pack31)
+                            mkt_over_theo_tg_lines = deepseek_analyzer.format_mkt_over_theo_tg_lines(_pack31)
                             ds_payload['mkt_over_theo_tg_lines'] = mkt_over_theo_tg_lines
                 except Exception as _t31e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                     print(f"   ⚠️ [重建] 31概率表补建失败: {_t31e}")
@@ -28932,7 +28952,7 @@ def collect_report_analysis_facts(scope):
     return facts
 
 
-def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None, force_anti_homogen=None):
+def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None, force_anti_homogen=None):  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; keep stage-2 pipeline behavior intact.
     """阶段2轻量出口：读取/重建 pipeline_report_bundle，
     仅调用 deepseek-flash（DeepSeek-V4.1-Flash）研判并强制推送 TG（不再整场重抓/重算）。
     仅未开赛场次可补发；已开赛/完场直接跳过。
@@ -29941,7 +29961,7 @@ def _clear_finished_match_scrape_cache(okooo_match_id=None, fid=None):
     print(f"   [单场清缓存] fid={fid or '-'} okooo={mid or '-'} 已清除，下一场重新抓取")
 
 
-def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=None):
+def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=None):  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; safe refactor would require broad workflow extraction.
     """
     融合概率版单场分析：ML融合+二桃博弈+DTI+淘汰赛模式+同质化检查
     新增参数：
@@ -38674,6 +38694,8 @@ def game_theory_analysis():
                       {"role": "user", "content": macro_log}],
             temperature=0.8, timeout=90, max_retries=2
         )
+        if resp is None:
+            return "推演失败: DeepSeek无响应"
         analysis_result = resp.choices[0].message.content
         send_tg(f"⚖️ 【全盘博弈论推演报告】\n\n{analysis_result}")
         with open(GAME_THEORY_FILE, 'w', encoding='utf-8') as f:
@@ -38705,6 +38727,8 @@ def ai_furnace():
                       {"role": "user", "content": combat_log}],
             timeout=90, temperature=0.9, max_retries=2
         )
+        if resp is None:
+            return "炼丹失败: DeepSeek无响应"
         new_rule = resp.choices[0].message.content.strip()
         save_brain_rules(new_rule)
         send_tg(f"🔥 【熔炉提炼成功】\n\nAI 新生铁律已刻入大脑：\n⚠️ {new_rule}")
@@ -39046,7 +39070,7 @@ def _review_match_facts(info, index=None):
         f"λ主: {info.get('lam_h')} λ客: {info.get('lam_a')}",
         f"DTI: {info.get('dti')}",
     ]
-    hot = info.get('hot_top8_result') if isinstance(info.get('hot_top8_result'), dict) else {}
+    hot = _as_dict(info.get('hot_top8_result'))
     if hot.get('available'):
         rank = f" 第{hot.get('rank')}热" if hot.get('rank') else ""
         lines.append(f"市热全列: {'命中' if hot.get('in_hot8') else '未中'}{rank}")
@@ -39098,7 +39122,7 @@ def _review_match_facts(info, index=None):
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         lines.append('市短市热对照: 未形成')
     try:
-        _dual = analyzer.build_system_ml_dual_matrix_pack(info if analyzer is not None else {})
+        _dual = analyzer.build_system_ml_dual_matrix_pack(info) if analyzer is not None else {}
         lines.append(
             '两套矩阵识别: 前8最多【{}】占比胜{:.1f}%/平{:.1f}%/负{:.1f}%；'
             '前15进球主导【{}】少球{:.1f}%/多球{:.1f}%；市短vs市热={}；均差vs市短市热={}。不改方向锁。'.format(
@@ -39174,9 +39198,9 @@ def _ledger_skill_record(info, index=None):
     directions = _as_dict(drop.get('directions'))
     drop_curve = {}
     for lab in ('胜', '平', '负'):
-        block = directions.get(lab) if isinstance(directions.get(lab), dict) else {}
+        block = _as_dict(directions.get(lab))
         focus = list(block.get('focus_scores') or [])
-        top = block.get('max_score') if isinstance(block.get('max_score'), dict) else {}
+        top = _as_dict(block.get('max_score'))
         if focus or top.get('score'):
             drop_curve[lab] = {'focus': focus, 'max_score': top.get('score')}
     review = None
@@ -40377,8 +40401,11 @@ def learn_completed_match(fid, info, notify=False):
     state = '已完成' if pack.get('ok') else '未完成'
     score = pack.get('actual_score') or info.get('actual_score') or ''
     try:
-        learning_lines = DeepSeekAnalyzer.format_matrix_learning_tg_lines(info, score)
-        info['matrix_learning_report'] = DeepSeekAnalyzer.build_matrix_learning_report(info, score)
+        deepseek_analyzer = _ensure_deepseek_analyzer()
+        if deepseek_analyzer is None:
+            raise RuntimeError('deepseek_analyzer_missing')
+        learning_lines = deepseek_analyzer.format_matrix_learning_tg_lines(info, score)
+        info['matrix_learning_report'] = deepseek_analyzer.build_matrix_learning_report(info, score)
     except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         learning_lines = ['📌【学习改进意见】', '  学习材料未形成。不改首选，不改次选，不改方向锁。']
     print(
@@ -40388,7 +40415,10 @@ def learn_completed_match(fid, info, notify=False):
     if notify and re.match(r'^\d+-\d+$', str(score).replace(' ', '')):
         done = '训练已完成' if pack.get('ok') else '训练未完成'
         try:
-            team_line = DeepSeekAnalyzer.learning_match_teams_line(info)
+            deepseek_analyzer = _ensure_deepseek_analyzer()
+            if deepseek_analyzer is None:
+                raise RuntimeError('deepseek_analyzer_missing')
+            team_line = deepseek_analyzer.learning_match_teams_line(info)
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             team_line = '开赛球队：未形成，不补队名。'
         body_lines = list(learning_lines)
@@ -41204,7 +41234,7 @@ def _dl_norm_score(raw):
 def _dl_ml_deepseek_fact(info, actual):
     """读分析时已落盘的机器学习预测和 DeepSeek ①②。不重新预测，不写 first_score。"""
     info = info if isinstance(info, dict) else {}
-    ml = info.get('ml_prediction') if isinstance(info.get('ml_prediction'), dict) else {}
+    ml = _as_dict(info.get('ml_prediction'))
     actual_s = _dl_norm_score(actual)
     pref = _dl_norm_score(ml.get('preferred_score') or info.get('ml_preferred_score'))
     second_ml = ''
@@ -41220,7 +41250,7 @@ def _dl_ml_deepseek_fact(info, actual):
             break
     ds1 = _dl_norm_score(info.get('first_score') or info.get('predicted_score'))
     ds2 = _dl_norm_score(info.get('second_score'))
-    lam = ml.get('poisson_lambda') if isinstance(ml.get('poisson_lambda'), dict) else {}
+    lam = _as_dict(ml.get('poisson_lambda'))
 
     def _hit(primary, secondary):
         if not primary:
@@ -43551,7 +43581,7 @@ if not _CLI_HEADLESS:
                     actual_val = str(row['💥 实际比分']).replace(' (进行中)', '').strip()
                     pred1 = str(row['_pred1']).strip()
                     pred2 = str(row['_pred2']).strip()
-                    if row['📡 状态'] == '✅ 完结':
+                    if str(row.get('📡 状态', '')) == '✅ 完结':
                         if actual_val == pred1 and actual_val != '➖':
                             hit_tags.append('✅首选命中')
                         elif actual_val == pred2 and actual_val != '➖':
