@@ -198,7 +198,13 @@ def _local_proxy_base():
     """代理选择：OKOOO_ROUTE=direct 直连；proxy 用 OKOOO_PROXY；auto 则 CLI/环境优先，再探 7897/7890。"""
     route = _blade_normalize_okooo_route(os.environ.get("OKOOO_ROUTE") or _CLI_OKOOO_ROUTE or "auto")
     forced = _blade_normalize_proxy_url(
-        os.environ.get("OKOOO_PROXY") or _CLI_OKOOO_PROXY or ""
+        os.environ.get("OKOOO_PROXY")
+        or _CLI_OKOOO_PROXY
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+        or ""
     )
     if route == "direct":
         return ""
@@ -42111,8 +42117,19 @@ def listen():
                     _tg_resp = None
                     _err_s = str(_poll_err_exc).replace(str(SNIPER_BOT_TOKEN), "***")
                     _poll_err = f"{_label}: {_err_s[:160]}"
-            if _last_status not in (200, 409) and _poll_err and _tg_fail_should_log():
-                print(f"   [TG] 拉取指令失败({_poll_err})", flush=True)
+            if _last_status not in (200, 409) and _poll_err:
+                _fail_count = int(getattr(listen, '_tg_poll_fail_count', 0) or 0) + 1
+                listen.__dict__['_tg_poll_fail_count'] = _fail_count
+                _backoff = min(60, 2 ** min(_fail_count, 5))
+                if _tg_fail_should_log():
+                    print(
+                        f"   [TG] 拉取指令暂不可用({_poll_err})，非致命；"
+                        f"{_backoff}s 后退避重试",
+                        flush=True,
+                    )
+                time.sleep(_backoff)
+                continue
+            listen.__dict__['_tg_poll_fail_count'] = 0
             if _last_status == 409:
                 if not _conflict_logged:
                     print("   [TG] 指令通道被另一个程序占用，本窗口收不到分析。请只留一个战情室窗口。", flush=True)
