@@ -108,29 +108,107 @@ if (-not (Test-Path $VenvPython)) {
 
 # ---------- 4. 安装依赖 ----------
 Write-Step "安装依赖（首次约 2-5 分钟）"
-& $VenvPython -m pip install --upgrade pip --quiet --disable-pip-version-check
+
+# pip 会继承系统代理。Clash 没开时代理会拒绝连接（WinError 10061），
+# 所以只在代理端口真的监听时才让 pip 用它，否则显式禁用代理直连。
+$proxyAlive = $false
+$aliveProxy = ''
+foreach ($port in @(7890, 7897, 10809, 1080)) {
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $ar = $c.BeginConnect('127.0.0.1', $port, $null, $null)
+        if ($ar.AsyncWaitHandle.WaitOne(300, $false) -and $c.Connected) {
+            $proxyAlive = $true
+            $aliveProxy = "http://127.0.0.1:$port"
+            $c.Close()
+            break
+        }
+        $c.Close()
+    } catch { }
+}
+if ($proxyAlive) {
+    Write-Ok "代理可用：$aliveProxy"
+    $env:HTTP_PROXY = $aliveProxy
+    $env:HTTPS_PROXY = $aliveProxy
+} else {
+    Write-Warn "本机代理未运行，本次安装直连（已忽略系统代理设置）"
+    $env:HTTP_PROXY = ''
+    $env:HTTPS_PROXY = ''
+    $env:ALL_PROXY = ''
+}
+
 $packages = @(
     'streamlit', 'pandas', 'numpy', 'requests', 'plotly', 'schedule',
     'openai', 'scipy', 'beautifulsoup4', 'httpx', 'urllib3', 'tornado',
     'scikit-learn'
 )
-& $VenvPython -m pip install --quiet --disable-pip-version-check @packages
-if ($LASTEXITCODE -ne 0) {
-    Write-Warn "直连安装失败，尝试国内镜像"
-    & $VenvPython -m pip install --quiet --disable-pip-version-check -i https://pypi.tuna.tsinghua.edu.cn/simple @packages
-    if ($LASTEXITCODE -ne 0) {
-        Fail "依赖安装失败。请检查网络或代理后重试。"
+$pipCommon = @('-m', 'pip', 'install', '--disable-pip-version-check', '--no-input')
+$mirror = 'https://pypi.tuna.tsinghua.edu.cn/simple'
+$proxyFlag = if ($proxyAlive) { @('--proxy', $aliveProxy) } else { @('--proxy', '') }
+
+function Invoke-Pip($pipArgs) {
+    & $VenvPython @pipArgs 2>&1 | ForEach-Object {
+        if ($_ -match '^\s*(WARNING|ERROR)') { Write-Host "    $_" -ForegroundColor DarkYellow }
     }
+    return $LASTEXITCODE
+}
+
+Write-Host "    升级 pip..."
+$code = Invoke-Pip (@($pipCommon[0], $pipCommon[1], 'install', '--upgrade', 'pip', '--quiet') + $proxyFlag)
+if ($code -ne 0) {
+    Write-Warn "pip 升级跳过，继续安装依赖"
+}
+
+Write-Host "    安装依赖包..."
+$code = Invoke-Pip (@($pipCommon) + $proxyFlag + $packages)
+if ($code -ne 0) {
+    Write-Warn "官方源失败，改用清华镜像"
+    $code = Invoke-Pip (@($pipCommon) + $proxyFlag + @('-i', $mirror) + $packages)
+}
+if ($code -ne 0) {
+    Write-Warn "带代理再试一次"
+    $code = Invoke-Pip (@($pipCommon) + @('-i', $mirror) + @('--proxy', 'http://127.0.0.1:7890') + $packages)
+}
+if ($code -ne 0) {
+    Fail "依赖安装失败。请打开 Clash 后重跑这条命令，或检查网络。"
+}
+
+# 真的能 import 才算装好，避免 pip 报成功但包不完整。
+& $VenvPython -c "import streamlit, pandas, numpy, requests, plotly, schedule, openai, scipy, bs4, httpx, urllib3, tornado; print('deps ok')"
+if ($LASTEXITCODE -ne 0) {
+    Fail "依赖装上了但导入失败，请把上面的错误发给我。"
 }
 Write-Ok "依赖就绪"
 
 # ---------- 5. 下载程序 ----------
 $AppFile = Join-Path $InstallDir 'app_v84_hermes.py'
 Write-Step "下载程序"
-try {
-    Invoke-WebRequest -Uri $AppUrl -OutFile $AppFile -UseBasicParsing
-} catch {
-    Fail "下载失败：$($_.Exception.Message)。如果开了 Clash，把系统代理打开后重试。"
+
+function Get-AppFile {
+    param([string]$UseProxy)
+    $iwrArgs = @{ Uri = $AppUrl; OutFile = $AppFile; UseBasicParsing = $true; TimeoutSec = 120 }
+    if ($UseProxy) {
+        $iwrArgs['Proxy'] = $UseProxy
+    } else {
+        # 显式不使用代理：Clash 关闭时系统代理指向的端口不可用，会直接连接失败。
+        # 不能同时传 Proxy=$null 和 NoProxy，PowerShell 7 会拒绝。
+        $iwrArgs['NoProxy'] = $true
+    }
+    Invoke-WebRequest @iwrArgs
+}
+
+$downloaded = $false
+if ($proxyAlive) {
+    try { Get-AppFile -UseProxy $aliveProxy; $downloaded = $true } catch { $downloaded = $false }
+}
+if (-not $downloaded) {
+    try { Get-AppFile -UseProxy ''; $downloaded = $true } catch { $downloaded = $false }
+}
+if (-not $downloaded) {
+    try { Get-AppFile -UseProxy 'http://127.0.0.1:7890'; $downloaded = $true } catch { $downloaded = $false }
+}
+if (-not $downloaded) {
+    Fail "下载失败。请检查网络，或打开 Clash 后重跑这条命令。"
 }
 $sizeMb = [math]::Round((Get-Item $AppFile).Length / 1MB, 2)
 if ($sizeMb -lt 2.0) {
