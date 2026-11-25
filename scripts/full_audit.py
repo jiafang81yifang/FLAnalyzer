@@ -637,6 +637,211 @@ def audit_requirements(audit: Audit, root: Path) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Windows helper scripts (PowerShell)
+# --------------------------------------------------------------------------- #
+PS_SCRIPTS = ['install_blade_quant.ps1', 'configure_blade_quant.ps1']
+PS7_ONLY = (
+    '&&',                  # pipeline chain operators
+    '||',
+    '??',                  # null-coalescing
+    '?[',                  # null-conditional index
+    '-AsHashtable',        # PS7 ConvertFrom-Json switch
+    'Join-String',
+    'Get-Error',
+    'Test-Json',
+)
+
+
+def _ps_parse(audit: Audit, path: Path, label: str) -> bool:
+    """Parse a .ps1 with pwsh's own parser.
+
+       Falls back to a structural check when pwsh is unavailable, so the audit
+       still catches gross breakage without failing on a machine that has no
+       PowerShell installed.
+    """
+    import shutil
+    import subprocess  # nosec B404 - fixed argv, no shell
+
+    pwsh = shutil.which('pwsh')
+    if not pwsh:
+        text = path.read_bytes().decode('utf-8-sig')
+        code = _ps_source_only(text)
+        balanced = (
+            code.count('{') == code.count('}')
+            and code.count('(') == code.count(')')
+            and code.count('[') == code.count(']')
+        )
+        has_param = re.search(r'^\s*param\s*\(', text, re.MULTILINE) is not None
+        ok = balanced and has_param and 'function' in text
+        audit.record(
+            f'ps:parses:{label}',
+            ok,
+            'structural fallback (pwsh not installed): unbalanced delimiters or missing param block',
+        )
+        return ok
+    probe = (
+        '$e=$null;$t=$null;'
+        '[void][System.Management.Automation.Language.Parser]::ParseFile('
+        f'"{path}",[ref]$t,[ref]$e);'
+        'if($e.Count -gt 0){$e|%{Write-Output ("line "+$_.Extent.StartLineNumber+": "+$_.Message)};exit 1};'
+        'exit 0'
+    )
+    try:
+        proc = subprocess.run(  # nosec B603
+            [pwsh, '-NoProfile', '-NonInteractive', '-Command', probe],
+            text=True, capture_output=True, timeout=120, check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - audit records failures
+        audit.record(f'ps:parses:{label}', False, f'{type(exc).__name__}: {exc}')
+        return False
+    ok = proc.returncode == 0
+    audit.record(f'ps:parses:{label}', ok, (proc.stdout or proc.stderr or '')[-300:])
+    return ok
+
+
+def _ps_source_only(text: str) -> str:
+    """Drop comments and string literals so only executable code remains.
+
+       A mis-decoded file can still parse if the non-ASCII text only ever appears
+       inside comments or strings, so the ASCII check must ignore those.
+    """
+    out = []
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if in_block:
+            if '#>' in line:
+                in_block = False
+            out.append('')
+            continue
+        if stripped.startswith('<#'):
+            if '#>' not in line:
+                in_block = True
+            out.append('')
+            continue
+        if stripped.startswith('#'):
+            out.append('')
+            continue
+        # Remove quoted runs (single quotes escape by doubling).
+        without = re.sub(r"'([^']|'')*'", "''", line)
+        without = re.sub(r'"[^"]*"', '""', without)
+        out.append(without)
+    return '\n'.join(out)
+
+
+def audit_powershell(audit: Audit, root: Path) -> None:
+    """The Windows helpers must exist, parse, stay ASCII-coded, and stay PS 5.1 safe."""
+    # Delivery differs by script, and so does the BOM requirement:
+    #   install_blade_quant.ps1 is fetched with `irm ... | iex`, where a leading
+    #     BOM is passed to Invoke-Expression as U+FEFF and breaks the first token,
+    #     so it must stay BOM-less (its Chinese survives because irm decodes the
+    #     HTTP charset before iex ever sees it).
+    #   configure_blade_quant.ps1 is run with `powershell -File`, where PS 5.1
+    #     reads raw bytes as ANSI/GBK, so its Chinese needs a UTF-8 BOM.
+    bom_required = {'configure_blade_quant.ps1'}
+    for name in PS_SCRIPTS:
+        path = root / name
+        if not path.exists():
+            audit.record(f'ps:exists:{name}', False, 'file missing')
+            continue
+        audit.record(f'ps:exists:{name}', True)
+        raw = path.read_bytes()
+        text = raw.decode('utf-8-sig')
+        _ps_parse(audit, path, name)
+
+        has_non_ascii = any(b > 0x7F for b in raw)
+        has_bom = raw.startswith(b'\xef\xbb\xbf')
+        if name in bom_required:
+            audit.record(
+                f'ps:encoding:{name}',
+                (not has_non_ascii) or has_bom,
+                'non-ASCII text requires a UTF-8 BOM for Windows PowerShell 5.1',
+            )
+            if has_bom:
+                audit.record(f'ps:single-bom:{name}', not raw[3:].startswith(b'\xef\xbb\xbf'))
+        else:
+            # This one is piped into iex, so a BOM would break the install command.
+            audit.record(
+                f'ps:encoding:{name}',
+                not has_bom,
+                'BOM breaks the documented `irm ... | iex` install path',
+            )
+
+        offences = [
+            str(lineno)
+            for lineno, line in enumerate(_ps_source_only(text).splitlines(), 1)
+            if any(ord(ch) > 0x7F for ch in line)
+        ]
+        audit.record(
+            f'ps:ascii-code:{name}',
+            not offences,
+            f'non-ASCII outside comments/strings on line(s) {",".join(offences[:5])}',
+        )
+
+        # PS 5.1 has no pipeline chains, ternary, or null-coalescing. Check the
+        # code only: these tokens legitimately appear inside messages/comments.
+        code = _ps_source_only(text)
+        hits = [needle for needle in PS7_ONLY if needle in code]
+        audit.record(f'ps:ps51-syntax:{name}', not hits, f'PS7-only syntax: {",".join(hits)}')
+
+
+def audit_gitignore(audit: Audit, root: Path) -> None:
+    """Local credential files must never be committable."""
+    path = root / '.gitignore'
+    if not path.exists():
+        audit.record('gitignore:exists', False, '.gitignore missing')
+        return
+    audit.record('gitignore:exists', True)
+    lines = {ln.strip() for ln in path.read_text(encoding='utf-8').splitlines()}
+    audit.record('gitignore:config-env', 'config.env' in lines or '/config.env' in lines,
+                 'config.env is not ignored')
+    audit.record('gitignore:local-env', '*.local.env' in lines, '*.local.env is not ignored')
+
+
+def audit_configure_wizard(audit: Audit, root: Path) -> None:
+    """Wire the wizard's contract into the audit without running it."""
+    path = root / 'configure_blade_quant.ps1'
+    if not path.exists():
+        return
+    text = path.read_bytes().decode('utf-8-sig')
+
+    audit.record('wizard:has-check-mode', '--check' in text)
+    audit.record('wizard:telegram-getme', 'getMe' in text)
+    audit.record('wizard:deepseek-balance', '/user/balance' in text)
+    audit.record('wizard:writes-config-env', 'config.env' in text)
+    audit.record('wizard:no-bom-write', 'UTF8Encoding($false)' in text,
+                 'config.env must be written as UTF-8 without BOM')
+    audit.record('wizard:probes-local-proxy', '127.0.0.1' in text and '7890' in text)
+
+    # The token-bearing Telegram URL must never reach an output cmdlet: scanning
+    # for a Write-* call that mentions a URL-ish variable is the cheap guard.
+    leaked = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if not re.search(r'\bWrite-(Host|Note|Ok|Warn|Step)\b', line):
+            continue
+        if re.search(r'\$(url|Url|URL|TelegramBase|DeepSeekBase|token|Token)\b', line):
+            leaked.append(str(lineno))
+    audit.record('wizard:no-url-in-output', not leaked,
+                 f'output call references a URL/token variable on line(s) {",".join(leaked[:5])}')
+
+    # Secrets must never be persisted outside config.env: no Set-Content/Out-File
+    # or WriteAllText other than the config writer itself.
+    writes = re.findall(r'\[System\.IO\.File\]::WriteAll\w+\(([^)]*)\)', text)
+    foreign = [w for w in writes if 'Path' not in w and '$configPath' not in w]
+    audit.record('wizard:only-writes-config', not foreign, f'unexpected file writes: {foreign[:3]}')
+
+    installer = root / 'install_blade_quant.ps1'
+    if installer.exists():
+        installer_text = installer.read_bytes().decode('utf-8-sig')
+        audit.record('installer:loads-config-env', 'blade_load_config' in installer_text)
+        audit.record('installer:guards-proxy-default', 'if not defined OKOOO_PROXY' in installer_text)
+        audit.record('installer:hints-configure-script',
+                     'configure_blade_quant.ps1' in installer_text)
+        audit.record('installer:runs-check-summary', '--check' in installer_text)
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo-root', default=None)
@@ -651,6 +856,9 @@ def main() -> int:
     audit_module_api(audit, root)
     audit_secrets(audit, root)
     audit_requirements(audit, root)
+    audit_powershell(audit, root)
+    audit_gitignore(audit, root)
+    audit_configure_wizard(audit, root)
 
     with _fresh_cwd() as tmp:
         workdir = Path(tmp)

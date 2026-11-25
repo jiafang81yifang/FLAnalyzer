@@ -2,3 +2,7 @@ test.js
 trash/
 node_modules/
 app/public/src/vendor/
+
+# Local credentials written by configure_blade_quant.ps1 (never commit these)
+config.env
+*.local.env

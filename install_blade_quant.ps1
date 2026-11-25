@@ -24,6 +24,8 @@ try {
 
 $AppCommit = 'e4c8701b33806bd73e01baf1362cc5b4a47aa7ad'
 $AppUrl = "https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/$AppCommit/app_v84_hermes.py"
+# 向导脚本本身跟着安装脚本所在的分支走（它和 app 的固定 commit 无关）。
+$RepoRef = 'cursor/fix-runtime-issues-84a8'
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg) { Write-Host "    OK  $msg" -ForegroundColor Green }
@@ -246,7 +248,7 @@ foreach ($port in $proxyPorts) {
         $connect = $client.BeginConnect('127.0.0.1', $port, $null, $null)
         $ok = $connect.AsyncWaitHandle.WaitOne(300, $false)
         if ($ok -and $client.Connected) {
-            $proxyLine = "set OKOOO_PROXY=http://127.0.0.1:$port"
+            $proxyLine = "if not defined OKOOO_PROXY set `"OKOOO_PROXY=http://127.0.0.1:$port`""
             Write-Ok "检测到本机代理 127.0.0.1:$port，已写入启动脚本"
             $client.Close()
             break
@@ -259,14 +261,50 @@ if (-not $proxyLine) {
 }
 
 # .cmd 用 ASCII 写，避免 cmd.exe 被 UTF-8 BOM 干扰。
+# config.env（由 configure_blade_quant.ps1 生成）存在时先逐行导入成环境变量；
+# 解析失败只是跳过那一行，绝不让启动失败。config.env 里没写 OKOOO_PROXY 时，
+# 下面那个按探测结果生成的默认代理值照旧生效。
 $StartBat = Join-Path $InstallDir 'start.cmd'
+# Batch cannot compare against a bare single quote inside an array literal, so
+# this one line is assembled from the quote characters to stay readable.
+$DQ = [string][char]34
+$SQ = [string][char]39
+$sqStripLine = 'if ' + $DQ + '%_bv:~0,1%' + $DQ + '==' + $DQ + $SQ + $DQ +
+    ' if ' + $DQ + '%_bv:~-1%' + $DQ + '==' + $DQ + $SQ + $DQ + ' set "_bv=%_bv:~1,-1%"'
 $batLines = @(
     '@echo off',
     'chcp 65001 >nul',
     'cd /d "%~dp0"',
+    'setlocal EnableExtensions',
+    '',
+    'rem Load optional user configuration. Any parse problem is ignored.',
+    'if exist "config.env" call :blade_load_config "config.env"',
+    '',
     $proxyLine,
+    '',
     '".venv\Scripts\python.exe" -m streamlit run app_v84_hermes.py',
-    'pause'
+    'pause',
+    'exit /b 0',
+    '',
+    ':blade_load_config',
+    'if not exist "%~1" exit /b 0',
+    'for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~1") do call :blade_set_var "%%A" "%%B"',
+    'exit /b 0',
+    '',
+    ':blade_set_var',
+    'set "_bk=%~1"',
+    'set "_bv=%~2"',
+    'if "%_bk%"=="" goto :blade_set_var_done',
+    'if not "%_bk%"=="%_bk: =%" goto :blade_set_var_done',
+    'if not "%_bk%"=="%_bk:#=%" goto :blade_set_var_done',
+    'if "%_bv%"=="" goto :blade_set_var_done',
+    'if "%_bv:~0,1%"=="""" if "%_bv:~-1%"=="""" set "_bv=%_bv:~1,-1%"',
+    $sqStripLine,
+    'set "%_bk%=%_bv%"',
+    ':blade_set_var_done',
+    'set "_bk="',
+    'set "_bv="',
+    'goto :eof'
 ) | Where-Object { $_ -ne '' }
 [System.IO.File]::WriteAllLines($StartBat, $batLines, (New-Object System.Text.UTF8Encoding($false)))
 
@@ -279,6 +317,47 @@ Write-Host "  体检：$VenvPython `"$AppFile`" --diagnose"
 Write-Host ""
 Write-Host "可选：设置 DEEPSEEK_API_KEY 和 TELEGRAM_BOT_TOKEN 才会启用真实 API 与机器人指令，" -ForegroundColor Gray
 Write-Host "      不设置也能正常运行，分析走本地兜底。" -ForegroundColor Gray
+
+# The wizard ships next to the app and its --check is the install's last status
+# line. It is not tied to the app's pinned commit, so try a couple of refs
+# (this installer's branch, then master) before giving up: a failed download
+# only skips the hint, never the install.
+$ConfigScript = Join-Path $InstallDir 'configure_blade_quant.ps1'
+$configRefs = @($RepoRef, 'master')
+$configReady = $false
+if (Test-Path $ConfigScript) {
+    $configReady = $true
+} else {
+    foreach ($ref in $configRefs) {
+        if ($configReady) { break }
+        $configUrl = "https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/$ref/configure_blade_quant.ps1"
+        try {
+            Invoke-WebRequest -Uri $configUrl -OutFile $ConfigScript -UseBasicParsing -TimeoutSec 60
+            $configReady = (Test-Path $ConfigScript)
+        } catch {
+            $configReady = $false
+        }
+    }
+}
+
+Write-Host ""
+Write-Host "配置 Telegram / DeepSeek 请运行 configure_blade_quant.ps1。" -ForegroundColor Cyan
+if ($configReady) {
+    Write-Host "  向导：powershell -NoProfile -ExecutionPolicy Bypass -File `"$ConfigScript`"" -ForegroundColor Gray
+    Write-Host "  状态：powershell -NoProfile -ExecutionPolicy Bypass -File `"$ConfigScript`" --check" -ForegroundColor Gray
+    # Show the current key status as the install's last line. Prefer the Windows
+    # PowerShell host name; fall back to whatever host is running this script so
+    # the summary still appears in unusual environments.
+    $psHostExe = 'powershell'
+    $cfg = Get-Command 'powershell' -ErrorAction SilentlyContinue
+    if (-not $cfg) { $cfg = Get-Command 'pwsh' -ErrorAction SilentlyContinue }
+    if ($cfg) { $psHostExe = $cfg.Source }
+    try {
+        & $psHostExe -NoProfile -ExecutionPolicy Bypass -File $ConfigScript -InstallDir $InstallDir --check
+    } catch {
+        Write-Warn "配置状态暂时读不到，安装本身已经完成。"
+    }
+}
 Write-Host ""
 
 $answer = Read-Host "现在就启动吗？(Y/n)"
