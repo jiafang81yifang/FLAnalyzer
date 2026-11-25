@@ -1,11 +1,15 @@
 <#
-FLAnalyzer · blade-quant 一键安装（Windows PowerShell）
+FLAnalyzer · blade-quant 一键安装 / 一键刷新（Windows PowerShell）
 
 作用：
   1. 检查 Python / pip，缺失就明确告诉你装什么
   2. 在目标目录建 venv 并装齐依赖
-  3. 下载已通过 262 项审计的 app_v84_hermes.py（固定 commit，不受分支变动影响）
-  4. 写入启动脚本，并跑一次 --diagnose 自检
+  3. 下载已通过审计的 app_v84_hermes.py 与 configure_blade_quant.ps1（固定 commit）
+  4. 写入启动脚本（会自动加载 config.env），并跑一次 --diagnose 自检
+  5. 打印配置 Telegram / DeepSeek 的那一条命令
+
+已经装过的目录会自动走「刷新已有安装」快路径：复用 .venv、依赖已满足就不装包、
+只更新程序和启动脚本，config.env 一个字节都不碰。
 
 用法（复制整行到 PowerShell，回车即可）：
   powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/cursor/fix-runtime-issues-84a8/install_blade_quant.ps1 | iex"
@@ -22,14 +26,20 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11
 } catch { }
 
-$AppCommit = 'e4c8701b33806bd73e01baf1362cc5b4a47aa7ad'
-$AppUrl = "https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/$AppCommit/app_v84_hermes.py"
-# 向导脚本本身跟着安装脚本所在的分支走（它和 app 的固定 commit 无关）。
-$RepoRef = 'cursor/fix-runtime-issues-84a8'
+# 程序和向导都固定到同一个 commit，不受分支后续变动影响。
+# 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
+$PinCommit = '4f6e57ddfc3e62719380667c5b20270e01e9785d'
+$RepoSlug = 'jiafang81yifang/FLAnalyzer'
+$AppName = 'app_v84_hermes.py'
+$ConfigName = 'configure_blade_quant.ps1'
+$DepsImportList = 'streamlit, pandas, numpy, requests, plotly, schedule, openai, scipy, bs4, httpx, urllib3, tornado'
+
+$RunClock = [System.Diagnostics.Stopwatch]::StartNew()
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg) { Write-Host "    OK  $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "    !   $msg" -ForegroundColor Yellow }
+function Write-Note($msg) { Write-Host "    $msg" -ForegroundColor Gray }
 function Fail($msg) {
     Write-Host ""
     Write-Host "安装未完成：$msg" -ForegroundColor Red
@@ -47,72 +57,110 @@ if (-not $InstallDir) {
         $InstallDir = Join-Path $HOME 'blade-quant'
     }
 }
+$DirExisted = Test-Path $InstallDir
 Write-Step "安装目录：$InstallDir"
-if (-not (Test-Path $InstallDir)) {
+
+# Windows 的 venv 是 Scripts\python.exe；其它平台是 bin/python。
+# 这样同一个脚本在非 Windows 上也能跑（便于自动化验证），Windows 行为不变。
+$OnWindows = ($env:OS -eq 'Windows_NT')
+$VenvDir = Join-Path $InstallDir '.venv'
+if ($OnWindows) {
+    $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+} else {
+    $VenvPython = Join-Path $VenvDir 'bin/python'
+}
+$AppFile = Join-Path $InstallDir $AppName
+$ConfigScript = Join-Path $InstallDir $ConfigName
+$StartBat = Join-Path $InstallDir 'start.cmd'
+$ConfigEnv = Join-Path $InstallDir 'config.env'
+
+# ---------- 2. 判断是全新安装还是刷新 ----------
+# 只看 .venv\Scripts\python.exe 在不在；在就当已有安装。
+# 但 venv 本身可能坏了（Python 被升级/删除），所以再让它跑一句，跑不起来就退回全量安装。
+$IsRefresh = $false
+if ($DirExisted -and (Test-Path $VenvPython)) {
+    $venvProbe = & $VenvPython -c "import sys;print(sys.version_info[0])" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $venvProbe -eq '3') {
+        $IsRefresh = $true
+    }
+}
+
+if ($IsRefresh) {
+    Write-Host ""
+    Write-Host "=====================================================" -ForegroundColor DarkCyan
+    Write-Host "  刷新已有安装（复用 .venv，不动 config.env）" -ForegroundColor Cyan
+    Write-Host "=====================================================" -ForegroundColor DarkCyan
+    Write-Ok "复用 .venv，跳过创建虚拟环境"
+} else {
+    Write-Host ""
+    Write-Host "=====================================================" -ForegroundColor DarkCyan
+    Write-Host "  全新安装" -ForegroundColor Cyan
+    Write-Host "=====================================================" -ForegroundColor DarkCyan
+}
+
+if (-not $DirExisted) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 Set-Location $InstallDir
 
-# ---------- 2. 检查 Python ----------
-Write-Step "检查 Python"
-$python = $null
-foreach ($cand in @('python', 'python3', 'py')) {
-    $cmd = Get-Command $cand -ErrorAction SilentlyContinue
-    if (-not $cmd) { continue }
-    if ($cand -eq 'py') {
-        $ver = & py -3 -c "import sys;print('%d.%d' % sys.version_info[:2])" 2>$null
-        $exe = 'py'
-        $argsBase = @('-3')
-    } else {
-        $ver = & $cand -c "import sys;print('%d.%d' % sys.version_info[:2])" 2>$null
-        $exe = $cand
-        $argsBase = @()
-    }
-    if ($LASTEXITCODE -eq 0 -and $ver) {
-        $major, $minor = $ver.Split('.')
-        if ([int]$major -eq 3 -and [int]$minor -ge 10) {
-            $python = $exe
-            $pyArgs = $argsBase
-            Write-Ok "Python $ver ($exe)"
-            break
+# ---------- 3. 检查 Python（只有要建 venv 时才需要） ----------
+if (-not $IsRefresh) {
+    Write-Step "检查 Python"
+    $python = $null
+    foreach ($cand in @('python', 'python3', 'py')) {
+        $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        if ($cand -eq 'py') {
+            $ver = & py -3 -c "import sys;print('%d.%d' % sys.version_info[:2])" 2>$null
+            $exe = 'py'
+            $argsBase = @('-3')
+        } else {
+            $ver = & $cand -c "import sys;print('%d.%d' % sys.version_info[:2])" 2>$null
+            $exe = $cand
+            $argsBase = @()
         }
-        Write-Warn "$cand 是 Python $ver，需要 3.10 或更高"
+        if ($LASTEXITCODE -eq 0 -and $ver) {
+            $major, $minor = $ver.Split('.')
+            if ([int]$major -eq 3 -and [int]$minor -ge 10) {
+                $python = $exe
+                $pyArgs = $argsBase
+                Write-Ok "Python $ver ($exe)"
+                break
+            }
+            Write-Warn "$cand 是 Python $ver，需要 3.10 或更高"
+        }
+    }
+
+    if (-not $python) {
+        Write-Host ""
+        Write-Host "这台机器没有可用的 Python 3.10+。" -ForegroundColor Yellow
+        Write-Host "请先装 Python（勾选 Add python.exe to PATH）：" -ForegroundColor Yellow
+        Write-Host "    https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "装好后重新运行这条命令即可，脚本会自动接管剩下所有步骤。" -ForegroundColor Yellow
+        Write-Host ""
+        try {
+            Start-Process 'https://www.python.org/downloads/windows/'
+        } catch { }
+        exit 1
+    }
+
+    # ---------- 4. 建 venv ----------
+    if (-not (Test-Path $VenvPython)) {
+        Write-Step "创建虚拟环境"
+        & $python @pyArgs -m venv $VenvDir
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $VenvPython)) {
+            Fail "虚拟环境创建失败。可能是 Python 安装缺少 venv 组件，重装 Python 时保留默认选项即可。"
+        }
+        Write-Ok ".venv"
+    } else {
+        Write-Ok ".venv 已存在，复用"
     }
 }
 
-if (-not $python) {
-    Write-Host ""
-    Write-Host "这台机器没有可用的 Python 3.10+。" -ForegroundColor Yellow
-    Write-Host "请先装 Python（勾选 Add python.exe to PATH）：" -ForegroundColor Yellow
-    Write-Host "    https://www.python.org/downloads/windows/" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "装好后重新运行这条命令即可，脚本会自动接管剩下所有步骤。" -ForegroundColor Yellow
-    Write-Host ""
-    try {
-        Start-Process 'https://www.python.org/downloads/windows/'
-    } catch { }
-    exit 1
-}
-
-# ---------- 3. 建 venv ----------
-$VenvDir = Join-Path $InstallDir '.venv'
-$VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
-if (-not (Test-Path $VenvPython)) {
-    Write-Step "创建虚拟环境"
-    & $python @pyArgs -m venv $VenvDir
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $VenvPython)) {
-        Fail "虚拟环境创建失败。可能是 Python 安装缺少 venv 组件，重装 Python 时保留默认选项即可。"
-    }
-    Write-Ok ".venv"
-} else {
-    Write-Ok ".venv 已存在，复用"
-}
-
-# ---------- 4. 安装依赖 ----------
-Write-Step "安装依赖（首次约 2-5 分钟）"
-
-# pip 会继承系统代理。Clash 没开时代理会拒绝连接（WinError 10061），
-# 所以只在代理端口真的监听时才让 pip 用它，否则显式禁用代理直连。
+# ---------- 5. 探测本机代理 ----------
+# pip 和下载都会继承系统代理。Clash 没开时代理会拒绝连接（WinError 10061），
+# 所以只在代理端口真的监听时才用它，否则显式绕过系统代理直连。
 $proxyAlive = $false
 $aliveProxy = ''
 foreach ($port in @(7890, 7897, 10809, 1080)) {
@@ -139,6 +187,7 @@ if ($proxyAlive) {
     $env:ALL_PROXY = ''
 }
 
+# ---------- 6. 安装依赖 ----------
 $packages = @(
     'streamlit', 'pandas', 'numpy', 'requests', 'plotly', 'schedule',
     'openai', 'scipy', 'beautifulsoup4', 'httpx', 'urllib3', 'tornado',
@@ -155,94 +204,164 @@ function Invoke-Pip($pipArgs) {
     return $LASTEXITCODE
 }
 
-Write-Host "    升级 pip..."
-$code = Invoke-Pip (@($pipCommon[0], $pipCommon[1], 'install', '--upgrade', 'pip', '--quiet') + $proxyFlag)
-if ($code -ne 0) {
-    Write-Warn "pip 升级跳过，继续安装依赖"
-}
-
-Write-Host "    安装依赖包..."
-$code = Invoke-Pip (@($pipCommon) + $proxyFlag + $packages)
-if ($code -ne 0) {
-    Write-Warn "官方源失败，改用清华镜像"
-    $code = Invoke-Pip (@($pipCommon) + $proxyFlag + @('-i', $mirror) + $packages)
-}
-if ($code -ne 0) {
-    Write-Warn "带代理再试一次"
-    $code = Invoke-Pip (@($pipCommon) + @('-i', $mirror) + @('--proxy', 'http://127.0.0.1:7890') + $packages)
-}
-if ($code -ne 0) {
-    Fail "依赖安装失败。请打开 Clash 后重跑这条命令，或检查网络。"
-}
-
 # 真的能 import 才算装好，避免 pip 报成功但包不完整。
-& $VenvPython -c "import streamlit, pandas, numpy, requests, plotly, schedule, openai, scipy, bs4, httpx, urllib3, tornado; print('deps ok')"
-if ($LASTEXITCODE -ne 0) {
-    Fail "依赖装上了但导入失败，请把上面的错误发给我。"
-}
-Write-Ok "依赖就绪"
+# 刷新时先跑这一句：已经满足就完全跳过 pip，省掉最慢的一步。
+& $VenvPython -c "import $DepsImportList; print('deps ok')" 2>$null | Out-Null
+$depsReady = ($LASTEXITCODE -eq 0)
 
-# ---------- 5. 下载程序 ----------
-$AppFile = Join-Path $InstallDir 'app_v84_hermes.py'
-Write-Step "下载程序"
+if ($depsReady) {
+    Write-Step "依赖"
+    Write-Ok "依赖已满足，跳过安装"
+} else {
+    Write-Step "安装依赖（首次约 2-5 分钟）"
 
-function Get-AppFile {
-    param([string]$UseProxy)
-    $iwrArgs = @{ Uri = $AppUrl; OutFile = $AppFile; UseBasicParsing = $true; TimeoutSec = 120 }
-    if ($UseProxy) {
-        $iwrArgs['Proxy'] = $UseProxy
-    } else {
-        # 显式不使用代理：Clash 关闭时系统代理指向的端口不可用，会直接连接失败。
-        # 不能同时传 Proxy=$null 和 NoProxy，PowerShell 7 会拒绝。
-        $iwrArgs['NoProxy'] = $true
+    Write-Host "    升级 pip..."
+    $code = Invoke-Pip (@($pipCommon[0], $pipCommon[1], 'install', '--upgrade', 'pip', '--quiet') + $proxyFlag)
+    if ($code -ne 0) {
+        Write-Warn "pip 升级跳过，继续安装依赖"
     }
-    Invoke-WebRequest @iwrArgs
+
+    Write-Host "    安装依赖包..."
+    $code = Invoke-Pip (@($pipCommon) + $proxyFlag + $packages)
+    if ($code -ne 0) {
+        Write-Warn "官方源失败，改用清华镜像"
+        $code = Invoke-Pip (@($pipCommon) + $proxyFlag + @('-i', $mirror) + $packages)
+    }
+    if ($code -ne 0) {
+        Write-Warn "带代理再试一次"
+        $code = Invoke-Pip (@($pipCommon) + @('-i', $mirror) + @('--proxy', 'http://127.0.0.1:7890') + $packages)
+    }
+    if ($code -ne 0) {
+        Fail "依赖安装失败。请打开 Clash 后重跑这条命令，或检查网络。"
+    }
+
+    & $VenvPython -c "import $DepsImportList; print('deps ok')"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "依赖装上了但导入失败，请把上面的错误发给我。"
+    }
+    Write-Ok "依赖就绪"
 }
 
-$downloaded = $false
-if ($proxyAlive) {
-    try { Get-AppFile -UseProxy $aliveProxy; $downloaded = $true } catch { $downloaded = $false }
+# ---------- 7. 下载程序与配置向导 ----------
+function Save-RemoteFile {
+    # 用 HttpWebRequest 而不是 Invoke-WebRequest：Windows PowerShell 5.1 的
+    # Invoke-WebRequest 没有 -NoProxy 参数，传了就报参数绑定错误，直连分支必然失败。
+    # 这里显式设置 Proxy（$null = 绕过系统代理），5.1 和 7 行为一致。
+    param([string]$Url, [string]$OutFile, [string]$ProxyUrl = '', [int]$TimeoutSec = 60)
+
+    $request = [System.Net.WebRequest]::Create($Url)
+    $request.Method = 'GET'
+    $request.Timeout = $TimeoutSec * 1000
+    $request.ReadWriteTimeout = $TimeoutSec * 1000
+    $request.UserAgent = 'blade-quant-installer/1.0'
+    if ($ProxyUrl -ne '') {
+        $request.Proxy = New-Object System.Net.WebProxy($ProxyUrl)
+    } else {
+        $request.Proxy = $null
+    }
+
+    $response = $null
+    $inStream = $null
+    $outStream = $null
+    try {
+        $response = $request.GetResponse()
+        $inStream = $response.GetResponseStream()
+        $outStream = [System.IO.File]::Create($OutFile)
+        $inStream.CopyTo($outStream)
+    } finally {
+        if ($null -ne $outStream) { try { $outStream.Close() } catch { } }
+        if ($null -ne $inStream) { try { $inStream.Close() } catch { } }
+        if ($null -ne $response) { try { $response.Close() } catch { } }
+    }
 }
-if (-not $downloaded) {
-    try { Get-AppFile -UseProxy ''; $downloaded = $true } catch { $downloaded = $false }
+
+function Get-RemoteArtifact {
+    # 依次尝试：本机代理 → 直连 → 7890，每个代理再试 GitHub raw 与 jsDelivr 镜像。
+    # raw.githubusercontent.com 在国内经常连不上，镜像能救回来。
+    param([string]$FileName, [string]$OutFile, [double]$MinMb = 0)
+
+    $urls = @(
+        "https://raw.githubusercontent.com/$RepoSlug/$PinCommit/$FileName",
+        "https://cdn.jsdelivr.net/gh/$RepoSlug@$PinCommit/$FileName"
+    )
+    $proxyCandidates = @()
+    if ($proxyAlive) { $proxyCandidates += $aliveProxy }
+    $proxyCandidates += ''
+    $proxyCandidates += 'http://127.0.0.1:7890'
+
+    foreach ($proxy in $proxyCandidates) {
+        foreach ($url in $urls) {
+            try {
+                Save-RemoteFile -Url $url -OutFile $OutFile -ProxyUrl $proxy -TimeoutSec 60
+                if (-not (Test-Path $OutFile)) { continue }
+                $bytes = (Get-Item $OutFile).Length
+                if ($bytes -le 0) { continue }
+                if ($MinMb -gt 0) {
+                    $mb = [math]::Round($bytes / 1MB, 2)
+                    if ($mb -lt $MinMb) {
+                        # 明显被截断，换下一条再试。
+                        continue
+                    }
+                }
+                return $true
+            } catch { }
+        }
+    }
+    return $false
 }
-if (-not $downloaded) {
-    try { Get-AppFile -UseProxy 'http://127.0.0.1:7890'; $downloaded = $true } catch { $downloaded = $false }
-}
-if (-not $downloaded) {
-    Fail "下载失败。请检查网络，或打开 Clash 后重跑这条命令。"
+
+Write-Step "下载程序"
+if (-not (Get-RemoteArtifact -FileName $AppName -OutFile $AppFile -MinMb 2.0)) {
+    Fail "下载 app_v84_hermes.py 失败。请检查网络，或打开 Clash 后重跑这条命令。"
 }
 $sizeMb = [math]::Round((Get-Item $AppFile).Length / 1MB, 2)
-if ($sizeMb -lt 2.0) {
-    Fail "下载的文件只有 $sizeMb MB，明显不完整，请重试。"
-}
-Write-Ok "app_v84_hermes.py ($sizeMb MB)"
+Write-Ok "$AppName ($sizeMb MB)"
 
-# ---------- 6. 语法校验 ----------
+Write-Step "下载配置向导"
+if (-not (Get-RemoteArtifact -FileName $ConfigName -OutFile $ConfigScript)) {
+    Fail "下载 configure_blade_quant.ps1 失败。请检查网络，或打开 Clash 后重跑这条命令。"
+}
+$cfgKb = [math]::Round((Get-Item $ConfigScript).Length / 1KB, 1)
+Write-Ok "$ConfigName ($cfgKb KB)"
+
+# ---------- 8. 校验程序文件 ----------
 Write-Step "校验程序文件"
 & $VenvPython -c "import py_compile,sys; py_compile.compile(r'$AppFile', doraise=True); print('compile ok')"
 if ($LASTEXITCODE -ne 0) {
     Fail "程序文件校验失败，可能下载时被截断，请重试。"
 }
-Write-Ok "语法校验通过"
+Write-Ok "app_v84_hermes.py 语法校验通过"
 
-# ---------- 7. 自检 ----------
-Write-Step "运行自检"
-# Python 输出中文时按 UTF-8 解码，避免 PowerShell 用 OEM 代码页读成乱码。
-$env:PYTHONIOENCODING = 'utf-8'
-$diagnoseOutput = & $VenvPython $AppFile --diagnose 2>&1
-$diagnoseOutput | ForEach-Object { Write-Host "    $_" }
-if ($LASTEXITCODE -ne 0) {
-    Fail "自检未通过，请把上面的输出发给我。"
+# 向导用 PowerShell 自己的解析器校验：5.1 和 7 都有这个类型，不需要额外进程。
+# 解析通过还不够：下载被截断时可能刚好停在某个完整语句上，语法依然合法，
+# 所以再检查体积下限和几个必须存在的锚点，双重保险。
+$cfgBytes = (Get-Item $ConfigScript).Length
+if ($cfgBytes -lt 8192) {
+    Fail "configure_blade_quant.ps1 只有 $cfgBytes 字节，明显不完整，请重试。"
 }
-$dbLine = $diagnoseOutput | Where-Object { $_ -match 'DB|数据库' } | Select-Object -First 1
-if ($dbLine) { Write-Ok "数据库已初始化：$dbLine" }
+$cfgText = [System.IO.File]::ReadAllText($ConfigScript, [System.Text.Encoding]::UTF8)
+foreach ($anchor in @('Save-ConfigEnv', 'Test-TelegramToken', '/user/balance', '--check')) {
+    if ($cfgText.IndexOf($anchor) -lt 0) {
+        Fail "configure_blade_quant.ps1 缺少必要内容（$anchor），可能下载不完整，请重试。"
+    }
+}
+$parseErrors = $null
+$parseTokens = $null
+try {
+    [void][System.Management.Automation.Language.Parser]::ParseFile($ConfigScript, [ref]$parseTokens, [ref]$parseErrors)
+} catch {
+    Fail "向导文件无法解析：$($_.Exception.Message)"
+}
+if ($null -ne $parseErrors -and $parseErrors.Count -gt 0) {
+    $first = $parseErrors[0]
+    Fail "向导文件第 $($first.Extent.StartLineNumber) 行有语法错误：$($first.Message)"
+}
+Write-Ok "configure_blade_quant.ps1 解析通过"
 
-# ---------- 8. 启动脚本 ----------
-# 只有检测到本机代理端口真的在监听时才写代理变量，避免 Clash 没开时拖慢抓取。
+# ---------- 9. 启动脚本 ----------
+# 只有检测到本机代理端口真的在监听时才写默认代理，避免 Clash 没开时拖慢抓取。
 $proxyLine = ''
-$proxyPorts = @(7890, 7897, 10809, 1080)
-foreach ($port in $proxyPorts) {
+foreach ($port in @(7890, 7897, 10809, 1080)) {
     try {
         $client = New-Object System.Net.Sockets.TcpClient
         $connect = $client.BeginConnect('127.0.0.1', $port, $null, $null)
@@ -263,10 +382,9 @@ if (-not $proxyLine) {
 # .cmd 用 ASCII 写，避免 cmd.exe 被 UTF-8 BOM 干扰。
 # config.env（由 configure_blade_quant.ps1 生成）存在时先逐行导入成环境变量；
 # 解析失败只是跳过那一行，绝不让启动失败。config.env 里没写 OKOOO_PROXY 时，
-# 下面那个按探测结果生成的默认代理值照旧生效。
-$StartBat = Join-Path $InstallDir 'start.cmd'
+# 上面那个按探测结果生成的默认代理值才生效（if not defined），不会覆盖用户设置。
 # Batch cannot compare against a bare single quote inside an array literal, so
-# this one line is assembled from the quote characters to stay readable.
+# that one line is assembled from the quote characters to stay readable.
 $DQ = [string][char]34
 $SQ = [string][char]39
 $sqStripLine = 'if ' + $DQ + '%_bv:~0,1%' + $DQ + '==' + $DQ + $SQ + $DQ +
@@ -307,57 +425,61 @@ $batLines = @(
     'goto :eof'
 ) | Where-Object { $_ -ne '' }
 [System.IO.File]::WriteAllLines($StartBat, $batLines, (New-Object System.Text.UTF8Encoding($false)))
+Write-Ok "start.cmd 已更新（会加载 config.env）"
+
+# ---------- 10. 自检 ----------
+Write-Step "运行自检"
+# Python 输出中文时按 UTF-8 解码，避免 PowerShell 用 OEM 代码页读成乱码。
+$env:PYTHONIOENCODING = 'utf-8'
+$diagnoseOutput = & $VenvPython $AppFile --diagnose 2>&1
+$diagnoseOutput | ForEach-Object { Write-Host "    $_" }
+if ($LASTEXITCODE -ne 0) {
+    Fail "自检未通过，请把上面的输出发给我。"
+}
+$dbLine = $diagnoseOutput | Where-Object { $_ -match 'DB|数据库' } | Select-Object -First 1
+if ($dbLine) { Write-Ok "数据库已初始化：$dbLine" }
+
+# ---------- 11. 配置向导可用性 ----------
+# --check 只读不写，跑一次证明向导在这个目录里真的能执行。
+$psHostExe = 'powershell'
+$cfgCmd = Get-Command 'powershell' -ErrorAction SilentlyContinue
+if (-not $cfgCmd) { $cfgCmd = Get-Command 'pwsh' -ErrorAction SilentlyContinue }
+if ($cfgCmd) { $psHostExe = $cfgCmd.Source }
+
+Write-Step "检查配置向导"
+$checkOutput = & $psHostExe -NoProfile -ExecutionPolicy Bypass -File $ConfigScript -InstallDir $InstallDir --check 2>&1
+$checkCode = $LASTEXITCODE
+$checkOutput | ForEach-Object { Write-Host "    $_" }
+if ($checkCode -ne 0) {
+    Fail "配置向导无法运行（退出码 $checkCode）。请把上面的输出发给我。"
+}
+Write-Ok "configure_blade_quant.ps1 可以正常执行"
+
+# ---------- 12. 汇总 ----------
+$RunClock.Stop()
+$elapsed = [math]::Round($RunClock.Elapsed.TotalSeconds, 1)
 
 Write-Host ""
-Write-Host "安装完成。" -ForegroundColor Green
+if ($IsRefresh) {
+    Write-Host "刷新完成（耗时 $elapsed 秒）。" -ForegroundColor Green
+} else {
+    Write-Host "安装完成（耗时 $elapsed 秒）。" -ForegroundColor Green
+}
 Write-Host ""
 Write-Host "  程序：$AppFile"
 Write-Host "  启动：双击 $StartBat"
 Write-Host "  体检：$VenvPython `"$AppFile`" --diagnose"
-Write-Host ""
-Write-Host "可选：设置 DEEPSEEK_API_KEY 和 TELEGRAM_BOT_TOKEN 才会启用真实 API 与机器人指令，" -ForegroundColor Gray
-Write-Host "      不设置也能正常运行，分析走本地兜底。" -ForegroundColor Gray
-
-# The wizard ships next to the app and its --check is the install's last status
-# line. It is not tied to the app's pinned commit, so try a couple of refs
-# (this installer's branch, then master) before giving up: a failed download
-# only skips the hint, never the install.
-$ConfigScript = Join-Path $InstallDir 'configure_blade_quant.ps1'
-$configRefs = @($RepoRef, 'master')
-$configReady = $false
-if (Test-Path $ConfigScript) {
-    $configReady = $true
-} else {
-    foreach ($ref in $configRefs) {
-        if ($configReady) { break }
-        $configUrl = "https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/$ref/configure_blade_quant.ps1"
-        try {
-            Invoke-WebRequest -Uri $configUrl -OutFile $ConfigScript -UseBasicParsing -TimeoutSec 60
-            $configReady = (Test-Path $ConfigScript)
-        } catch {
-            $configReady = $false
-        }
-    }
+if (Test-Path $ConfigEnv) {
+    Write-Host "  配置：$ConfigEnv（已保留，未改动）" -ForegroundColor Gray
 }
-
 Write-Host ""
+
 Write-Host "配置 Telegram / DeepSeek 请运行 configure_blade_quant.ps1。" -ForegroundColor Cyan
-if ($configReady) {
-    Write-Host "  向导：powershell -NoProfile -ExecutionPolicy Bypass -File `"$ConfigScript`"" -ForegroundColor Gray
-    Write-Host "  状态：powershell -NoProfile -ExecutionPolicy Bypass -File `"$ConfigScript`" --check" -ForegroundColor Gray
-    # Show the current key status as the install's last line. Prefer the Windows
-    # PowerShell host name; fall back to whatever host is running this script so
-    # the summary still appears in unusual environments.
-    $psHostExe = 'powershell'
-    $cfg = Get-Command 'powershell' -ErrorAction SilentlyContinue
-    if (-not $cfg) { $cfg = Get-Command 'pwsh' -ErrorAction SilentlyContinue }
-    if ($cfg) { $psHostExe = $cfg.Source }
-    try {
-        & $psHostExe -NoProfile -ExecutionPolicy Bypass -File $ConfigScript -InstallDir $InstallDir --check
-    } catch {
-        Write-Warn "配置状态暂时读不到，安装本身已经完成。"
-    }
-}
+Write-Host "下一步（复制这一行运行）：" -ForegroundColor White
+Write-Host ""
+Write-Host "  $psHostExe -NoProfile -ExecutionPolicy Bypass -File `"$ConfigScript`"" -ForegroundColor Yellow
+Write-Host ""
+Write-Note "只看配置状态：在上面的命令末尾加 --check"
 Write-Host ""
 
 $answer = Read-Host "现在就启动吗？(Y/n)"
