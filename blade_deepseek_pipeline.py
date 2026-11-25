@@ -30,9 +30,31 @@ def strip_tg_color_marks(text: Any) -> str:
 
 
 def split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:
+    """按行切块，绝不把一行（表格行/比分行）切断。
+
+    原来的实现按固定字符数硬切，31 行表格会被从中间劈开。现在优先在换行处切。
+    """
     s = str(text or '')
     limit = max(100, int(max_len or 3900))
-    return [s[i:i + limit] for i in range(0, len(s), limit)] or ['']
+    if len(s) <= limit:
+        return [s] if s else ['']
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in s.splitlines(keepends=True):
+        if current_len + len(line) > limit and current:
+            chunks.append(''.join(current))
+            current, current_len = [], 0
+        if len(line) > limit:
+            # 单行超长（极端情况）：只能硬切，但不影响表格行场景。
+            for i in range(0, len(line), limit):
+                chunks.append(line[i:i + limit])
+            continue
+        current.append(line)
+        current_len += len(line)
+    if current:
+        chunks.append(''.join(current))
+    return chunks or ['']
 
 
 def compute_score_occ(scores: Any) -> dict[str, int]:
@@ -290,18 +312,126 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:
+        """市短矩阵：市均隐含% > 竞彩隐含% 的选项逐项列出，再按胜平负汇总。
+
+        旧实现只回「状态: 可用 + 队名」，一行数据都没有。
+        """
         m = matrix if isinstance(matrix, dict) else {}
-        return ['📊【市短胜平负矩阵】', f"  状态: {'可用' if m.get('available') else '未形成'} {home} {away}".rstrip()]
+        head = '📊【市短矩阵｜市均隐含 > 竞彩隐含】'
+        rows = [r for r in (m.get('rows') or m.get('qualifying') or []) if isinstance(r, dict)]
+        if not rows:
+            return [head, f"  未形成（{m.get('reason') or '没有市均高于竞彩的选项'}）"]
+        lines = [head, f"  输入={m.get('source') or '市均×竞彩31比分'} 项数={len(rows)}"]
+        for r in rows:
+            lines.append(
+                f"  {str(r.get('score', '?'))!s:<5} 市均{float(r.get('market_pct') or 0):.2f}% "
+                f"竞彩{r.get('jc_pct', 0):.2f}% 差{r.get('gap_pct', 0):+.2f}pp"
+            )
+        counts = m.get('counts')
+        counts = counts if isinstance(counts, dict) else {}
+        share = m.get('share_pct')
+        share = share if isinstance(share, dict) else {}
+        lines.append(
+            '  胜平负: ' + ' '.join(
+                f"{k}={counts.get(k, 0)}({share.get(k, 0):.1f}%)" for k in ('胜', '平', '负')
+            )
+        )
+        return lines
+
+    @staticmethod
+    def build_mkt_short_matrix_from_pack(pack: Any) -> dict[str, Any]:
+        """从 31 全表算市短矩阵（市均隐含% > 竞彩隐含%）。
+
+        与 `build_theo_mkt_31_pack.pos_rows` 口径不同：那个比的是 市场 vs 理论，
+        这里比的是 市均 vs 竞彩官方，两者各自独立计算。
+        """
+        p = pack if isinstance(pack, dict) else {}
+        rows = []
+        counts = {'胜': 0, '平': 0, '负': 0}
+        for row in (p.get('rows') or []):
+            if not isinstance(row, dict):
+                continue
+            market = row.get('market')
+            jc_pct = row.get('jc_odds_pct')
+            try:
+                market_f = float(market) if market is not None else None
+                jc_f = float(jc_pct) if jc_pct is not None else None
+            except (TypeError, ValueError):
+                continue
+            if market_f is None or jc_f is None:
+                continue
+            gap = market_f - jc_f
+            if gap <= 0:
+                continue
+            label = _score_wdl(row.get('score'))
+            if label in counts:
+                counts[label] += 1
+            rows.append({
+                'score': row.get('score'),
+                'market_pct': round(market_f, 4),
+                'jc_pct': round(jc_f, 4),
+                'gap_pct': round(gap, 4),
+                'source': row.get('market_source') or '',
+            })
+        total = sum(counts.values())
+        return {
+            'available': bool(rows),
+            'rows': rows,
+            'counts': counts,
+            'share_pct': {k: round(v * 100.0 / total, 2) if total else 0.0 for k, v in counts.items()},
+            'source': '市均×竞彩31比分',
+            'reason': '' if rows else '没有任何选项的市均隐含%高于竞彩隐含%',
+        }
 
     @staticmethod
     def format_mkt_hot_wdl_matrix_tg_lines(payload: Any) -> list[str]:
-        return ['🔥【市热胜平负矩阵】', '  本地轻量模块按已落盘数据展示。']
+        """市热矩阵：Δ>0（市场超理论）的选项逐项列出 + 胜平负汇总。
+
+        口径声明：与 build_theo_mkt_31_pack.pos_rows 相同（market > theory），
+        不是「市均 vs 竞彩」——后者是市短矩阵。
+        """
+        p = payload if isinstance(payload, dict) else {}
+        head = '🔥【市热矩阵｜Δ=市均%−理论%>0，与pos_rows同口径】'
+        pos = [r for r in (p.get('pos_rows') or []) if isinstance(r, dict)]
+        if not pos:
+            return [head, f"  未形成（{p.get('reason') or '没有市场高于理论的选项'}）"]
+        lines = [head, f"  输入=31全表 项数={len(pos)}"]
+        counts = {'胜': 0, '平': 0, '负': 0}
+        for r in pos:
+            score = r.get('score')
+            label = _score_wdl(score)
+            if label in counts:
+                counts[label] += 1
+            try:
+                market = float(r.get('market') or 0)
+                theory = float(r.get('theory') or 0)
+            except (TypeError, ValueError):
+                market = theory = 0.0
+            lines.append(
+                f"  {str(score)!s:<5} 市均{market:.2f}% 理论{theory:.2f}% Δ{market - theory:+.2f}pp"
+            )
+        total = sum(counts.values()) or 1
+        lines.append(
+            '  胜平负: ' + ' '.join(
+                f"{k}={counts[k]}({counts[k] * 100.0 / total:.1f}%)" for k in ('胜', '平', '负')
+            )
+        )
+        return lines
 
     @staticmethod
     def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:
+        """收集合法比分赔率：市均优先，竞彩官方31比分补缺。
+
+        `correct_score_jc_official` 曾经不在这个元组里，于是 31全表里那 9 个
+        市均覆盖不到的选项（5-0/5-1/5-2/0-5/1-5/2-5 与三个「其它」）永远没有市场概率。
+        顺序即优先级：市均先写入，后面同名键不覆盖。
+        """
         src = source if isinstance(source, dict) else {}
         odds: dict[str, float] = {}
-        for key in ('correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg', 'odds_correct_score'):
+        for key in (
+            'correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg',
+            'odds_correct_score', 'correct_score_jc_official', 'jc_score_odds',
+        ):
             val = src.get(key)
             if isinstance(val, dict):
                 for score, odd in val.items():
@@ -314,7 +444,7 @@ class DeepSeekAnalyzer:
                     except (TypeError, ValueError):
                         continue
                     if f > 1:
-                        odds[_norm_score(score)] = f
+                        odds.setdefault(_norm_score(score), f)
         return odds
 
     @staticmethod
@@ -454,11 +584,11 @@ class DeepSeekAnalyzer:
                 missing_market.append(score)
         missing: list[str] = []
         if missing_rows:
-            missing.append('比分选项缺' + str(len(missing_rows)) + '项(' + '/'.join(missing_rows[:5]) + ')')
+            missing.append('比分选项缺' + str(len(missing_rows)) + '项(' + '/'.join(missing_rows) + ')')
         if missing_theory:
-            missing.append('理论概率缺' + str(len(missing_theory)) + '项(' + '/'.join(missing_theory[:5]) + ')')
+            missing.append('理论概率缺' + str(len(missing_theory)) + '项(' + '/'.join(missing_theory) + ')')
         if missing_market:
-            missing.append('市场概率缺' + str(len(missing_market)) + '项(' + '/'.join(missing_market[:5]) + ')')
+            missing.append('市场概率缺' + str(len(missing_market)) + '项(' + '/'.join(missing_market) + ')')
         complete = not missing
         return {
             'complete': complete,
@@ -550,16 +680,63 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:
+        """31 项「市均 × 竞彩」完整对比表（每个选项一行）。
+
+        用户明确要求的交付物：31 行齐全（含三个「其它」），列 =
+        序/比分/市均赔率/市均隐含%/竞彩赔率/竞彩隐含%/Δ/来源。
+        市均覆盖不到的 9 项来源标 jc_official；不在 31 项里的 4-3/3-4/4-4
+        单独放在表尾附注，绝不混进 31 行。
+        """
         p = pack if isinstance(pack, dict) else {}
-        formed = int(p.get('formed_count') or 0)
-        total = int(p.get('row_count') or len(p.get('rows') or []) or 0)
-        head = '📈【31项理论×市场】'
-        if not total:
-            return [head, '  未形成：本场没有可用的31项比分行（缺市均或理论概率）']
-        return [
-            head,
-            f"  已形成 {formed}/{total} 项 | 市场超理论项: {int(p.get('pos_count') or 0)}",
-        ]
+        rows = [r for r in (p.get('rows') or []) if isinstance(r, dict)]
+        head = '📈【31项市均×竞彩对比表】'
+        if not rows:
+            reason = p.get('block_reason') or '缺少31全表（无市均且无竞彩赔率）'
+            return [head, f'  未形成（{reason}）']
+
+        def _f(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        lines = [head]
+        _prov_raw = p.get('cs31_provenance')
+        provenance: dict[str, Any] = _prov_raw if isinstance(_prov_raw, dict) else {}
+        counts: dict[str, int] = {}
+        for idx, row in enumerate(rows, 1):
+            score = str(row.get('score') or '')
+            market = _f(row.get('market'))
+            theory = _f(row.get('theory'))
+            jc = _f(row.get('jc_odds'))
+            src = str(row.get('market_source') or provenance.get(score) or '-')
+            if src == 'market_avg_odds':
+                src = 'desktop_cs'
+            elif src == 'jc_score_odds':
+                src = 'jc_official'
+            counts[src] = counts.get(src, 0) + 1
+            market_txt = f'{market:.2f}' if market is not None else '-'
+            jc_txt = f'{jc:.2f}' if jc is not None else '-'
+            # 市均隐含% 用 market 字段（已是百分比），竞彩隐含% 由赔率反推后归一不划算，
+            # 直接用 pack 里已有的 jc 赔率折算单家隐含率（1/odds），标注清楚它是单家口径。
+            market_pct = f'{market:.1f}%' if market is not None else '-'
+            jc_pct = f'{100.0 / jc:.1f}%' if jc else '-'
+            delta = f'{market - theory:+.1f}' if (market is not None and theory is not None) else '-'
+            lines.append(
+                f'  {idx:02d} {score:<5s} 市均{market_txt:>7s} {market_pct:>7s} '
+                f'竞彩{jc_txt:>7s} {jc_pct:>7s} Δ{delta:>7s} {src}'
+            )
+        lines.append(
+            '  汇总: ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items()) if k != '-')
+            + f' | 共{len(rows)}项'
+        )
+        extras = p.get('cs31_extras') if isinstance(p.get('cs31_extras'), dict) else {}
+        if extras:
+            lines.append(
+                '  附注(不属31项，未计入上表): '
+                + '、'.join(f'{k}={float(v):.2f}' for k, v in sorted(extras.items()) if _f(v))
+            )
+        return lines
 
     @staticmethod
     def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:
@@ -617,7 +794,54 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:
-        return []
+        """组装 DeepSeek-only TG 报告的表格段。
+
+        用户明确要求 TG 里必须有三块，全部来自同一份 31 全表：
+          1. 31项市均×竞彩对比表（31 行，含三个「其它」）
+          2. 市短矩阵（市均隐含% > 竞彩隐含%）
+          3. 市热矩阵（Δ=市均−理论>0，与 pos_rows 同口径）
+        缺输入时各段自己打印「未形成（原因）」，不静默留空。
+        """
+        pack = kwargs.get('theo_mkt_31_pack')
+        if not isinstance(pack, dict):
+            pack = kwargs.get('pack') if isinstance(kwargs.get('pack'), dict) else {}
+
+        def _as_lines(value: Any) -> list[str]:
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, (list, tuple)):
+                return [str(v) for v in value]
+            return list(value or [])
+
+        sections: list[str] = []
+        title = str(kwargs.get('title_line') or '').strip()
+        if title:
+            sections.append(title)
+
+        # 1) 31 项对比表
+        sections.append('\n'.join(_as_lines(
+            kwargs.get('theo_mkt_31_tg_lines') or
+            DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+        )))
+
+        # 2) 市短矩阵：市均 vs 竞彩
+        short_matrix = kwargs.get('mkt_short_matrix')
+        if not isinstance(short_matrix, dict):
+            short_matrix = DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+        sections.append('\n'.join(DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(
+            short_matrix,
+            home=str(kwargs.get('home') or ''),
+            away=str(kwargs.get('away') or ''),
+        )))
+
+        # 3) 市热矩阵：市均 vs 理论（pos_rows 口径）
+        sections.append('\n'.join(DeepSeekAnalyzer.format_mkt_hot_wdl_matrix_tg_lines(pack)))
+
+        for extra_key in ('deepseek_section_lines', 'jc_vs_hot_tg_lines', 'wdl_matrix_tg_lines'):
+            extra = _as_lines(kwargs.get(extra_key))
+            if extra:
+                sections.append('\n'.join(extra))
+        return [s for s in sections if s.strip()]
 
     @staticmethod
     def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:

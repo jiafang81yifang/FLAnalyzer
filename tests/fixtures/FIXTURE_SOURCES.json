@@ -70,5 +70,21 @@
     "encoding": "gb18030",
     "captured": "2026-11-25",
     "used_by": "test_jczq_oddsdata_* (orderid 4005 = match 1347780, 31/31 SportteryScore codes 30..60)"
+  },
+  "okooo_jczq_oddsdata_20slots.html": {
+    "url": "https://m.okooo.com/jczq/",
+    "status": 200,
+    "bytes": 184010,
+    "encoding": "utf-8",
+    "captured": "2026-11-25",
+    "used_by": "31-merge tests: 20 oddsData slots; 1347778 oid4003, 1347775 oid4004, 1347776 oid4002, 1347789 oid4010, each 31/31. oddsData at byte 155524."
+  },
+  "okooo_desktop_cs_1347776.html": {
+    "url": "https://www.okooo.com/soccer/match/1347776/cs/",
+    "status": 200,
+    "bytes": 213729,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "31-merge tests: 25 score columns (22 on-grid + 4-3/3-4/4-4 off-grid), gb18030"
   }
 }

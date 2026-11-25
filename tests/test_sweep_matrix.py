@@ -344,6 +344,73 @@ def _check_case(pool_size, water, channel, source, stub_shape, gap_state) -> lis
     if _merged.get('asian_handicap_line') != -0.5:
         fails.append('(xi) the scalar line was not preserved alongside the detail')
 
+    # ---- (xii) 31-merge arithmetic, hardcoded independently of the builders ----
+    # The operator's acceptance set: 22 from 市均 + 9 from jc, never 25.
+    _jc31 = {o: 9.0 for o in (
+        '1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2', '胜其它',
+        '0-0', '1-1', '2-2', '3-3', '平其它',
+        '0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5', '负其它',
+    )}
+    _page22 = {o: 9.0 for o in (
+        '1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2',
+        '0-0', '1-1', '2-2', '3-3',
+        '0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4',
+    )}
+    _page22['4-3'] = 65.0
+    _page22['3-4'] = 42.0
+    _page22['4-4'] = 88.0
+    _rows31 = app.build_pool31_option_rows([], odds_correct_score=_page22, jc_score_odds=_jc31,
+                                           lam_home=1.45, lam_away=1.10)
+    if len(_rows31) != 31:
+        fails.append(f'(xii) merged rows={len(_rows31)}')
+    _src = {}
+    for _r in _rows31:
+        _src[_r['market_source']] = _src.get(_r['market_source'], 0) + 1
+    if _src.get('market_odds') != 22 or _src.get('jc_score_odds') != 9:
+        fails.append(f'(xii) provenance split wrong: {_src}')
+    for _other in ('胜其它', '平其它', '负其它'):
+        _row = next((r for r in _rows31 if r['score'] == _other), None)
+        if not _row or _row['market_source'] != 'jc_score_odds':
+            fails.append(f'(xii) {_other} must come from jc only, not the page fold')
+    if abs(sum((r['market'] or 0) for r in _rows31) - 100.0) > 0.05:
+        fails.append('(xii) merged market does not sum to 100')
+    _au31 = pipe.DeepSeekAnalyzer.audit_theo_mkt_31_rows(_rows31)
+    if _au31['complete'] is not True:
+        fails.append(f'(xii) merged 31 audit incomplete: {_au31["missing"]}')
+    # a 200.00 longshot must not round to 0 and flip the audit
+    _long = app.build_pool31_option_rows([], jc_score_odds={'5-0': 200.0}, lam_home=1.4, lam_away=1.1)
+    _r50 = next((r for r in _long if r['score'] == '5-0'), None)
+    if not _r50 or not _r50['market'] or _r50['market'] <= 0:
+        fails.append('(xii) 200.00 odd rounded to zero')
+
+    # ---- (xiii) TG payload carries all 31 options and the three matrices ----
+    _pack31 = pipe.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.45, lam_away=1.10, jc_score_odds=_jc31,
+    )
+    _tg = '\n'.join(pipe.DeepSeekAnalyzer.build_deepseek_only_tg_sections(theo_mkt_31_pack=_pack31))
+    _missing_tg = [o for o in _jc31 if o not in _tg]
+    if _missing_tg:
+        fails.append(f'(xiii) TG payload missing options: {_missing_tg[:5]}')
+    for _hdr in ('31项市均×竞彩对比表', '市短矩阵', '市热矩阵'):
+        if _hdr not in _tg:
+            fails.append(f'(xiii) TG payload missing section {_hdr}')
+
+    # ---- (xiv) cache rejection naming ----
+    import pathlib as _pl
+    _probe = _pl.Path('probe.json')
+    if okooo._cache_reject_reason(_probe, {'cache_schema': 1}) != 'cache_schema_old':
+        fails.append('(xiv) old schema not rejected')
+    if okooo._cache_reject_reason(_probe, {'cache_schema': okooo.CACHE_SCHEMA,
+                                          'correct_score_channel': 'desktop_cs'}) != 'cache_channel_stale':
+        fails.append('(xiv) stale channel not rejected')
+    if okooo._cache_reject_reason(
+        _probe,
+        {'cache_schema': okooo.CACHE_SCHEMA, 'correct_score_channel': 'okooo_cs',
+         'correct_score_page_avg': {'1-0': 9.0}, 'cs31_complete': False},
+        require_31=True,
+    ) != 'cache_missing_jc31':
+        fails.append('(xiv) 25-key cache not rejected')
+
     return fails
 
 

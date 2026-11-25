@@ -292,13 +292,71 @@ def _next_referer(referers: list[str], current: str) -> str | None:
     return referers[index + 1] if index + 1 < len(referers) else None
 
 
-def _read_json_cache(path: Path) -> dict[str, Any] | None:
+# 缓存版本：打包格式一变就 +1，旧包一律拒绝并重抓。
+# 没有版本的缓存会让「任何跑过旧版本的机器」永久看不到之后的修复——
+# 用户的 channel=desktop_cs / books=25 / jc=0 正是旧包被当成新数据。
+CACHE_SCHEMA = 2
+_ACCEPTED_CS_CHANNELS = {'mobile', 'okooo_cs'}
+
+
+def _cache_stamp(pack: dict[str, Any]) -> dict[str, Any]:
+    """给要落盘的包盖上版本和时间戳。"""
+    if isinstance(pack, dict):
+        pack['cache_schema'] = CACHE_SCHEMA
+        pack['built_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    return pack
+
+
+def _cache_reject_reason(cache: Path, data: Any, *, require_31: bool = False) -> str:
+    """判断一个缓存包还能不能用。返回拒绝原因，'' 表示可用。
+
+    三条硬规则：
+      * cache_schema 必须是当前版本（旧包 = 旧解析逻辑的产物）；
+      * correct_score_channel 必须是现在真正会写出的通道
+        （desktop_cs 是旧标签，出现即说明是旧包）；
+      * 若要求 31 全表，包里必须有合并后的 31 项（cs31_complete / 31 个键）。
+    """
+    if not isinstance(data, dict) or not data:
+        return 'cache_empty'
+    if int(data.get('cache_schema') or 0) != CACHE_SCHEMA:
+        return 'cache_schema_old'
+    if 'correct_score_channel' in data:
+        ch = str(data.get('correct_score_channel') or '')
+        if ch and ch not in _ACCEPTED_CS_CHANNELS:
+            return 'cache_channel_stale'
+    if require_31:
+        page = data.get('correct_score_page_avg')
+        n = len(page) if isinstance(page, dict) else 0
+        if not data.get('cs31_complete') or n < 31:
+            return 'cache_missing_jc31'
+    return ''
+
+
+def _read_json_cache(
+    path: Path, *, require_31: bool = False, label: str = '澳客手机CS',
+) -> dict[str, Any] | None:
+    """读缓存；旧版本/旧通道/缺31 一律拒绝，并打印一行原因后重抓。"""
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"   ⚠️ [澳客手机CS] 缓存读取跳过 {path.name}: {type(exc).__name__}")
+        print(f"   ⚠️ [{label}] 缓存读取跳过 {path.name}: {type(exc).__name__}")
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    reason = _cache_reject_reason(path, data, require_31=require_31)
+    if reason:
+        # 明确说出来，不要静默重抓——否则用户无从知道为什么之前的修复「没生效」。
+        print(
+            f"   ♻️ [{label}] 缓存已作废 {path.name}: reason={reason} "
+            f"(schema={data.get('cache_schema') or 0}→{CACHE_SCHEMA}, "
+            f"channel={data.get('correct_score_channel') or '-'})，重新抓取"
+        )
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    return data
 
 
 def _parse_score_odds_from_text(text: str) -> dict[str, float]:
@@ -666,6 +724,63 @@ def _parse_cs_datatable(html: Any) -> dict[str, Any]:
     return out
 
 
+def fetch_jczq31(match_id: Any, proxies: Any = None, session: Any = None) -> dict[str, Any]:
+    """抓竞彩官方 31 比分赔率（唯一来源：竞足赛程页 var oddsData）。
+
+    这是「补齐 9 个市均覆盖不到的选项」的唯一入口，供 CS 抓取、补抓、以及
+    enrich 的 force_rescrape 复用（后者以前只调 scrape_okooo_mobile_cs_zuizhi，
+    那条路根本不碰 jczq，所以「重新抓全」永远补不上那 9 项）。
+
+    返回 {'available', 'odds', 'orderid', 'raw_count', 'stage', 'report'}。
+    """
+    mid = str(match_id or '').strip()
+    out: dict[str, Any] = {'available': False, 'odds': {}, 'orderid': '', 'raw_count': 0, 'stage': ''}
+    if not mid:
+        out['stage'] = 'no_match_id'
+        return out
+    url = 'https://m.okooo.com/jczq/'
+    page, cached, fetched_at = _jczq_page_cached(url, proxies=proxies, session=session)
+    report = {
+        'url': url, 'channel': 'mobile',
+        'status': int(page.get('status') or 0),
+        'bytes': int(page.get('bytes') or 0),
+        'title': str(page.get('title') or ''),
+        'blocked': bool(page.get('blocked')),
+        'cached': bool(cached),
+        'fetched_at': fetched_at,
+        'stage': '',
+        'orderid': '',
+    }
+    if not page.get('ok'):
+        report['stage'] = 'fetch_failed'
+        return {**out, 'stage': 'fetch_failed', 'report': report}
+    parsed = parse_jczq_score_odds(page.get('html'), mid)
+    report['stage'] = parsed.get('stage') or ''
+    report['orderid'] = parsed.get('orderid') or ''
+    if not parsed.get('available') and cached:
+        # 缓存页里没有本场（抓缓存时还没上架）：真抓一次再解析。
+        page = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+        if page.get('ok'):
+            _remember_jczq_page(url, page)
+            parsed = parse_jczq_score_odds(page.get('html'), mid)
+            report.update({
+                'status': int(page.get('status') or 0),
+                'bytes': int(page.get('bytes') or 0),
+                'cached': False,
+                'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'stage': parsed.get('stage') or '',
+                'orderid': parsed.get('orderid') or '',
+            })
+    return {
+        'available': bool(parsed.get('available')),
+        'odds': dict(parsed.get('odds') or {}),
+        'orderid': parsed.get('orderid') or '',
+        'raw_count': int(parsed.get('raw_count') or 0),
+        'stage': parsed.get('stage') or '',
+        'report': report,
+    }
+
+
 def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:
     """抓澳客波胆（比分）市均。
 
@@ -675,8 +790,16 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
     """
     html = kwargs.get('html') or kwargs.get('text')
     cache = _cache_path('cs', match_id)
-    if not html and cache.exists():
-        cached = _read_json_cache(cache)
+    force_refresh = bool(kwargs.get('force_refresh'))
+    if force_refresh and not html and cache.exists():
+        # 补抓路径必须能推翻旧包，否则第二次尝试只是再读同一个陈旧文件。
+        print(f"   ♻️ [澳客手机CS] force_refresh 丢弃缓存 {cache.name}，重新抓取")
+        try:
+            cache.unlink()
+        except OSError:
+            pass
+    if not html and not force_refresh and cache.exists():
+        cached = _read_json_cache(cache, require_31=True, label='澳客手机CS')
         if cached is not None:
             return cached
     urls = []
@@ -741,9 +864,22 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
     # 桌面 /cs/ 波胆页是 27 家公司的合法市均，不是被禁的「桌面分析页/pool31」。
     # 通道标签用 okooo_cs（法律闸门已有 okooo_cs_books_avg 分支），
     # 不再自标 desktop_cs——那个名字会被 'desktop' 规则整体判非法。
+    # 31 池唯一合并入口：市均先占，竞彩官方31补缺，逐键记出处。
+    # 之前这里只交出 25 个市均键（冒号形式、还带 4-3/3-4/4-4），
+    # 下游同时报「市均 25 项」和「31全表缺 9 项」——两个都对，却是两张表。
+    _jc = kwargs.get('jc_score_odds')
+    _jc_report: dict[str, Any] = {}
+    if not isinstance(_jc, dict) or len(_jc) < 31:
+        # 拿不到 31 就直接去竞彩官方抓：补抓/重抓都靠这一步，
+        # 否则「重新抓全」永远补不上那 9 个市均没有的选项。
+        _jc_res = fetch_jczq31(match_id, proxies=proxies, session=session)
+        _jc_report = _jc_res.get('report') or {}
+        if _jc_res.get('available'):
+            _jc = _jc_res['odds']
+    merged31 = merge_cs31(parsed['page_avg'], parsed['books_avg'], _jc)
     heat = build_score_market_heat_ranking(
-        parsed['page_avg'],
-        page_avg_odds=parsed['page_avg'],
+        merged31['scores'],
+        page_avg_odds=merged31['scores'],
         heat_source='okooo_cs_books_avg',
         channel='okooo_cs',
     )
@@ -751,12 +887,16 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
         'available': True,
         'correct_score_available': True,
         'match_id': str(match_id or ''),
-        'raw_count': len(parsed['page_avg']),
-        'correct_score_page_avg': parsed['page_avg'],
+        'raw_count': len(merged31['scores']),
+        'correct_score_page_avg': merged31['scores'],
         'correct_score_books_avg': parsed['books_avg'],
         'correct_score_books_n': parsed['books_n'],
-        'correct_score_site_avg': parsed['page_avg'],
+        'correct_score_site_avg': merged31['scores'],
         'correct_score_channel': 'okooo_cs',
+        'cs31_provenance': merged31['provenance'],
+        'cs31_counts': merged31['counts'],
+        'cs31_extras': merged31['extras'],
+        'cs31_complete': merged31['complete'],
         'cs_fetch_url': str(fetch.get('url') or (urls[0] if urls else '')),
         'cs_fetch_status': int(fetch.get('status') or 0),
         'cs_fetch_bytes': int(fetch.get('bytes') or 0),
@@ -764,7 +904,9 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
         'pool31_forbidden': True,
     })
     try:
-        cache.write_text(json.dumps(heat, ensure_ascii=False, indent=2), encoding='utf-8')
+        cache.write_text(
+            json.dumps(_cache_stamp(heat), ensure_ascii=False, indent=2), encoding='utf-8',
+        )
     except OSError as exc:
         print(f"   ⚠️ [澳客手机CS] 缓存写入跳过 {cache.name}: {type(exc).__name__}: {exc}")
     return heat
@@ -1152,8 +1294,14 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
     任何一块没抓到就进 `missing` 并带上原因；绝不回填盘口线、不写待定数字。
     """
     cache = _cache_path('six', match_id)
-    if not kwargs.get('html') and not kwargs.get('text') and cache.exists():
-        cached = _read_json_cache(cache)
+    _force6 = bool(kwargs.get('force_refresh'))
+    if _force6 and not kwargs.get('html') and not kwargs.get('text') and cache.exists():
+        try:
+            cache.unlink()
+        except OSError:
+            pass
+    if not kwargs.get('html') and not kwargs.get('text') and not _force6 and cache.exists():
+        cached = _read_json_cache(cache, label='澳客六盘口')
         if cached is not None:
             return cached
     mid = str(match_id or '')
@@ -1338,7 +1486,9 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
     _hit_n = len(pack['boards_hit'])
     if _hit_n == 3:
         try:
-            cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')
+            cache.write_text(
+                json.dumps(_cache_stamp(pack), ensure_ascii=False, indent=2), encoding='utf-8',
+            )
         except OSError as exc:
             print(f"   ⚠️ [澳客手机CS] 六盘口缓存写入跳过 {cache.name}: {type(exc).__name__}: {exc}")
         return pack
@@ -1898,6 +2048,98 @@ _MOBILE_BOOKS_PROVENANCE = ('boards_hit', 'missing', 'source_report', 'fetch_url
 
 def _is_filled(value: Any) -> bool:
     """一个值算不算「有内容」。空串/空容器/None 都算没有。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
+def normalize_cs_key(score: Any) -> str:
+    """比分键归一：`1:0` / `1：0` / 空格 → `1-0`。
+
+    桌面 /cs/ 页给的是冒号形式，竞彩31项给的是横杠形式；不归一时两边永远对不上，
+    日志里就会同时出现「市均 25 项」和「31全表缺 9 项」两个都对的说法。
+    """
+    return str(score or '').replace('：', '-').replace(':', '-').replace(' ', '').strip()
+
+
+def merge_cs31(
+    page_avg: Any = None,
+    books_avg: Any = None,
+    jc_odds: Any = None,
+) -> dict[str, Any]:
+    """把桌面波胆市均与竞彩官方31比分合并成竞彩31项全表，带逐键出处。
+
+    这是 31 池唯一的合并入口：抓取、补抓、闸门、三视图都调它，避免各算各的。
+
+    规则：
+      * 市均（page_avg 优先，books_avg 兜底）先归一键，占它覆盖得到的项；
+      * 竞彩官方 31 补市均缺的项（5-0/5-1/5-2/0-5/1-5/2-5 与三个「其它」）；
+      * 市均里不属于竞彩31项的键（4-3/3-4/4-4）单独留在 extras，绝不删除，
+        但也不计入 31；
+      * 每一项记 provenance：desktop_cs / jc_official。
+
+    返回 {'scores': {option: odd}, 'provenance': {option: src},
+          'extras': {k: odd}, 'counts': {...}, 'complete': bool}。
+    """
+    from_page: dict[str, float] = {}
+    for source in (page_avg, books_avg):
+        if not isinstance(source, dict):
+            continue
+        for key, odd in source.items():
+            norm = normalize_cs_key(key)
+            raw = odd.get('odds') if isinstance(odd, dict) else odd
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if norm and value > 1 and norm not in from_page:
+                from_page[norm] = value
+    from_jc: dict[str, float] = {}
+    if isinstance(jc_odds, dict):
+        for key, odd in jc_odds.items():
+            norm = normalize_cs_key(key)
+            raw = odd.get('odds') if isinstance(odd, dict) else odd
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if norm and value > 1:
+                from_jc[norm] = value
+
+    jc_set = set(JCZQ_SCORE_OPTIONS)
+    scores: dict[str, float] = {}
+    provenance: dict[str, str] = {}
+    extras: dict[str, float] = {}
+    for option in JCZQ_SCORE_OPTIONS:
+        if option in from_page:
+            scores[option] = from_page[option]
+            provenance[option] = 'desktop_cs'
+        elif option in from_jc:
+            scores[option] = from_jc[option]
+            provenance[option] = 'jc_official'
+    for key, value in from_page.items():
+        if key not in jc_set:
+            extras[key] = value
+    counts = {'desktop_cs': 0, 'jc_official': 0}
+    for src in provenance.values():
+        counts[src] = counts.get(src, 0) + 1
+    return {
+        'scores': scores,
+        'provenance': provenance,
+        'extras': extras,
+        'counts': counts,
+        'missing': [o for o in JCZQ_SCORE_OPTIONS if o not in scores],
+        'complete': len(scores) == 31,
+        'row_count': len(scores),
+    }
     if value is None:
         return False
     if isinstance(value, str):

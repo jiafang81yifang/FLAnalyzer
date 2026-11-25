@@ -1597,6 +1597,300 @@ def test_enrich_path_keeps_ah_detail(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert isinstance(rec.get('asian_handicap'), float), rec.get('asian_handicap')
 
 
+def _jczq20() -> dict[str, Any]:
+    """The 20-slot live capture (184,010 B, utf-8)."""
+    return okooo.parse_jczq_score_odds(
+        okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes()),
+        '1347778',
+    )
+
+
+def test_jczq20_ground_truth_all_four_matches() -> None:
+    """Operator ground truth: orderids and 31/31 for all four complained matches."""
+    expect = {
+        '1347778': ('4003', 200.0, 200.0, 60.0),
+        '1347775': ('4004', 700.0, 400.0, 80.0),
+        '1347776': ('4002', 400.0, 250.0, 70.0),
+        '1347789': ('4010', 200.0, 120.0, 40.0),
+    }
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes())
+    for mid, (oid, s50, s52, soth) in expect.items():
+        parsed = okooo.parse_jczq_score_odds(text, mid)
+        assert parsed['orderid'] == oid, mid
+        assert parsed['raw_count'] == 31 and len(parsed['odds']) == 31, mid
+        assert parsed['odds']['5-0'] == s50, mid
+        assert parsed['odds']['5-2'] == s52, mid
+        assert parsed['odds']['胜其它'] == soth, mid
+
+
+def test_pool31_union_is_per_key_22_plus_9() -> None:
+    """D1/D2/D8 acceptance: 22 keys from 市均 + 9 from jc_official, audit complete.
+
+    This is the exact arithmetic the operator derived: the desktop page covers 22
+    of the 31 options, and the 9 it cannot cover come from 竞彩 official odds.
+    """
+    jc = _jczq20()['odds']
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as _fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(_fh.read()))
+    rows = app.build_pool31_option_rows(
+        [], odds_correct_score=page['page_avg'], jc_score_odds=jc,
+        lam_home=1.45, lam_away=1.10,
+    )
+    assert len(rows) == 31
+    by_src: dict[str, list[str]] = {}
+    for row in rows:
+        by_src.setdefault(row['market_source'], []).append(row['score'])
+    assert len(by_src['market_odds']) == 22, by_src['market_odds']
+    assert len(by_src['jc_score_odds']) == 9, by_src['jc_score_odds']
+    assert sorted(by_src['jc_score_odds']) == sorted([
+        '5-0', '5-1', '5-2', '0-5', '1-5', '2-5', '胜其它', '平其它', '负其它',
+    ])
+    audit = pipe_mod.DeepSeekAnalyzer.audit_theo_mkt_31_rows(rows)
+    assert audit['complete'] is True, audit['missing']
+
+
+def test_pool31_union_never_mixes_other_buckets_from_the_page_fold() -> None:
+    """The 其它 rows must each come from one source only, never page-fold + jc."""
+    jc = _jczq20()['odds']
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as _fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(_fh.read()))
+    rows = app.build_pool31_option_rows([], odds_correct_score=page['page_avg'], jc_score_odds=jc)
+    others = {r['score']: r for r in rows if '其它' in r['score']}
+    assert set(others) == {'胜其它', '平其它', '负其它'}
+    # 市均 only ever quotes explicit keys; 4-3/3-4/4-4 are folded, not quotes,
+    # so all three 其它 buckets must be labelled jc_official.
+    for name, row in others.items():
+        assert row['market_source'] == 'jc_score_odds', (name, row['market_source'])
+        assert row['delta_same_source'] is True
+    assert abs(sum(r['market'] or 0 for r in rows) - 100.0) < 0.01
+
+
+def test_pool31_market_never_rounds_a_longshot_to_zero() -> None:
+    """Audit treats market<=0 as missing; a 200.00 odd must not round to 0."""
+    rows = app.build_pool31_option_rows(
+        [], jc_score_odds={'5-0': 200.0}, lam_home=1.4, lam_away=1.1,
+    )
+    row = next(r for r in rows if r['score'] == '5-0')
+    assert row['market'] is not None and row['market'] > 0
+
+
+def test_tg_payload_contains_all_31_options_and_three_matrices() -> None:
+    """D4: the TG payload must carry the 31-row table plus 市短 and 市热 matrices."""
+    jc = _jczq20()['odds']
+    pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.45, lam_away=1.10, jc_score_odds=jc,
+    )
+    sections = pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        theo_mkt_31_pack=pack, title_line='📌 测试',
+    )
+    text = '\n'.join(sections)
+    # hardcoded expected option list — deliberately NOT taken from the builder
+    expected = (
+        '1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2', '胜其它',
+        '0-0', '1-1', '2-2', '3-3', '平其它',
+        '0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5', '负其它',
+    )
+    assert len(expected) == 31
+    missing = [o for o in expected if o not in text]
+    assert missing == [], f'missing from TG payload: {missing}'
+    assert '31项市均×竞彩对比表' in text
+    assert '市短矩阵' in text
+    assert '市热矩阵' in text
+    assert '胜平负' in text
+
+
+def test_tg_chunks_never_cut_a_table_row() -> None:
+    jc = _jczq20()['odds']
+    pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.45, lam_away=1.10, jc_score_odds=jc,
+    )
+    text = '\n'.join(pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections(theo_mkt_31_pack=pack))
+    chunks = pipe_mod.split_tg_html_preserving_pre(text, 900)
+    assert ''.join(chunks) == text, 'chunking must be lossless'
+    expected = ('5-0', '5-2', '胜其它', '负其它')
+    for chunk in chunks:
+        for opt in expected:
+            # every occurrence inside a chunk must be on a complete line
+            for line in chunk.splitlines():
+                if opt in line:
+                    assert line.strip(), 'row cut mid-line'
+
+
+def test_stale_pre_fix_cache_is_rejected_and_refetched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """D1/D2/D8 root cause: an old 25-key desktop_cs pack must never be served."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    stale = {
+        'available': True,
+        'correct_score_channel': 'desktop_cs',
+        'correct_score_page_avg': {f'{i}-0': 9.0 for i in range(25)},
+        'correct_score_books_avg': {},
+    }
+    cache = tmp_path / 'cs_1347776.json'
+    cache.write_text(json.dumps(stale), encoding='utf-8')
+
+    calls: list[str] = []
+
+    def fake_fetch(url, proxies=None, session=None, retries=1, timeout=15):
+        calls.append(url)
+        return {'ok': False, 'url': url, 'status': 405, 'bytes': 0,
+                'title': '405', 'blocked': True, 'error': 'HTTP 405', 'html': ''}
+
+    monkeypatch.setattr(okooo, '_fetch_detail', fake_fetch)
+    monkeypatch.setenv('OKOOO_CS_PATIENCE', '0')
+    pack = okooo.scrape_okooo_mobile_cs_zuizhi('1347776')
+    assert pack.get('available') is False, 'stale pack must not be served'
+    assert calls, 'the stale cache must trigger a real refetch'
+
+
+def test_current_cache_is_served_without_refetch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    fresh = okooo._cache_stamp({
+        'available': True,
+        'correct_score_channel': 'okooo_cs',
+        'correct_score_page_avg': {o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS},
+        'cs31_complete': True,
+    })
+    (tmp_path / 'cs_1347776.json').write_text(json.dumps(fresh), encoding='utf-8')
+    calls: list[str] = []
+    monkeypatch.setattr(okooo, '_fetch_detail',
+                        lambda *a, **k: calls.append('x') or {'ok': False, 'status': 405,
+                                                              'blocked': True, 'html': ''})
+    pack = okooo.scrape_okooo_mobile_cs_zuizhi('1347776')
+    assert pack.get('available') is True
+    assert calls == [], 'a valid cache must not refetch'
+
+
+def test_cache_reject_reason_names_each_failure_mode() -> None:
+    stale_schema = {'cache_schema': 1, 'correct_score_channel': 'okooo_cs'}
+    stale_chan = {'cache_schema': okooo.CACHE_SCHEMA, 'correct_score_channel': 'desktop_cs'}
+    no31 = {'cache_schema': okooo.CACHE_SCHEMA, 'correct_score_channel': 'okooo_cs',
+            'correct_score_page_avg': {'1-0': 9.0}, 'cs31_complete': False}
+    assert okooo._cache_reject_reason(Path('x'), stale_schema) == 'cache_schema_old'
+    assert okooo._cache_reject_reason(Path('x'), stale_chan) == 'cache_channel_stale'
+    assert okooo._cache_reject_reason(Path('x'), no31, require_31=True) == 'cache_missing_jc31'
+    good = okooo._cache_stamp({
+        'correct_score_channel': 'okooo_cs',
+        'correct_score_page_avg': {o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS},
+        'cs31_complete': True,
+    })
+    assert okooo._cache_reject_reason(Path('x'), good, require_31=True) == ''
+
+
+def test_force_refresh_discards_the_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The refill path must be able to invalidate, or it just re-reads the bad file."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    fresh = okooo._cache_stamp({
+        'available': True, 'correct_score_channel': 'okooo_cs',
+        'correct_score_page_avg': {o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS},
+        'cs31_complete': True,
+    })
+    (tmp_path / 'cs_1347776.json').write_text(json.dumps(fresh), encoding='utf-8')
+    calls: list[str] = []
+    monkeypatch.setattr(okooo, '_fetch_detail',
+                        lambda *a, **k: calls.append('x') or {'ok': False, 'status': 405,
+                                                              'blocked': True, 'html': ''})
+    monkeypatch.setenv('OKOOO_CS_PATIENCE', '0')
+    okooo.scrape_okooo_mobile_cs_zuizhi('1347776', force_refresh=True)
+    assert calls, 'force_refresh must bypass a valid cache'
+
+
+def test_save_json_survives_a_circular_reference(tmp_path: Path) -> None:
+    """D4: 'Circular reference detected' must never abort a save."""
+    cyc: dict[str, Any] = {'keep': 1}
+    cyc['self'] = cyc
+    cyc['nested'] = [cyc]
+    target = tmp_path / 'cyc.json'
+    app.save_json(str(target), cyc)
+    out = json.loads(target.read_text(encoding='utf-8'))
+    assert out['keep'] == 1
+    assert out['self'] == '<circular>'
+
+
+def test_save_json_serialises_a_dataframe(tmp_path: Path) -> None:
+    pd = pytest.importorskip('pandas')
+    target = tmp_path / 'df.json'
+    app.save_json(str(target), {'df': pd.DataFrame({'a': [1, 2]})})
+    assert json.loads(target.read_text(encoding='utf-8'))['df']['a']['0'] == 1
+
+
+def test_books_failure_does_not_zero_the_scalar_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D5: a company-books failure must not clear AH/OU that六盘口 already gave."""
+    rec: dict[str, Any] = {'asian_handicap': 0.0, 'ou_line': 2.5,
+                           'mobile_ah_ou_books': {'available': True,
+                                                  'asian_handicap': {'companies': [{'name': 'X'}]}}}
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books',
+                        lambda *a, **k: {'available': False,
+                                         'block_reason': 'okooo_ah_ou_books_fetch_failed'})
+    app._attach_mobile_ah_ou_books(rec, '1347776')
+    assert rec['asian_handicap'] == 0.0
+    assert rec['ou_line'] == 2.5
+    assert rec['mobile_ah_ou_books']['asian_handicap']['companies'][0]['name'] == 'X'
+    assert rec['mobile_ah_ou_books']['last_attempt_reason']
+
+
+def test_audit_message_lists_every_missing_key() -> None:
+    """D6: print the full list, not the first five."""
+    jc = {o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS}
+    rows = app.build_pool31_option_rows([], jc_score_odds=jc, lam_home=1.4, lam_away=1.1)
+    for row in rows:
+        if row['score'] in ('5-0', '5-1', '5-2', '0-5', '1-5', '2-5'):
+            row['market'] = None
+    audit = pipe_mod.DeepSeekAnalyzer.audit_theo_mkt_31_rows(rows)
+    joined = ' '.join(audit['missing'])
+    for opt in ('5-0', '1-5', '2-5'):
+        assert opt in joined, joined
+
+
+def test_boot_banner_prints_once_per_process(capsys: pytest.CaptureFixture[str]) -> None:
+    """D7: Streamlit reruns must not reprint the banner."""
+    import os as _os
+    _os.environ.pop('_BLADE_BOOT_BANNER_PRINTED', None)
+    app._blade_boot_banner('OkoooRoute=auto OkoooProxy=direct')
+    app._blade_boot_banner('OkoooRoute=auto OkoooProxy=direct')
+    out = capsys.readouterr().out
+    assert out.count('[boot]') == 1
+    assert out.count('[build]') == 1
+    _os.environ.pop('_BLADE_BOOT_BANNER_PRINTED', None)
+
+
+def test_gate_sees_the_same_pack_the_fetch_produced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """D3: 抓取末 cs_n=25 ready=True, then 研判闸门 cs_n=0.
+
+    The fetch result lived only in a local `data_okooo`; the gate reads `rec`.
+    This asserts the same canonical pack reaches both, and that books_from agrees.
+    """
+    fallback_mod = importlib.import_module('odds_fallback')
+    rec: dict[str, Any] = {'okooo_match_id': '1347776', 'match': 'H vs A'}
+    pack = {
+        'okooo_match_id': '1347776',
+        'correct_score_available': True,
+        'correct_score_channel': 'okooo_cs',
+        'correct_score_page_avg': {f'{i}-0': 9.0 for i in range(25)},
+        'correct_score_books_avg': {f'{i}-0': 8.0 for i in range(25)},
+        'correct_score_books_n': 27,
+        'asian_handicap': -0.75, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+    }
+    app._merge_okooo_detail_into_rec(rec, pack)
+    gate = fallback_mod.ensure_dual_source_before_judgment(rec)
+    assert gate['cs_books_n'] == 25, gate
+    assert gate['books_from'] == 'correct_score_books_avg'
+    assert gate['mobile_cs_entered'] is True
+    assert gate['ready'] is True
+    # and the pack the gate reported on is the record's, not a copy that drifted
+    assert rec['dual_source_facts']['correct_score']['books_n'] == 25
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}
