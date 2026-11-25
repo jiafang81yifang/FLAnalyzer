@@ -30,7 +30,7 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 2facea0 = 六项实盘日志缺口: 知识库补种+统一降级 / audit_theo_mkt_31_rows / 澳客CS真页面+阶段化reason / 必发源诊断 / 水位单次重抓 / reason 不再为 None
-$PinCommit = '2facea0831d7bfb70a0bea704e86557576ea9fc9'
+$PinCommit = '7864d15db470256e17a7ad312e59bb8c5477d5bf'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
