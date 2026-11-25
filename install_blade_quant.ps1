@@ -26,9 +26,11 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11
 } catch { }
 
-# 程序和向导都固定到同一个 commit，不受分支后续变动影响。
+# 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
-$PinCommit = '4f6e57ddfc3e62719380667c5b20270e01e9785d'
+# 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
+# 14c2b1e = merge cursor/war-room-redesign (new app + wizard)，app md5 ffc71bd8b70b670db67b7ea27830e737
+$PinCommit = '14c2b1e6dd2105bc2634b20628fe5df3a67b858f'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
@@ -278,6 +280,9 @@ function Save-RemoteFile {
 function Get-RemoteArtifact {
     # 依次尝试：本机代理 → 直连 → 7890，每个代理再试 GitHub raw 与 jsDelivr 镜像。
     # raw.githubusercontent.com 在国内经常连不上，镜像能救回来。
+    #
+    # 刚 push 完的 commit 偶尔会先在 CDN 上返回 404（缓存了负结果，几十秒后自愈），
+    # 所以每个 URL 都重试几轮再放弃，别让用户因为这种瞬时状态重装。
     param([string]$FileName, [string]$OutFile, [double]$MinMb = 0)
 
     $urls = @(
@@ -289,22 +294,28 @@ function Get-RemoteArtifact {
     $proxyCandidates += ''
     $proxyCandidates += 'http://127.0.0.1:7890'
 
-    foreach ($proxy in $proxyCandidates) {
-        foreach ($url in $urls) {
-            try {
-                Save-RemoteFile -Url $url -OutFile $OutFile -ProxyUrl $proxy -TimeoutSec 60
-                if (-not (Test-Path $OutFile)) { continue }
-                $bytes = (Get-Item $OutFile).Length
-                if ($bytes -le 0) { continue }
-                if ($MinMb -gt 0) {
-                    $mb = [math]::Round($bytes / 1MB, 2)
-                    if ($mb -lt $MinMb) {
-                        # 明显被截断，换下一条再试。
-                        continue
+    for ($round = 1; $round -le 3; $round++) {
+        foreach ($proxy in $proxyCandidates) {
+            foreach ($url in $urls) {
+                try {
+                    Save-RemoteFile -Url $url -OutFile $OutFile -ProxyUrl $proxy -TimeoutSec 60
+                    if (-not (Test-Path -LiteralPath $OutFile)) { continue }
+                    $bytes = (Get-Item $OutFile).Length
+                    if ($bytes -le 0) { continue }
+                    if ($MinMb -gt 0) {
+                        $mb = [math]::Round($bytes / 1MB, 2)
+                        if ($mb -lt $MinMb) {
+                            # 明显被截断，换下一条再试。
+                            continue
+                        }
                     }
-                }
-                return $true
-            } catch { }
+                    return $true
+                } catch { }
+            }
+        }
+        if ($round -lt 3) {
+            Write-Note "第 $round 轮下载失败，等 5 秒重试（CDN 刚发布的 commit 可能要一会儿才可用）"
+            Start-Sleep -Seconds 5
         }
     }
     return $false
