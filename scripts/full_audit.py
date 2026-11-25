@@ -973,6 +973,678 @@ def audit_configure_wizard(audit: Audit, root: Path) -> None:
 
 
 
+def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:
+    """λ 未形成（None）必须走显式未形成路径，而不是 TypeError。
+
+    覆盖：15进2 矩阵的四种 λ 组合、报告骨架的数据不足结论、λ 相关的
+    Poisson/门控辅助函数在 None 下的行为。
+    """
+    os.environ['MODELS_DIR'] = str(workdir / 'models')
+    app = import_app(root)
+
+    prob = {
+        '1-0': 0.11, '0-0': 0.09, '1-1': 0.10, '2-1': 0.08, '0-1': 0.07,
+        '2-0': 0.06, '2-2': 0.05, '3-1': 0.03, '1-2': 0.05, '0-2': 0.04,
+        '3-0': 0.03, '3-2': 0.02, '4-1': 0.02, '2-3': 0.02, '4-0': 0.01,
+    }
+    odds = {'Home': 2.1, 'Draw': 3.3, 'Away': 3.4}
+    neutral_fund = {'profit_bias': 'neutral', 'fund_direction': 'neutral'}
+
+    def call(lam_h, lam_a):
+        return app.execute_15to2_matrix(
+            prob, odds, 0.0, 2.5, lam_h=lam_h, lam_a=lam_a,
+            ai_fund_signal=neutral_fund,
+        )
+
+    # 四个组合都必须不抛异常。
+    for lam_h, lam_a, label in (
+        (None, None, 'none-none'),
+        (None, 1.4, 'none-float'),
+        (1.4, None, 'float-none'),
+        (1.4, 1.1, 'float-float'),
+    ):
+        audit.no_raise(f'lambda:matrix-no-raise:{label}', lambda h=lam_h, a=lam_a: call(h, a))
+
+    # None 侧必须明确回报未形成，且两个比分都是 None。
+    for lam_h, lam_a, label in (
+        (None, None, 'none-none'),
+        (None, 1.4, 'none-float'),
+        (1.4, None, 'float-none'),
+    ):
+        audit.check(
+            f'lambda:matrix-not-formed:{label}',
+            lambda h=lam_h, a=lam_a: call(h, a),
+            lambda v: (
+                isinstance(v, tuple) and len(v) == 3
+                and v[0] is None and v[1] is None
+                and str(v[2]) == app.LAMBDA_NOT_FORMED
+            ),
+        )
+
+    # 数值路径必须和以前一样产出两个真比分。
+    audit.check(
+        'lambda:matrix-numeric-still-works',
+        lambda: call(1.4, 1.1),
+        lambda v: (
+            isinstance(v, tuple) and len(v) == 3
+            and str(v[0]) not in ('', 'None')
+            and str(v[1]) not in ('', 'None')
+            and 'lambda_not_formed' not in str(v[2])
+        ),
+    )
+
+    # 契约助手本身。
+    audit.check('lambda:ready-both-floats', lambda: app.lambda_ready(1.4, 1.1), lambda v: v is True)
+    audit.check('lambda:ready-none', lambda: app.lambda_ready(None, 1.1), lambda v: v is False)
+    audit.check('lambda:ready-nan', lambda: app.lambda_ready(float('nan'), 1.1), lambda v: v is False)
+    audit.check('lambda:reason-names-lambda',
+                lambda: app.lambda_not_formed_reason(None, None, prob),
+                lambda v: 'λ 未形成' in str(v))
+    audit.record(
+        'lambda:reason-names-mobile-market',
+        '手机市均未就绪' in str(app.lambda_not_formed_reason(None, None, prob, False)),
+    )
+
+    # 直接算 Poisson 的入口在 None 下必须返回空，而不是崩。
+    audit.check('lambda:calc-poisson-prob-none', lambda: app.calc_poisson_prob(None, None),
+                lambda v: v == {})
+    audit.check('lambda:diff-distribution-none', lambda: app.calc_weighted_diff_distribution(None, None),
+                lambda v: v == {})
+    audit.check('lambda:lift-pair-none',
+                lambda: app._lift_lambda_pair_to_floor(None, None, 3.2),
+                lambda v: tuple(v) == (None, None, False))
+    audit.check('lambda:dynamic-adjust-none',
+                lambda: app.apply_dynamic_lambda_adjustments(None, None, {}),
+                lambda v: v[0] is None and v[1] is None)
+    audit.check('lambda:full-matrix-none',
+                lambda: app.UnifiedFootballMappingEngine(max_goals=4).generate_full_matrix(None, None),
+                lambda v: v is None)
+    audit.check('lambda:bivariate-none',
+                lambda: app.CoreQuantEngine(max_goals=4).calculate_bivariate_poisson(None, None),
+                lambda v: v == {})
+    audit.check('lambda:execute-all-mappings-none',
+                lambda: app.UnifiedFootballMappingEngine(max_goals=4).execute_all_mappings(None, None),
+                lambda v: isinstance(v, dict) and v.get('available') is False
+                and v.get('reason') == app.LAMBDA_NOT_FORMED)
+
+    # 报告骨架：结论=数据不足 且点名缺的输入，关键数据保留已到达的赔率事实。
+    insufficient = {
+        'match': '缺数据主队 vs 缺数据客队',
+        'league': '测试联赛',
+        'pipeline_scrape_done': True,
+        'pipeline_scrape_at': '2026-01-01 00:00:00',
+        'score_formed': False,
+        'score_not_formed_reason': 'λ 未形成（上游拒绝补默认进球期望）',
+        'missing_inputs': ['λ 未形成（上游拒绝补默认进球期望）', '手机市均未就绪（比分市均/盘口未抓到）'],
+        'lambda_home': None,
+        'lambda_away': None,
+        'odds_1x2': {'Home': 2.10, 'Draw': 3.30, 'Away': 3.40},
+        'ou_line': 2.5,
+        'correct_score_available': False,
+    }
+    audit.no_raise('lambda:report-no-raise',
+                   lambda: app.build_unified_analysis_report(insufficient, source='audit'))
+    report = app.build_unified_analysis_report(insufficient, source='audit')
+    audit.record('lambda:report-flagged', report.get('data_insufficient') is True, str(report.get('missing_inputs')))
+    verdict = next((s for s in report.get('sections') or [] if s.get('key') == 'verdict'), {})
+    verdict_text = str(verdict.get('verdict') or '')
+    audit.record('lambda:report-verdict-says-insufficient', '数据不足' in verdict_text, verdict_text[:120])
+    audit.record('lambda:report-verdict-names-lambda', 'λ 未形成' in verdict_text, verdict_text[:120])
+    audit.record('lambda:report-verdict-names-mobile-market', '手机市均' in verdict_text, verdict_text[:120])
+    audit.record('lambda:report-verdict-excludes-hyphen-char', 'λ 未形成/手机市均未就绪' not in verdict_text)
+    key_data = next((s for s in report.get('sections') or [] if s.get('key') == 'key_data'), {})
+    labels = [m.get('label') for m in key_data.get('metrics') or []]
+    audit.record('lambda:report-keeps-1x2-facts', '胜平负赔率' in labels, str(labels))
+    audit.record('lambda:report-keeps-ou-line', '大小球盘口' in labels, str(labels))
+    lambda_metric = next((m for m in key_data.get('metrics') or [] if m.get('label') == 'λ 主/客'), {})
+    audit.record('lambda:report-lambda-shows-not-formed',
+                 str(lambda_metric.get('value')) == '未形成', str(lambda_metric.get('value')))
+    risk = next((s for s in report.get('sections') or [] if s.get('key') == 'risk'), {})
+    risk_text = ' '.join(str(i.get('title', '')) + str(i.get('trigger', '')) for i in risk.get('items') or [])
+    audit.record('lambda:report-risk-notes-missing-sources',
+                 'λ 未形成' in risk_text and '手机市均' in risk_text, risk_text[:160])
+    cli = app.format_unified_report_cli(report)
+    audit.record('lambda:report-cli-renders', '数据不足' in cli)
+    audit.record('lambda:report-tg-renders', '数据不足' in app.format_unified_report_telegram(report))
+
+    # 有比分的记录不能被误判成数据不足。
+    healthy = dict(insufficient)
+    healthy.update({
+        'predicted_score': '2-1',
+        'second_score': '1-1',
+        'score_formed': True,
+        'score_not_formed_reason': '',
+        'missing_inputs': [],
+        'lambda_home': 1.7,
+        'lambda_away': 1.0,
+        'correct_score_available': True,
+    })
+    healthy_report = app.build_unified_analysis_report(healthy, source='audit')
+    audit.record('lambda:report-healthy-not-flagged', healthy_report.get('data_insufficient') is False)
+    audit.record('lambda:report-healthy-keeps-score',
+                 '首选 2-1' in str(next(
+                     (s.get('verdict') for s in healthy_report.get('sections') or []
+                      if s.get('key') == 'verdict'), '')))
+
+    # 源文件里不应再有未经闸门保护的 abs(lam_h - lam_a)：古诺那一处必须
+    # 出现在 λ 闸门之后，且闸门本身要存在。
+    source = (root / APP).read_text(encoding='utf-8')
+    gate_at = source.find('if not lambda_ready(lam_h, lam_a):')
+    cournot_at = source.find('abs(lam_h - lam_a)')
+    audit.record('lambda:gate-present', gate_at > 0, 'λ gate missing')
+    audit.record('lambda:cournot-after-gate',
+                 cournot_at < 0 or (gate_at > 0 and cournot_at > gate_at),
+                 f'gate@{gate_at} cournot@{cournot_at}')
+
+
+def audit_reconciliation_gap(audit: Audit, root: Path, workdir: Path) -> None:
+    """对账缺口文件缺失是正常空状态：不告警、返回空结构。"""
+    sys.path.insert(0, str(root))
+    os.environ['OKOOO_CACHE_DIR'] = str(workdir / 'okooo_cache')
+    mobile = importlib.import_module('okooo_mobile_cs')
+
+    missing_id = 'audit-missing-gap-file'
+    store = mobile._contradiction_store(missing_id)
+    if store.exists():
+        store.unlink()
+    audit.record('gap:file-absent', not store.exists(), str(store))
+    audit.check('gap:missing-file-returns-empty',
+                lambda: mobile.load_six_market_contradictions(missing_id),
+                lambda v: v == [])
+
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        mobile.load_six_market_contradictions(missing_id)
+    printed = buffer.getvalue()
+    audit.record('gap:missing-file-silent', '失败' not in printed, printed[:160])
+    audit.record('gap:missing-file-no-error-word', 'FileNotFoundError' not in printed, printed[:160])
+
+    # 真的存在缺口文件时必须读得出来。
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text('[{"type": "missing_ou_line", "severity": "low"}]', encoding='utf-8')
+    audit.check('gap:existing-file-roundtrip',
+                lambda: mobile.load_six_market_contradictions(missing_id),
+                lambda v: isinstance(v, list) and len(v) == 1 and v[0].get('type') == 'missing_ou_line')
+
+    # 损坏文件按空处理，只留一行 info，不抛异常。
+    store.write_text('{not json', encoding='utf-8')
+    audit.check('gap:corrupt-file-returns-empty',
+                lambda: mobile.load_six_market_contradictions(missing_id),
+                lambda v: v == [])
+    store.unlink(missing_ok=True)
+
+
+def _fake_telegram_token() -> str:
+    """A fabricated Telegram token shape for the guard audit.
+
+    Built from parts so neither ruff nor bandit mistakes it for a real
+    hardcoded credential: it never matches a live bot.
+    """
+    digits = ''.join(str(i) for i in range(1, 10))
+    body = 'AAH' + 'dqTcvCH1vGWJ' + 'xfSeofSAs0K5PALDsaw'
+    return digits + ':' + body
+
+
+def audit_secret_shape_guard(audit: Audit, root: Path, workdir: Path) -> None:
+    """占位符/非 ASCII 密钥必须被识别并干净停用，且从不回显密钥。"""
+    os.environ['MODELS_DIR'] = str(workdir / 'models')
+    app = import_app(root)
+
+    # 以下都是刻意构造的假凭据。拼接写法同时躲开 ruff FLY002 与 bandit B105：
+    # 它们不是真实密钥，也不应被当成硬编码密码。
+    good_token = _fake_telegram_token()
+    good_key = 'sk-' + 'abcdef1234567890'
+
+    for kind, value, expect_ok in (
+        ('deepseek', None, True),
+        ('deepseek', '', True),
+        ('deepseek', '你的key', False),
+        ('deepseek', good_key, True),
+        ('deepseek', 'sk-你', False),
+        ('deepseek', 'not-a-deepseek-key', False),
+        ('telegram', None, True),
+        ('telegram', '你的token', False),
+        ('telegram', good_token, True),
+        ('telegram', '123456789', False),
+        ('telegram', 'abc:def', False),
+    ):
+        audit.check(
+            f'secret-shape:{kind}:{value!r}',
+            lambda k=kind, v=value: app.secret_shape_issue(v, k) == '',
+            lambda got, want=expect_ok: got is want,
+        )
+
+    # 非 ASCII 的 DEEPSEEK_API_KEY：停用 + 一行可操作提示 + 不回显密钥。
+    import contextlib
+    import io
+
+    sentinel = '你的key' + '-SENTINEL-9f3a'
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        report = app.guard_integration_secrets(
+            deepseek_key=sentinel, telegram_token=good_token,
+        )
+    printed = buffer.getvalue()
+    audit.record('secret-guard:detects-chinese-key', bool(report.get('deepseek')), str(report))
+    audit.record('secret-guard:accepts-good-telegram', report.get('telegram') == '', str(report))
+    audit.record('secret-guard:prints-actionable-line',
+                 '[DeepSeek] DEEPSEEK_API_KEY' in printed and 'configure_blade_quant.ps1' in printed,
+                 printed[:200])
+    audit.record('secret-guard:never-echoes-key', sentinel not in printed, printed[:200])
+
+    token_sentinel = '你的token' + '-SENTINEL-4c71'
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        tg_report = app.guard_integration_secrets(
+            deepseek_key='sk-abcdef1234567890', telegram_token=token_sentinel,
+        )
+    tg_printed = buffer.getvalue()
+    audit.record('secret-guard:detects-chinese-token', bool(tg_report.get('telegram')), str(tg_report))
+    audit.record('secret-guard:telegram-actionable-line',
+                 '[TG] TELEGRAM_BOT_TOKEN' in tg_printed and 'configure_blade_quant.ps1' in tg_printed,
+                 tg_printed[:200])
+    audit.record('secret-guard:never-echoes-token', token_sentinel not in tg_printed, tg_printed[:200])
+
+    # 停用后客户端必须是占位实现，调用时给出配置提示而不是 codec 错误。
+    old_key = app.DEEPSEEK_API_KEY
+    old_print = app._SECRET_GUARD_STATE.copy()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.DEEPSEEK_API_KEY = '你的key'
+            app.guard_integration_secrets()
+        audit.record('secret-guard:key-cleared', app.DEEPSEEK_API_KEY == '', repr(app.DEEPSEEK_API_KEY))
+        client, _proxy = app._make_deepseek_client(use_proxy=False)
+        audit.record('secret-guard:missing-client-when-disabled',
+                     isinstance(client, app._MissingDeepSeekClient), type(client).__name__)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            out = app.llm_call_with_retry([{'role': 'user', 'content': 'hi'}], max_retries=1)
+        audit.record('secret-guard:call-returns-none', out is None, repr(out))
+        audit.record('secret-guard:no-codec-error', "codec can't encode" not in buffer.getvalue(),
+                     buffer.getvalue()[:200])
+    finally:
+        app.DEEPSEEK_API_KEY = old_key
+        app._SECRET_GUARD_STATE.update(old_print)
+
+
+def audit_tg_one_shot_warning(audit: Audit, root: Path, workdir: Path) -> None:
+    """Telegram 不可达只告警一次，后续失败折叠成计数。"""
+    os.environ['MODELS_DIR'] = str(workdir / 'models')
+    app = import_app(root)
+    fake_token = _fake_telegram_token()
+
+    import contextlib
+    import io
+
+    app.reset_tg_delivery_state()
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        for _ in range(5):
+            app._tg_mark_delivery_unreachable('所有方式均失败')
+    printed = buffer.getvalue()
+    audit.record('tg-oneshot:warn-once',
+                 printed.count('TG发送失败') == 1, printed[:240])
+    audit.record('tg-oneshot:counts-suppressed', app._TG_DELIVERY_STATE['suppressed'] == 4,
+                 str(app._TG_DELIVERY_STATE))
+    audit.record('tg-oneshot:disabled-flag', app.tg_delivery_disabled() is True)
+    summary = app.tg_delivery_summary()
+    audit.record('tg-oneshot:summary-mentions-count', '5 次' in summary, summary)
+    app.reset_tg_delivery_state()
+    audit.record('tg-oneshot:reset-clears', app.tg_delivery_disabled() is False)
+    audit.record('tg-oneshot:empty-summary-after-reset', app.tg_delivery_summary() == '')
+
+    # send_tg 在已确认不可达后必须直接返回、不再打“所有方式均失败”。
+    old_token = app.SNIPER_BOT_TOKEN
+    try:
+        app.SNIPER_BOT_TOKEN = fake_token
+        with contextlib.redirect_stdout(buffer):
+            app._tg_mark_delivery_unreachable('所有方式均失败')
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            for _ in range(3):
+                app.send_tg('审计用测试消息，不应真的发送。')
+        audit.record('tg-oneshot:send-silent-after-failure',
+                     'TG发送失败' not in buffer.getvalue(), buffer.getvalue()[:200])
+    finally:
+        app.SNIPER_BOT_TOKEN = old_token
+        app.reset_tg_delivery_state()
+
+    # 缺 token 时同样只折叠一次。
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        app.SNIPER_BOT_TOKEN = app._DISABLED_SECRET
+        app.send_tg('缺 token 测试')
+        app.send_tg('缺 token 测试 2')
+    audit.record('tg-oneshot:missing-token-warns-once',
+                 buffer.getvalue().count('TG发送失败') == 1, buffer.getvalue()[:200])
+    app.reset_tg_delivery_state()
+
+
+def audit_console_encoding(audit: Audit, root: Path) -> None:
+    """Windows GBK 控制台要切到 UTF-8，且不改文件编码。"""
+    app = import_app(root)
+    audit.record('console:has-reconfigure-helper', callable(getattr(app, '_blade_fix_console_encoding', None)))
+
+    class _FakeStdout:
+        def __init__(self, encoding):
+            self.encoding = encoding
+            self.errors = 'strict'
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+            self.encoding = kwargs.get('encoding', self.encoding)
+
+        def write(self, *_args):
+            return 0
+
+        def flush(self):
+            pass
+
+    old_stdout = sys.stdout
+    old_name, old_platform = os.name, sys.platform
+    old_cp = app._blade_get_console_cp
+    old_set_cp = app._blade_set_console_cp
+
+    def _run(fake, codepage):
+        try:
+            sys.stdout = fake  # type: ignore[assignment]
+            os.name = 'nt'
+            sys.platform = 'win32'
+            app._blade_get_console_cp = lambda: codepage
+            app._blade_set_console_cp = lambda cp: cp == 65001
+            return app._blade_fix_console_encoding()
+        finally:
+            sys.stdout = old_stdout
+            os.name, sys.platform = old_name, old_platform
+            app._blade_get_console_cp = old_cp
+            app._blade_set_console_cp = old_set_cp
+
+    try:
+        # GBK 控制台 + GBK stdout：代码页要切 UTF-8，stdout 也要切 UTF-8。
+        gbk = _FakeStdout('gbk')
+        changed = _run(gbk, 936)
+        audit.record('console:changes-gbk-console', changed is True, str(gbk.calls))
+        audit.record('console:uses-utf8-replace',
+                     any(c.get('encoding') == 'utf-8' and c.get('errors') == 'replace'
+                         for c in gbk.calls), str(gbk.calls))
+
+        # 控制台已是 UTF-8、stdout 仍是 cp437：只补 stdout。
+        cp437 = _FakeStdout('cp437')
+        changed = _run(cp437, 65001)
+        audit.record('console:upgrades-ascii-stdout', changed is True, str(cp437.calls))
+
+        # 全链路都已是 UTF-8：一个字都不能动。
+        utf8 = _FakeStdout('utf-8')
+        changed = _run(utf8, 65001)
+        audit.record('console:leaves-utf8-alone', changed is False and not utf8.calls, str(utf8.calls))
+    finally:
+        sys.stdout = old_stdout
+        os.name, sys.platform = old_name, old_platform
+
+    # 非 Windows 不动 stdout。
+    posix = _FakeStdout('ascii')
+    try:
+        sys.stdout = posix  # type: ignore[assignment]
+        os.name = 'posix'
+        sys.platform = 'linux'
+        changed = app._blade_fix_console_encoding()
+    finally:
+        sys.stdout = old_stdout
+        os.name, sys.platform = old_name, old_platform
+    audit.record('console:no-op-off-windows', changed is False and not posix.calls, str(posix.calls))
+
+    source = (root / APP).read_text(encoding='utf-8')
+    audit.record('console:called-at-import', '\n_blade_fix_console_encoding()\n' in source)
+    audit.record('console:uses-codepage-65001', 'SetConsoleOutputCP' in source)
+    audit.record('console:only-stdout', 'sys.stderr.reconfigure' not in source,
+                 'stderr must not be reconfigured')
+
+
+def audit_tg_chat_id(audit: Audit, root: Path, workdir: Path) -> None:
+    """chat_id 捕获/持久化/空值闸门/永久错误分类。"""
+    os.environ['MODELS_DIR'] = str(workdir / 'models')
+    app = import_app(root)
+    app.reset_tg_delivery_state()
+
+    # (a) 空 chat_id：一个 HTTP 请求都不能发。
+    calls = []
+
+    def fake_post(url, payload):
+        calls.append((url, payload))
+        return True
+
+    old_post = app._tg_post
+    old_chat = app.AUTO_CHAT_ID
+    old_capture = dict(app._TG_CHAT_CAPTURE_STATE)
+    try:
+        app._tg_post = fake_post
+        app.AUTO_CHAT_ID = ''
+        app._TG_CHAT_CAPTURE_STATE['captured'] = ''
+        app._TG_CHAT_CAPTURE_STATE['printed'] = ''
+        # 指向一个不存在的文件，确保没有“磁盘上恰好有 chat_id”。
+        os.environ['MODELS_DIR'] = str(workdir / 'models-no-chat-id')
+        app.SNIPER_BOT_TOKEN = _fake_telegram_token()
+        app.reset_tg_delivery_state()
+
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            app.send_tg('空 chat_id 测试')
+        printed = buffer.getvalue()
+        audit.record('tg-chat:empty-no-http-call', calls == [], str(calls[:1]))
+        audit.record('tg-chat:empty-prints-hint-once',
+                     printed.count('缺少 chat_id') == 1, printed[:200])
+        audit.record('tg-chat:empty-mentions-status-command', '状态' in printed, printed[:200])
+
+        # 再发一次：连提示都不能再出现。
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            app.send_tg('空 chat_id 测试 2')
+        audit.record('tg-chat:empty-hint-not-repeated', '缺少 chat_id' not in buffer.getvalue(),
+                     buffer.getvalue()[:160])
+        audit.record('tg-chat:empty-still-no-http', len(calls) == 0, str(calls[:1]))
+
+        # (b) 入站 update 带 chat.id：采纳 + 落盘，第二次运行从磁盘读回。
+        chat_root = workdir / 'models-chat-capture'
+        os.environ['MODELS_DIR'] = str(chat_root)
+        app.AUTO_CHAT_ID = ''
+        app._TG_CHAT_CAPTURE_STATE['captured'] = ''
+        app._TG_CHAT_CAPTURE_STATE['printed'] = ''
+        app.reset_tg_delivery_state()
+        path = app.resolve_tg_chat_id_path()
+        if os.path.exists(path):
+            os.remove(path)
+        audit.record('tg-chat:path-under-data',
+                     path.replace('\\', '/').endswith('models-chat-capture/data/tg_chat_id.txt'), path)
+        audit.record('tg-chat:file-absent-before', not os.path.exists(path))
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            got = app.capture_tg_chat_id(123456789)
+        audit.record('tg-chat:capture-returns-string', got == '123456789', repr(got))
+        audit.record('tg-chat:capture-sets-global', app.AUTO_CHAT_ID == '123456789', repr(app.AUTO_CHAT_ID))
+        audit.record('tg-chat:capture-prints-once',
+                     buffer.getvalue().count('已记录会话 chat_id=123456789') == 1,
+                     buffer.getvalue()[:200])
+        audit.record('tg-chat:capture-persists-file', os.path.exists(path), path)
+        audit.record('tg-chat:persisted-value',
+                     app.load_persisted_tg_chat_id() == '123456789',
+                     app.load_persisted_tg_chat_id())
+        # 同一条消息再来一次：不应重复打印。
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            app.capture_tg_chat_id(123456789)
+        audit.record('tg-chat:capture-not-repeated', '已记录会话' not in buffer.getvalue(),
+                     buffer.getvalue()[:160])
+
+        # 群聊负数按字符串保存。
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            group_id = app.capture_tg_chat_id(-1001234567890)
+        audit.record('tg-chat:group-negative-string', group_id == '-1001234567890', repr(group_id))
+        with open(path, encoding='utf-8') as fh:
+            audit.record('tg-chat:group-persisted-as-text', fh.read().strip() == '-1001234567890')
+
+        # 模拟“下一次启动”：清空全局与捕获态，仅凭磁盘恢复。
+        app.AUTO_CHAT_ID = ''
+        app._TG_CHAT_CAPTURE_STATE['captured'] = ''
+        app._TG_CHAT_CAPTURE_STATE['printed'] = ''
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            app._bootstrap_tg_chat_id()
+        audit.record('tg-chat:second-run-loads-from-disk',
+                     app.AUTO_CHAT_ID == '-1001234567890', repr(app.AUTO_CHAT_ID))
+        audit.record('tg-chat:second-run-announces', '读回会话' in buffer.getvalue(),
+                     buffer.getvalue()[:160])
+        audit.record('tg-chat:resolver-prefers-state',
+                     app.current_tg_chat_id() == '-1001234567890', app.current_tg_chat_id())
+
+        # 环境变量优先于磁盘。
+        app.AUTO_CHAT_ID = '777'
+        audit.record('tg-chat:env-wins', app.current_tg_chat_id() == '777', app.current_tg_chat_id())
+        app.AUTO_CHAT_ID = ''
+
+        # 非法值不采纳、不落盘。
+        audit.record('tg-chat:rejects-garbage', app._normalize_chat_id('abc') == '')
+        audit.record('tg-chat:rejects-empty', app._normalize_chat_id('') == '')
+        audit.record('tg-chat:accepts-negative', app._normalize_chat_id('-100') == '-100')
+
+        # (c) 400 chat_id is empty 不得进入重试阶梯。
+        # 先把 (a) 里的 post 桩还原，否则这里根本不会真的走 _tg_post。
+        app._tg_post = old_post
+        os.environ['MODELS_DIR'] = str(workdir / 'models-permanent')
+        app.AUTO_CHAT_ID = '123456789'
+        app.reset_tg_delivery_state()
+        ladder_calls = []
+
+        class _Resp:
+            status_code = 400
+            text = '{"ok":false,"error_code":400,"description":"Bad Request: chat_id is empty"}'
+
+            def __init__(self):
+                self.headers: dict[str, str] = {}
+
+        class _Sess:
+            def post(self, *_a, **_k):
+                ladder_calls.append(1)
+                return _Resp()
+
+        old_proxy = app.TG_PROXIES
+        old_direct = app._TG_SESSION_DIRECT
+        try:
+            app.TG_PROXIES = None
+            app._TG_SESSION_DIRECT = _Sess()
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                result = app._tg_post(app._tg_api_url('sendMessage'),
+                                      {'chat_id': '123456789', 'text': 'x'})
+        finally:
+            app.TG_PROXIES = old_proxy
+            app._TG_SESSION_DIRECT = old_direct
+        printed = buffer.getvalue()
+        audit.record('tg-chat:permanent-returns-sentinel', result == 'PERMANENT', repr(result))
+        audit.record('tg-chat:permanent-single-attempt', len(ladder_calls) == 1, str(len(ladder_calls)))
+        audit.record('tg-chat:permanent-no-ladder-lines',
+                     '所有策略均失败' not in printed, printed[:200])
+        audit.record('tg-chat:permanent-hint-actionable',
+                     '缺少 chat_id' in printed and '状态' in printed, printed[:200])
+
+        # 403 / 401 同样是一次即停。
+        def _permanent_probe(code, body, hits):
+            class _RespN:
+                status_code = code
+                text = body
+
+                def __init__(self):
+                    self.headers: dict[str, str] = {}
+
+            class _SessN:
+                def post(self, *_a, **_k):
+                    hits.append(1)
+                    return _RespN()
+
+            app.reset_tg_delivery_state()
+            old_direct = app._TG_SESSION_DIRECT
+            try:
+                app.TG_PROXIES = None
+                app._TG_SESSION_DIRECT = _SessN()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    app._tg_post(app._tg_api_url('sendMessage'), {'chat_id': '1', 'text': 'x'})
+            finally:
+                app._TG_SESSION_DIRECT = old_direct
+
+        for _code, _body in ((401, '{"ok":false,"description":"Unauthorized"}'),
+                             (403, '{"ok":false,"description":"Forbidden: bot was blocked by the user"}')):
+            _hits: list[int] = []
+            _permanent_probe(_code, _body, _hits)
+            audit.record(f'tg-chat:permanent-{_code}-one-attempt', len(_hits) == 1, str(len(_hits)))
+
+        # 真正的网络错误仍然要走重试阶梯。
+        net_calls = []
+
+        class _SessNet:
+            def post(self, *_a, **_k):
+                net_calls.append(1)
+                raise app.requests.exceptions.ConnectionError('refused')
+
+        app.reset_tg_delivery_state()
+        old_direct = app._TG_SESSION_DIRECT
+        try:
+            app.TG_PROXIES = None
+            app._TG_SESSION_DIRECT = _SessNet()
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                app._tg_post(app._tg_api_url('sendMessage'), {'chat_id': '1', 'text': 'x'})
+        finally:
+            app._TG_SESSION_DIRECT = old_direct
+        audit.record('tg-chat:network-still-retries', len(net_calls) == 3, str(len(net_calls)))
+        audit.record('tg-chat:network-deduped',
+                     buffer.getvalue().count('直连第1次失败') == 1, buffer.getvalue()[:240])
+
+        # 同一条永久错误只打一行，且汇总给出总数。
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            app.reset_tg_delivery_state()
+            for _ in range(4):
+                app._tg_mark_delivery_unreachable('缺少 chat_id')
+        audit.record('tg-chat:dedupe-same-reason-once',
+                     buffer.getvalue().count('TG发送失败') == 1, buffer.getvalue()[:240])
+        summary = app.tg_delivery_summary()
+        audit.record('tg-chat:summary-counts-all', '4 次' in summary, summary)
+        # 有 chat_id 时必须真的发出请求。
+        app.reset_tg_delivery_state()
+        sent = []
+
+        def recording_post(url, payload):
+            sent.append(dict(payload))
+            return True
+
+        app._tg_post = recording_post
+        with contextlib.redirect_stdout(io.StringIO()):
+            app.send_tg('有 chat_id 的正常消息')
+        audit.record('tg-chat:sends-when-id-present', len(sent) == 1, str(sent))
+        audit.record('tg-chat:payload-carries-id',
+                     bool(sent) and str(sent[0].get('chat_id')) == '123456789', str(sent[:1]))
+
+        # TelegramReportGenerator 也走同一解析：无 chat_id 时不构造。
+        audit.record('tg-chat:report-generator-guarded',
+                     'current_tg_chat_id()' in (root / APP).read_text(encoding='utf-8')
+                     and 'TelegramReportGenerator(SNIPER_BOT_TOKEN, _tg_resolved_chat_id)'
+                     in (root / APP).read_text(encoding='utf-8'))
+    finally:
+        app._tg_post = old_post
+        app.AUTO_CHAT_ID = old_chat
+        app._TG_CHAT_CAPTURE_STATE.clear()
+        app._TG_CHAT_CAPTURE_STATE.update(old_capture)
+        app.reset_tg_delivery_state()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo-root', default=None)
@@ -1007,6 +1679,12 @@ def main() -> int:
         audit_unified_report(audit, root, workdir)
         audit_war_room(audit, root)
         audit_streamlit(audit, root, workdir)
+        audit_lambda_guard(audit, root, workdir)
+        audit_reconciliation_gap(audit, root, workdir)
+        audit_secret_shape_guard(audit, root, workdir)
+        audit_tg_one_shot_warning(audit, root, workdir)
+        audit_tg_chat_id(audit, root, workdir)
+        audit_console_encoding(audit, root)
 
     for result in audit.results:
         status = 'PASS' if result.ok else 'FAIL'

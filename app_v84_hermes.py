@@ -19,7 +19,7 @@ def _flanalyzer_install_embedded_runtime_modules():
     _sources = {
   "blade_deepseek_pipeline": "\"\"\"Lightweight DeepSeek analysis pipeline helpers for FLAnalyzer.\n\nThis module is intentionally dependency-light.  It provides deterministic\nformatting, payload-building and degraded-mode helpers used by app_v84_hermes.\nExternal DeepSeek calls remain in the main app where credentials/config live.\n\"\"\"\nfrom __future__ import annotations\n\nimport re\nfrom html import escape\nfrom typing import Any, ClassVar\n\nJCZQ_MACRO_BAIT_SCORES = {\"1-0\", \"0-1\", \"1-1\", \"2-1\", \"1-2\"}\n_RUNTIME: dict[str, Any] = {}\n\n\ndef bind_hermes_runtime(**kwargs: Any) -> None:\n    _RUNTIME.update(kwargs)\n\n\ndef strip_tg_color_marks(text: Any) -> str:\n    return str(text or '').replace('🟨', '').replace('🟥', '').replace('🟩', '')\n\n\ndef split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:\n    s = str(text or '')\n    limit = max(100, int(max_len or 3900))\n    return [s[i:i + limit] for i in range(0, len(s), limit)] or ['']\n\n\ndef compute_score_occ(scores: Any) -> dict[str, int]:\n    out: dict[str, int] = {}\n    for item in scores or []:\n        key = str(item[0] if isinstance(item, (list, tuple)) and item else item or '').replace(':', '-').strip()\n        if key:\n            out[key] = out.get(key, 0) + 1\n    return out\n\n\ndef _norm_score(score: Any) -> str:\n    return str(score or '').replace('：', '-').replace(':', '-').strip()\n\n\ndef _score_wdl(score: Any) -> str:\n    s = _norm_score(score)\n    if '胜' in s and '其它' in s:\n        return '胜'\n    if '负' in s and '其它' in s:\n        return '负'\n    if '平' in s and '其它' in s:\n        return '平'\n    m = re.match(r'^\\s*(\\d+)\\s*-\\s*(\\d+)\\s*$', s)\n    if not m:\n        return ''\n    h, a = int(m.group(1)), int(m.group(2))\n    return '胜' if h > a else ('平' if h == a else '负')\n\n\ndef audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]:\n    ctx = match_context if isinstance(match_context, dict) else {}\n    raw_payload = ctx.get('direction_lock_payload')\n    payload = raw_payload if isinstance(raw_payload, dict) else {}\n    ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0\n    try:\n        ratio_f = float(ratio or 0)\n    except (TypeError, ValueError):\n        ratio_f = 0.0\n    return {'available': ratio_f > 0, 'mean_gap_ratio': ratio_f, 'tier': 'high' if ratio_f >= 5 else ('mid' if ratio_f >= 1.35 else 'low')}\n\n\ndef check_rtm_collapse_guard(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'collapse': False, 'reason': 'deterministic_guard'}\n\n\ndef apply_game_surface_policy(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    data = dict(payload) if isinstance(payload, dict) else {}\n    data.setdefault('surface_policy_applied', True)\n    return data\n\n\ndef batch_ledger_integrity_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'ok': True, 'issues': []}\n\n\ndef build_v1631_clearing_view(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'rows': []}\n\n\ndef count_log_mismatches(*args: Any, **kwargs: Any) -> int:\n    return 0\n\n\ndef detect_sparse_game_signals(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'signals': []}\n\n\ndef per_match_review_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'gaps': []}\n\n\ndef review_direction_lock_recognition(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = source if isinstance(source, dict) else {}\n    return {'available': True, 'line': '方向锁复盘: 已按本地规则形成。', 'lock_side': info.get('lock_side')}\n\n\ndef settle_display_score_pair(first: Any, second: Any = None, *args: Any, **kwargs: Any) -> tuple[str, str]:\n    return _norm_score(first), _norm_score(second)\n\n\ndef split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'both_wrong': False}\n\n\ndef strip_match_features_from_method(text: Any, identity_names: Any = None) -> str:\n    cleaned = str(text or '')\n    names = identity_names if isinstance(identity_names, (list, tuple, set)) else []\n    for name in names:\n        token = str(name or '').strip()\n        if token:\n            cleaned = cleaned.replace(token, '')\n    return cleaned\n\n\ndef compare_short_abs_hot(info: Any) -> dict[str, Any]:\n    return {'available': False, 'line': '市短市热对照: 本地轻量模块未形成外部热度差。'}\n\n\nclass V1631StandardUnifiedEngine:\n    _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}\n    _TEMPLATE_FALLBACK = '未形成'\n\n\nclass DeepSeekAnalyzer:\n    \"\"\"Deterministic analyzer/formatter surface used by app_v84_hermes.\"\"\"\n\n    @staticmethod\n    def _classify_score_wdl(score: Any) -> str:\n        return _score_wdl(score)\n\n    @staticmethod\n    def _is_tg_match_title_line(line: Any) -> bool:\n        s = str(line or '')\n        return bool(s.startswith('📌') or ' vs ' in s or 'VS' in s)\n\n    @staticmethod\n    def _is_tg_section_suppressed(line: Any) -> bool:\n        return False\n\n    @staticmethod\n    def format_tg_match_header(match: Any, kickoff: Any = '', match_no: Any = '') -> str:\n        bits = ['📌']\n        if match_no:\n            bits.append(f'[{match_no}]')\n        bits.append(str(match or '未知比赛'))\n        if kickoff:\n            bits.append(str(kickoff))\n        return ' '.join(bits)\n\n    @staticmethod\n    def build_jc_cross_only_payload(data: Any, **kwargs: Any) -> dict[str, Any]:\n        payload = dict(data) if isinstance(data, dict) else {}\n        payload.update({k: v for k, v in kwargs.items() if v is not None})\n        rows = payload.get('jc_cross_rows') or payload.get('rows') or []\n        payload.setdefault('jc_cross_rows', rows if isinstance(rows, list) else [])\n        payload.setdefault('mkt_short_wdl_matrix', {'available': False, 'counts': {}})\n        payload.setdefault('allowed_scores', [])\n        payload.setdefault('judgment_universe', 'mkt_short_wdl_matrix')\n        return payload\n\n    @staticmethod\n    def attach_score_odds_cold_hedge(payload: dict[str, Any], arbitration: Any = None) -> dict[str, Any]:\n        payload['score_odds_cold_hedge'] = {'available': False, 'scores': [], 'writes_first_score': False, 'changes_direction': False}\n        return payload\n\n    @staticmethod\n    def build_cross_market_board(data: Any, first_score: Any = '', second_score: Any = '') -> dict[str, Any]:\n        d = data if isinstance(data, dict) else {}\n        return {\n            'available': True,\n            'first_score': _norm_score(first_score),\n            'second_score': _norm_score(second_score),\n            'asian_handicap': d.get('asian_handicap') or d.get('ah_line'),\n            'ou_line': d.get('ou_line'),\n            'jc_handicap': d.get('jc_handicap'),\n            'odds_1x2': d.get('odds_1x2') or {},\n        }\n\n    @staticmethod\n    def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:\n        m = matrix if isinstance(matrix, dict) else {}\n        return ['📊【市短胜平负矩阵】', f\"  状态: {'可用' if m.get('available') else '未形成'} {home} {away}\".rstrip()]\n\n    @staticmethod\n    def format_mkt_hot_wdl_matrix_tg_lines(payload: Any) -> list[str]:\n        return ['🔥【市热胜平负矩阵】', '  本地轻量模块按已落盘数据展示。']\n\n    @staticmethod\n    def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:\n        src = source if isinstance(source, dict) else {}\n        odds: dict[str, float] = {}\n        for key in ('correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg', 'odds_correct_score'):\n            val = src.get(key)\n            if isinstance(val, dict):\n                for score, odd in val.items():\n                    try:\n                        if isinstance(odd, dict):\n                            odd = odd.get('odds') or odd.get('avg') or odd.get('value')\n                        if odd is None:\n                            continue\n                        f = float(odd)\n                    except (TypeError, ValueError):\n                        continue\n                    if f > 1:\n                        odds[_norm_score(score)] = f\n        return odds\n\n    @staticmethod\n    def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:\n        clean = [r for r in (rows or []) if isinstance(r, dict)]\n        pos = [\n            r for r in clean\n            if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)\n        ]\n        return {'available': bool(clean), 'rows': clean, 'pos_rows': pos, 'pos_count': len(pos), 'system_prejudge': {}}\n\n    @staticmethod\n    def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📈【31项理论×市场】', f\"  市场超理论项: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📉【市热超理论专表】', f\"  条数: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_matrix_learning_tg_lines(info: Any, score: Any) -> list[str]:\n        return ['📌【学习改进意见】', f'  完场比分 {score or \"未形成\"}，本地模块记录样本，不改首选/次选/方向锁。']\n\n    @staticmethod\n    def build_matrix_learning_report(info: Any, score: Any) -> dict[str, Any]:\n        return {'available': True, 'actual_score': _norm_score(score), 'changes_first_score': False, 'changes_direction': False}\n\n    @staticmethod\n    def learning_match_teams_line(info: Any) -> str:\n        d = info if isinstance(info, dict) else {}\n        return f\"开赛球队：{d.get('home_team') or ''} vs {d.get('away_team') or ''}\".strip()\n\n    @staticmethod\n    def build_system_ml_dual_matrix_pack(info: Any) -> dict[str, Any]:\n        return {\n            'top8_dominant': '未形成', 'top8_share_pct': {'胜': 0.0, '平': 0.0, '负': 0.0},\n            'top15_ou_dominant': '未形成', 'top15_ou_share_pct': {'少球': 0.0, '多球': 0.0},\n            'short_vs_hot': '未形成', 'abs_vs_short_hot': '未形成',\n        }\n\n    @staticmethod\n    def build_direction_lock_judgment_report(info: Any) -> dict[str, Any]:\n        return {'verdict': '', 'available': False}\n\n    @staticmethod\n    def classify_result_score_origin(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '比分出处: 本地轻量模块未形成外部出处。'}\n\n    @staticmethod\n    def explain_score_hot_short_reason(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '冷热理由: 本地轻量模块未形成。'}\n\n    @staticmethod\n    def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_direction_lock_score_close(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False}\n\n    @staticmethod\n    def build_batch_anti_homogen_pack(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': True, 'homogenized': False, 'items': []}\n\n    @staticmethod\n    def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        return dict(payload) if isinstance(payload, dict) else {}\n\n    @staticmethod\n    def ensure_judgment_standard_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:\n        return {'available': False, 'in_hot8': False}\n\n    @staticmethod\n    def extract_dual_scores_from_judgment_text(text: Any) -> tuple[str, str]:\n        scores = re.findall(r'\\d+\\s*[-:]\\s*\\d+', str(text or ''))\n        return (_norm_score(scores[0]) if scores else '', _norm_score(scores[1]) if len(scores) > 1 else '')\n\n    @staticmethod\n    def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_matrix_dual_prejudge_html(*args: Any, **kwargs: Any) -> str:\n        return ''\n\n    @staticmethod\n    def format_structural_model_tg(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_structural_review_lines(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def align_displayed_landings(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def apply_operator_direction(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def bold_tg_match_title_html(text: Any) -> str:\n        return f'<b>{escape(str(text or \"\"))}</b>'\n\n    @staticmethod\n    def collapse_repeated_judgment_blocks(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_locked_direction_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_prob_ou_wdl_red(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_selected_scores_deep_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def match_identity_fields(\n        info: Any,\n        kickoff: Any = '',\n        match_no: Any = '',\n        *args: Any,\n        **kwargs: Any,\n    ) -> dict[str, str]:\n        \"\"\"Parse 赛号 / 星期 / 开赛时间 / 对阵 from whatever the caller has.\n\n        Callers in app_v84_hermes pass either a dict record or a raw match name\n        plus `kickoff=` / `match_no=` keywords, so both shapes must work here.\n        \"\"\"\n        if isinstance(info, dict):\n            d = info\n        else:\n            d = {}\n        name = str(d.get('match') or d.get('cn_name') or ('' if d else (info or '')))\n        kickoff_text = str(kickoff or d.get('kickoff') or d.get('match_time') or d.get('time') or '')\n        number_text = str(match_no or d.get('no') or d.get('local_id') or d.get('match_no') or '')\n        code = ''\n        weekday = ''\n        found = re.search(r'周[一二三四五六日]\\s*\\d{1,3}', f'{number_text} {name}')\n        if found:\n            code = found.group(0).replace(' ', '')\n            weekday = code[:2]\n        if not number_text and code:\n            number_text = code\n        return {\n            'match': name,\n            'teams': name,\n            'time': kickoff_text,\n            'kickoff': kickoff_text,\n            'code': code or number_text,\n            'weekday': weekday,\n            'match_no': number_text,\n        }\n\n    @staticmethod\n    def pin_match_title_first(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def restrict_tg_text_to_direction_lock(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def sanitize_bot_output(text: Any) -> str:\n        return str(text or '').strip()\n\n    @staticmethod\n    def sanitize_six_market_tg_text(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:\n        return _norm_score(first), _norm_score(second)\n\n    @staticmethod\n    def strip_judgment_tg_suppressed_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def strip_tg_english(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def summarize_hot_top8_hit_rate(items: Any) -> dict[str, Any]:\n        rows = list(items or []) if not isinstance(items, dict) else list(items.values())\n        total = len(rows)\n        hits = sum(1 for r in rows if isinstance(r, dict) and r.get('in_hot8'))\n        return {'total': total, 'hits': hits, 'hit_rate': (hits / total if total else 0.0)}\n\n\n\n# ---- Real DeepSeek/OpenAI-compatible client helpers ----\ndef _env(name: str, default: str = '') -> str:\n    import os\n    return os.environ.get(name, default).strip()\n\n\ndef deepseek_config() -> dict[str, Any]:\n    return {\n        'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),\n        'base_url': (_env('DEEPSEEK_BASE_URL') or _env('OPENAI_BASE_URL') or 'https://api.deepseek.com').rstrip('/'),\n        'chat_model': _env('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),\n        'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),\n        'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),\n    }\n\n\ndef assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:\n    \"\"\"Build OpenAI-compatible messages for review/learning style calls.\"\"\"\n    messages: list[dict[str, str]] = []\n    sys_text = str(system or '你是足球量化分析助手，输出必须简洁、可审计、不得编造外部数据。')\n    messages.append({'role': 'system', 'content': sys_text})\n    body_parts = []\n    if task:\n        body_parts.append(f'任务: {task}')\n    if facts is not None:\n        import json\n        body_parts.append('事实数据:\\n' + json.dumps(facts, ensure_ascii=False, default=str))\n    if user:\n        body_parts.append(str(user))\n    messages.append({'role': 'user', 'content': '\\n\\n'.join(body_parts) or '请基于已有事实给出本地分析。'})\n    return messages\n\n\ndef _local_analysis(messages: Any, json_mode: bool = False) -> Any:\n    joined = '\\n'.join(str(m.get('content', '')) for m in (messages or []) if isinstance(m, dict))\n    if json_mode:\n        return {'available': False, 'provider': 'local', 'summary': '未配置 DEEPSEEK_API_KEY，已使用本地确定性分析。', 'input_chars': len(joined)}\n    return f'本地确定性分析：未配置 DEEPSEEK_API_KEY，已基于现有事实生成降级摘要（输入{len(joined)}字）。'\n\n\ndef deepseek_chat_completion(messages: Any, model: str | None = None, stream: bool = False,\n                             json_mode: bool = False, max_retries: int = 3,\n                             temperature: float = 0.2, timeout: float | None = None) -> Any:\n    \"\"\"Call DeepSeek/OpenAI-compatible chat completions when a key is configured.\n\n    Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import\n    and tests never require paid credentials.\n    \"\"\"\n    cfg = deepseek_config()\n    if not cfg['api_key']:\n        return _local_analysis(messages, json_mode=json_mode)\n    import json\n    import time\n\n    import requests\n    url = f\"{cfg['base_url']}/v1/chat/completions\"\n    payload: dict[str, Any] = {\n        'model': model or cfg['chat_model'],\n        'messages': list(messages or []),\n        'temperature': temperature,\n        'stream': bool(stream),\n    }\n    if json_mode:\n        payload['response_format'] = {'type': 'json_object'}\n    headers = {'Authorization': f\"Bearer {cfg['api_key']}\", 'Content-Type': 'application/json'}\n    last_err: Exception | None = None\n    request_timeout = float(timeout or cfg['timeout'] or 60)\n    for attempt in range(max(1, int(max_retries or 1))):\n        try:\n            resp = requests.post(\n                url,\n                headers=headers,\n                json=payload,\n                timeout=request_timeout,\n                stream=stream,\n            )\n            if resp.status_code == 429 and attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt)); continue\n            resp.raise_for_status()\n            if stream:\n                chunks=[]\n                for raw in resp.iter_lines(decode_unicode=True):\n                    if not raw or not str(raw).startswith('data:'):\n                        continue\n                    data=str(raw)[5:].strip()\n                    if data == '[DONE]':\n                        break\n                    try:\n                        obj=json.loads(data)\n                        chunks.append(obj.get('choices', [{}])[0].get('delta', {}).get('content', ''))\n                    except json.JSONDecodeError:\n                        continue\n                text=''.join(chunks)\n            else:\n                obj=resp.json()\n                text=obj.get('choices', [{}])[0].get('message', {}).get('content', '')\n            if json_mode:\n                try:\n                    return json.loads(text)\n                except json.JSONDecodeError:\n                    return {'available': True, 'provider': 'deepseek', 'raw': text}\n            return text\n        except Exception as exc:  # noqa: BLE001 - network/API retry wrapper\n            last_err = exc\n            if attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt))\n    if json_mode:\n        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}\n    return f'DeepSeek调用失败，已降级：{str(last_err or \"unknown\")[:160]}'\n\n\ndef deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:\n    result = deepseek_chat_completion(messages, json_mode=True, **kwargs)\n    return result if isinstance(result, dict) else {'available': False, 'raw': str(result)}\n\n\ndef run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:\n    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))\n\n\ndef get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:\n    return DeepSeekAnalyzer()\n",
   "blade_ml_engine": "\"\"\"Local deterministic ML helpers for FLAnalyzer.\n\nThe real app can use sklearn when present, but this module is importable without\noptional ML dependencies and provides stable Poisson-based fallbacks.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport math\nimport os\n\n# Trusted local model-cache compatibility; load paths are constrained before use.\nimport pickle  # nosec B403\nfrom pathlib import Path\nfrom typing import Any\n\ntry:\n    import sklearn  # type: ignore  # noqa: F401\n\n    SKLEARN_OK = True\nexcept ImportError:\n    SKLEARN_OK = False\n\nML_SKLEARN_OK = SKLEARN_OK\n\n\ndef ml_predict_enabled() -> bool:\n    return True\n\n\ndef _safe_float(value: Any, default: float = 0.0) -> float:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef calc_bivariate_poisson_matrix(\n    lam_h: Any,\n    lam_a: Any,\n    lambda_shared: Any = 0.0,\n    max_goals: int = 10,\n) -> dict[str, float]:\n    lh = max(0.01, _safe_float(lam_h, 1.2))\n    la = max(0.01, _safe_float(lam_a, 0.9))\n    limit = max(1, int(max_goals or 10))\n    out: dict[str, float] = {}\n    total = 0.0\n    for h in range(limit + 1):\n        ph = math.exp(-lh) * (lh**h) / math.factorial(h)\n        for a in range(limit + 1):\n            pa = math.exp(-la) * (la**a) / math.factorial(a)\n            p = ph * pa\n            out[f'{h}-{a}'] = p\n            total += p\n    if total > 0:\n        out = {k: v / total for k, v in out.items()}\n    return out\n\n\n# ---- Persistent training bundle ----\ndef _models_dir() -> str:\n    return os.environ.get('MODELS_DIR') or os.environ.get('FLANALYZER_MODELS_DIR') or 'models'\n\n\ndef _models_root() -> Path:\n    return Path(_models_dir()).expanduser().resolve()\n\n\ndef _bundle_path() -> str:\n    return str(_models_root() / 'blade_ml_bundle.pkl')\n\n\ndef _constrained_bundle_path() -> Path:\n    root = _models_root()\n    path = Path(_bundle_path()).expanduser().resolve()\n    if root not in path.parents and path != root:\n        raise ValueError(f'model bundle path escapes MODELS_DIR: {path}')\n    return path\n\n\ndef _extract_training_rows(history: Any) -> list[dict[str, Any]]:\n    rows = []\n    source = history.values() if isinstance(history, dict) else (history or [])\n    for rec in source:\n        if not isinstance(rec, dict):\n            continue\n        score = str(rec.get('actual_score') or '').replace(' (进行中)', '').replace(':', '-')\n        if '-' not in score:\n            continue\n        left, right = [part.strip() for part in score.split('-', 1)]\n        if not (left.isdigit() and right.isdigit()):\n            continue\n        h, a = int(left), int(right)\n        rows.append({\n            'lam_h': _safe_float(rec.get('lam_h') or rec.get('lambda_home'), 1.2),\n            'lam_a': _safe_float(rec.get('lam_a') or rec.get('lambda_away'), 0.9),\n            'ou_line': _safe_float(rec.get('ou_line'), 2.5),\n            'ah_line': _safe_float(rec.get('asian_handicap') or rec.get('ah_line'), 0.0),\n            'home_goals': h,\n            'away_goals': a,\n        })\n    return rows\n\n\ndef train_from_history(history: Any, save: bool = True) -> dict[str, Any]:\n    rows = _extract_training_rows(history)\n    bundle = {\n        'trained': False,\n        'rows': len(rows),\n        'sklearn_ok': SKLEARN_OK,\n        'model_type': 'poisson_mean',\n        'created_from': 'history',\n    }\n    if not rows:\n        bundle.update({'home_mean': 1.2, 'away_mean': 0.9, 'reason': 'no_completed_scores'})\n    else:\n        bundle['home_mean'] = sum(r['home_goals'] for r in rows) / len(rows)\n        bundle['away_mean'] = sum(r['away_goals'] for r in rows) / len(rows)\n        bundle['trained'] = True\n        if SKLEARN_OK and len(rows) >= 5:\n            try:\n                from sklearn.ensemble import GradientBoostingRegressor  # type: ignore\n\n                x_rows = [[r['lam_h'], r['lam_a'], r['ou_line'], r['ah_line']] for r in rows]\n                yh = [r['home_goals'] for r in rows]\n                ya = [r['away_goals'] for r in rows]\n                mh = GradientBoostingRegressor(random_state=42).fit(x_rows, yh)\n                ma = GradientBoostingRegressor(random_state=43).fit(x_rows, ya)\n                bundle.update({'model_type': 'gradient_boosting', 'home_model': mh, 'away_model': ma})\n            except (ImportError, AttributeError, TypeError, ValueError) as exc:\n                bundle['train_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    if save:\n        save_bundle(bundle)\n    return bundle\n\n\ndef save_bundle(bundle: dict[str, Any]) -> bool:\n    path = _constrained_bundle_path()\n    path.parent.mkdir(parents=True, exist_ok=True)\n    with path.open('wb') as fh:\n        pickle.dump(bundle, fh)\n    return True\n\n\ndef load_bundle() -> dict[str, Any] | None:\n    path = _constrained_bundle_path()\n    if not path.exists():\n        return None\n    # Trusted local model cache constrained to MODELS_DIR.\n    with path.open('rb') as fh:\n        bundle = pickle.load(fh)  # nosec B301\n    return bundle if isinstance(bundle, dict) else None\n\n\ndef _predict_lambdas_from_bundle(bundle: dict[str, Any], info: dict[str, Any]) -> tuple[float, float]:\n    base = [\n        _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2)),\n        _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)),\n        _safe_float(info.get('ou_line'), 2.5),\n        _safe_float(info.get('asian_handicap') or info.get('ah_line'), 0.0),\n    ]\n    if bundle.get('model_type') == 'gradient_boosting' and bundle.get('home_model') and bundle.get('away_model'):\n        try:\n            return (\n                max(0.05, float(bundle['home_model'].predict([base])[0])),\n                max(0.05, float(bundle['away_model'].predict([base])[0])),\n            )\n        except (AttributeError, TypeError, ValueError) as exc:\n            bundle['predict_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    return (\n        max(0.05, _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2))),\n        max(0.05, _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9))),\n    )\n\n\ndef ensure_ml_bundle(force_train: bool = False) -> dict[str, Any]:\n    bundle = None if force_train else load_bundle()\n    if bundle is None:\n        return {\n            'enabled': True,\n            'reason': 'no_trained_bundle',\n            'poisson': None,\n            'sample_count': 0,\n            'sklearn_ok': SKLEARN_OK,\n            'bundle_path': _bundle_path(),\n        }\n    return {\n        'enabled': True,\n        'reason': 'trained_bundle_loaded',\n        'poisson': bundle,\n        'sample_count': int(bundle.get('rows') or 0),\n        'sklearn_ok': SKLEARN_OK,\n        'bundle_path': _bundle_path(),\n    }\n\n\ndef predict_match_ml(match_info: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = match_info if isinstance(match_info, dict) else {}\n    bundle = load_bundle()\n    if bundle:\n        lam_h, lam_a = _predict_lambdas_from_bundle(bundle, info)\n    else:\n        lam_h = _safe_float(info.get('lam_h') or info.get('lambda_home'), 1.2)\n        lam_a = _safe_float(info.get('lam_a') or info.get('lambda_away'), 0.9)\n    matrix = calc_bivariate_poisson_matrix(lam_h, lam_a, max_goals=7)\n    preferred = max(matrix, key=lambda score: matrix[score]) if matrix else ''\n    sorted_scores = sorted(matrix.items(), key=lambda kv: kv[1], reverse=True)[:8]\n    return {\n        'enabled': True,\n        'used': True,\n        'reason': 'trained_bundle' if bundle else 'local_poisson_fallback',\n        'preferred_score': preferred,\n        'top_scores': sorted_scores,\n        'poisson_lambda': {'home': lam_h, 'away': lam_a},\n        'expected_total_goals': round(lam_h + lam_a, 4),\n    }\n\n\ndef learn_match_after_result(info: Any) -> dict[str, Any]:\n    return {\n        'ok': True,\n        'sample_count': 1 if isinstance(info, dict) else 0,\n        'feature_count': 0,\n        'actual_score': (info or {}).get('actual_score') if isinstance(info, dict) else None,\n    }\n\n\ndef train_daily_poisson(force: bool = True) -> tuple[bool, str, int, int]:\n    hist_path = os.environ.get('HISTORY_FILE', 'match_history.json')\n    history = {}\n    if os.path.exists(hist_path):\n        try:\n            with open(hist_path, encoding='utf-8') as fh:\n                history = json.load(fh)\n        except (OSError, json.JSONDecodeError) as exc:\n            print(f\"   ⚠️ [ML引擎] 历史样本读取失败，使用空样本: {type(exc).__name__}\")\n            history = {}\n    bundle = train_from_history(history, save=True)\n    return bool(bundle.get('trained')), str(bundle.get('model_type') or 'poisson_mean'), int(bundle.get('rows') or 0), 4\n\n\ndef deepseek_flash_ml_brief(*args: Any, **kwargs: Any) -> str:\n    return 'deepseek-flash ML 摘要需用户配置 DeepSeek 服务；本地泊松兜底已可用。'\n",
-  "okooo_mobile_cs": "\"\"\"Mobile Okooo correct-score/market helpers.\n\nThe functions here are real deterministic parsers/normalizers. Network scraping\nreturns structured unavailable payloads when caller has not provided a session or\nreachable service data, so app_v84_hermes can run without optional private code.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport os\nimport re\nimport time\nfrom pathlib import Path\nfrom typing import Any\n\nimport requests\n\n_STORE = Path('reports/six_market_contradictions.json')\n\n\n# ---- HTTP/cache helpers ----\ndef _cache_dir() -> Path:\n    d = Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))\n    d.mkdir(parents=True, exist_ok=True)\n    return d\n\n\ndef _safe_id(value: Any) -> str:\n    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or 'unknown'))\n\n\ndef _cache_path(kind: str, match_id: Any) -> Path:\n    return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'\n\n\ndef _proxy_dict(proxies: Any = None) -> dict[str, str] | None:\n    if isinstance(proxies, dict):\n        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}\n    proxy = str(\n        proxies\n        or os.environ.get('OKOOO_PROXY')\n        or os.environ.get('HTTPS_PROXY')\n        or os.environ.get('HTTP_PROXY')\n        or ''\n    ).strip()\n    return {'http': proxy, 'https': proxy} if proxy else None\n\n\ndef _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:\n    headers = {\n        'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36',\n        'Accept-Language': 'zh-CN,zh;q=0.9',\n    }\n    last = ''\n    for attempt in range(max(1, retries)):\n        try:\n            sess = session or requests\n            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)\n            if resp.status_code == 200 and resp.text:\n                resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'\n                return resp.text\n            last = f'HTTP {resp.status_code}'\n        except requests.RequestException as exc:\n            last = f'{type(exc).__name__}: {str(exc)[:120]}'\n        time.sleep(min(4, 2**attempt))\n    raise RuntimeError(last or 'empty response')\n\n\ndef _read_json_cache(path: Path) -> dict[str, Any] | None:\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [澳客手机CS] 缓存读取跳过 {path.name}: {type(exc).__name__}\")\n        return None\n    return data if isinstance(data, dict) else None\n\n\ndef _parse_score_odds_from_text(text: str) -> dict[str, float]:\n    odds = {}\n    # Handles compact HTML/text containing score followed by decimal odds.\n    for score, odd in re.findall(r'(?:>|\\b)(\\d+\\s*[-:：]\\s*\\d+)(?:<|\\b)[^\\d]{0,80}([1-9]\\d?(?:\\.\\d+)?)', text):\n        try:\n            odds[score.replace('：', '-').replace(':', '-').replace(' ', '')] = float(odd)\n        except ValueError:\n            continue\n    return odds\n\n\ndef _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:\n    return bool(kwargs.get('data_only', False))\n\n\ndef _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:\n    try:\n        return float(od) >= float(floor)\n    except (TypeError, ValueError):\n        return False\n\n\ndef _okooo_apply_jc_score_fill(\n    record: dict[str, Any],\n    pack: dict[str, Any] | None = None,\n    source_note: str = '',\n    overwrite: bool = False,\n) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    src = pack if isinstance(pack, dict) else record\n    jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}\n    if isinstance(jc, dict) and jc:\n        if overwrite or not record.get('correct_score_jc_official'):\n            record['correct_score_jc_official'] = jc\n        if source_note:\n            record['correct_score_jc_source_note'] = source_note\n    return record\n\n\ndef parse_mobile_nav_ft_score(html: Any, match_id: Any = None) -> str:\n    text = str(html or '')\n    patterns = [r'(\\d+)\\s*[-:：]\\s*(\\d+)\\s*(?:完|全场|FT)?', r'全场[^0-9]*(\\d+)\\s*[-:：]\\s*(\\d+)']\n    for pat in patterns:\n        m = re.search(pat, text)\n        if m:\n            return f'{int(m.group(1))}-{int(m.group(2))}'\n    return ''\n\n\ndef mobile_vs_full_time_score(nav_score: Any, actual_score: Any) -> bool:\n    return str(nav_score or '').replace(':', '-').strip() == str(actual_score or '').replace(':', '-').replace(' (进行中)', '').strip()\n\n\ndef _looks_like_final_score(text: Any) -> bool:\n    match = re.fullmatch(r'\\s*(\\d{1,2})\\s*[-:：]\\s*(\\d{1,2})\\s*', str(text or ''))\n    if not match:\n        return False\n    left, right = int(match.group(1)), int(match.group(2))\n    return 0 <= left <= 15 and 0 <= right <= 15\n\n\ndef jingcai_board_row_finished(\n    row: Any = None,\n    today_md: str = '',\n    *,\n    day_closed: bool = False,\n    end: Any = None,\n    inside_end_hide: bool = False,\n) -> bool:\n    if day_closed or inside_end_hide:\n        return True\n    end_text = str(end or '').strip().lower()\n    if end_text in {'1', 'true', 'yes', 'y', 'end', 'ended', 'closed', 'finish', 'finished', 'done', '完', '已完', '全场'}:\n        return True\n    if end_text and _looks_like_final_score(end_text):\n        return True\n    try:\n        zvs = row.select_one('.zVS') if row is not None and hasattr(row, 'select_one') else None\n        zvs_text = zvs.get_text(strip=True) if zvs is not None else ''\n        if _looks_like_final_score(zvs_text):\n            return True\n    except (AttributeError, TypeError):\n        pass\n    text = ' '.join(str(x) for x in row) if isinstance(row, (list, tuple)) else str(row or '')\n    return any(k in text for k in ('完', '全场', '已完', 'FT')) or _looks_like_final_score(text)\n\n\ndef build_score_market_heat_ranking(\n    odds_map: Any = None,\n    correct_score_rows: Any = None,\n    pool_enriched: Any = None,\n    page_avg_odds: Any = None,\n    heat_source: str = 'okooo_mobile_cs_existing_odds',\n    channel: str = 'mobile',\n) -> dict[str, Any]:\n    rows = []\n    odds_sources: list[tuple[str, Any]] = []\n    if isinstance(odds_map, dict):\n        odds_sources.extend((str(score), raw) for score, raw in odds_map.items())\n    if isinstance(page_avg_odds, dict):\n        odds_sources.extend((str(score), raw) for score, raw in page_avg_odds.items())\n    if isinstance(correct_score_rows, dict):\n        odds_sources.extend((str(score), raw) for score, raw in correct_score_rows.items())\n    elif isinstance(correct_score_rows, (list, tuple)):\n        for item in correct_score_rows:\n            if isinstance(item, dict):\n                score = item.get('score') or item.get('name') or item.get('cs')\n                odds_sources.append((str(score or ''), item))\n            elif isinstance(item, (list, tuple)) and item:\n                odds_sources.append((str(item[0]), item[1] if len(item) > 1 else None))\n            else:\n                odds_sources.append((str(item), None))\n    enriched_by_score: dict[str, Any] = {}\n    if isinstance(pool_enriched, dict):\n        enriched_by_score = {str(k).replace(':', '-'): v for k, v in pool_enriched.items()}\n    elif isinstance(pool_enriched, (list, tuple)):\n        for item in pool_enriched:\n            if isinstance(item, dict):\n                score = str(item.get('score') or item.get('name') or item.get('cs') or '').replace(':', '-')\n                if score:\n                    enriched_by_score[score] = item\n    seen: set[str] = set()\n    for score, raw in odds_sources:\n        score_key = str(score or '').replace(':', '-').strip()\n        if not score_key or score_key.lower() == 'none' or score_key in seen:\n            continue\n        seen.add(score_key)\n        try:\n            odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw\n            if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):\n                odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')\n            odd_f = float(odd) if odd is not None else 0.0\n        except (TypeError, ValueError):\n            odd_f = 0.0\n        enriched = enriched_by_score.get(score_key)\n        row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}\n        if isinstance(enriched, dict):\n            row.update({k: v for k, v in enriched.items() if k not in row})\n        rows.append(row)\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': heat_source,\n        'heat_source': heat_source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef _unavailable(reason: str, **extra: Any) -> dict[str, Any]:\n    data = {'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}\n    data.update(extra)\n    return data\n\n\ndef scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    html = kwargs.get('html') or kwargs.get('text')\n    cache = _cache_path('cs', match_id)\n    if not html and cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    if not html and match_id:\n        url = kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/cs/'\n        try:\n            html = _http_get(str(url), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_mobile_cs_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160])\n    odds = _parse_score_odds_from_text(str(html or ''))\n    heat = build_score_market_heat_ranking(odds)\n    heat.update({'correct_score_available': bool(odds), 'match_id': str(match_id or ''), 'raw_count': len(odds)})\n    if odds:\n        cache.write_text(json.dumps(heat, ensure_ascii=False, indent=2), encoding='utf-8')\n    return heat if odds else _unavailable('okooo_mobile_cs_no_score_odds_found', match_id=str(match_id or ''))\n\n\ndef scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    cache = _cache_path('six', match_id)\n    if cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    html = kwargs.get('html') or kwargs.get('text')\n    if not html and match_id:\n        try:\n            html = _http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_six_market_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160], boards_hit={})\n    text = str(html or '')\n    ou_match = re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    ah_match = re.search(r'(?:让球|亚盘|Handicap)[^+\\-0-9]{0,20}([+\\-]?\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    pack = {\n        'available': bool(ou_match or ah_match),\n        'channel': 'mobile',\n        'match_id': str(match_id or ''),\n        'ou_line': float(ou_match.group(1)) if ou_match else None,\n        'asian_handicap': float(ah_match.group(1)) if ah_match else None,\n        'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)},\n    }\n    if pack['available']:\n        cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')\n        return pack\n    return _unavailable('okooo_six_market_no_lines_found', match_id=str(match_id or ''), boards_hit={})\n\n\ndef scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'ah_books': [], 'ou_books': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'home': [], 'away': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record.setdefault('mobile_ah_ou_books', pack or {'available': False})\n        return record['mobile_ah_ou_books']\n    return {'available': False}\n\n\ndef apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    raw_books = record.get('mobile_ah_ou_books')\n    b = books if isinstance(books, dict) else raw_books if isinstance(raw_books, dict) else {}\n    if b.get('ou_line') is not None:\n        record['ou_line'] = b.get('ou_line')\n    if b.get('asian_handicap') is not None:\n        record['asian_handicap'] = b.get('asian_handicap')\n    return record\n\n\ndef detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, Any]]:\n    if not isinstance(record, dict):\n        return []\n    contradictions = []\n    if record.get('predicted_ou') and record.get('ou_line') is None:\n        contradictions.append({'type': 'missing_ou_line', 'severity': 'low'})\n    return contradictions\n\n\ndef missing_six_market_waters(record: dict[str, Any]) -> list[str]:\n    if not isinstance(record, dict):\n        return ['invalid_record']\n    missing = []\n    for key in ('asian_handicap', 'ou_line', 'odds_1x2'):\n        if not record.get(key):\n            missing.append(key)\n    return missing\n\n\ndef finish_match_water_scrape(record: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record['water_scrape_finished'] = True\n    return {'ok': True, 'missing': missing_six_market_waters(record)}\n\n\ndef six_market_fetch_blocked(record: dict[str, Any]) -> bool:\n    if not isinstance(record, dict):\n        return True\n    block = record.get('six_market_mobile')\n    return isinstance(block, dict) and bool(block.get('block_reason'))\n\n\ndef _contradiction_store(match_id: Any = None) -> Path:\n    if match_id in (None, ''):\n        return _STORE\n    return _STORE.with_name(f'six_market_contradictions_{_safe_id(match_id)}.json')\n\n\ndef save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:\n    match_id = None if items is None else match_id_or_items\n    payload = match_id_or_items if items is None else items\n    path = _contradiction_store(match_id)\n    try:\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(json.dumps(payload or [], ensure_ascii=False, indent=2), encoding='utf-8')\n        return True\n    except OSError as exc:\n        print(f\"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}\")\n        return False\n\n\ndef load_six_market_contradictions(match_id: Any = None) -> list[Any]:\n    path = _contradiction_store(match_id)\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [澳客手机CS] 读取对账缺口失败: {type(exc).__name__}\")\n        return []\n    return data if isinstance(data, list) else []\n",
+  "okooo_mobile_cs": "\"\"\"Mobile Okooo correct-score/market helpers.\n\nThe functions here are real deterministic parsers/normalizers. Network scraping\nreturns structured unavailable payloads when caller has not provided a session or\nreachable service data, so app_v84_hermes can run without optional private code.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport os\nimport re\nimport time\nfrom pathlib import Path\nfrom typing import Any\n\nimport requests\n\n_STORE = Path('reports/six_market_contradictions.json')\n\n\n# ---- HTTP/cache helpers ----\ndef _cache_dir() -> Path:\n    d = Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))\n    d.mkdir(parents=True, exist_ok=True)\n    return d\n\n\ndef _safe_id(value: Any) -> str:\n    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or 'unknown'))\n\n\ndef _cache_path(kind: str, match_id: Any) -> Path:\n    return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'\n\n\ndef _proxy_dict(proxies: Any = None) -> dict[str, str] | None:\n    if isinstance(proxies, dict):\n        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}\n    proxy = str(\n        proxies\n        or os.environ.get('OKOOO_PROXY')\n        or os.environ.get('HTTPS_PROXY')\n        or os.environ.get('HTTP_PROXY')\n        or ''\n    ).strip()\n    return {'http': proxy, 'https': proxy} if proxy else None\n\n\ndef _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:\n    headers = {\n        'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36',\n        'Accept-Language': 'zh-CN,zh;q=0.9',\n    }\n    last = ''\n    for attempt in range(max(1, retries)):\n        try:\n            sess = session or requests\n            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)\n            if resp.status_code == 200 and resp.text:\n                resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'\n                return resp.text\n            last = f'HTTP {resp.status_code}'\n        except requests.RequestException as exc:\n            last = f'{type(exc).__name__}: {str(exc)[:120]}'\n        time.sleep(min(4, 2**attempt))\n    raise RuntimeError(last or 'empty response')\n\n\ndef _read_json_cache(path: Path) -> dict[str, Any] | None:\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [澳客手机CS] 缓存读取跳过 {path.name}: {type(exc).__name__}\")\n        return None\n    return data if isinstance(data, dict) else None\n\n\ndef _parse_score_odds_from_text(text: str) -> dict[str, float]:\n    odds = {}\n    # Handles compact HTML/text containing score followed by decimal odds.\n    for score, odd in re.findall(r'(?:>|\\b)(\\d+\\s*[-:：]\\s*\\d+)(?:<|\\b)[^\\d]{0,80}([1-9]\\d?(?:\\.\\d+)?)', text):\n        try:\n            odds[score.replace('：', '-').replace(':', '-').replace(' ', '')] = float(odd)\n        except ValueError:\n            continue\n    return odds\n\n\ndef _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:\n    return bool(kwargs.get('data_only', False))\n\n\ndef _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:\n    try:\n        return float(od) >= float(floor)\n    except (TypeError, ValueError):\n        return False\n\n\ndef _okooo_apply_jc_score_fill(\n    record: dict[str, Any],\n    pack: dict[str, Any] | None = None,\n    source_note: str = '',\n    overwrite: bool = False,\n) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    src = pack if isinstance(pack, dict) else record\n    jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}\n    if isinstance(jc, dict) and jc:\n        if overwrite or not record.get('correct_score_jc_official'):\n            record['correct_score_jc_official'] = jc\n        if source_note:\n            record['correct_score_jc_source_note'] = source_note\n    return record\n\n\ndef parse_mobile_nav_ft_score(html: Any, match_id: Any = None) -> str:\n    text = str(html or '')\n    patterns = [r'(\\d+)\\s*[-:：]\\s*(\\d+)\\s*(?:完|全场|FT)?', r'全场[^0-9]*(\\d+)\\s*[-:：]\\s*(\\d+)']\n    for pat in patterns:\n        m = re.search(pat, text)\n        if m:\n            return f'{int(m.group(1))}-{int(m.group(2))}'\n    return ''\n\n\ndef mobile_vs_full_time_score(nav_score: Any, actual_score: Any) -> bool:\n    return str(nav_score or '').replace(':', '-').strip() == str(actual_score or '').replace(':', '-').replace(' (进行中)', '').strip()\n\n\ndef _looks_like_final_score(text: Any) -> bool:\n    match = re.fullmatch(r'\\s*(\\d{1,2})\\s*[-:：]\\s*(\\d{1,2})\\s*', str(text or ''))\n    if not match:\n        return False\n    left, right = int(match.group(1)), int(match.group(2))\n    return 0 <= left <= 15 and 0 <= right <= 15\n\n\ndef jingcai_board_row_finished(\n    row: Any = None,\n    today_md: str = '',\n    *,\n    day_closed: bool = False,\n    end: Any = None,\n    inside_end_hide: bool = False,\n) -> bool:\n    if day_closed or inside_end_hide:\n        return True\n    end_text = str(end or '').strip().lower()\n    if end_text in {'1', 'true', 'yes', 'y', 'end', 'ended', 'closed', 'finish', 'finished', 'done', '完', '已完', '全场'}:\n        return True\n    if end_text and _looks_like_final_score(end_text):\n        return True\n    try:\n        zvs = row.select_one('.zVS') if row is not None and hasattr(row, 'select_one') else None\n        zvs_text = zvs.get_text(strip=True) if zvs is not None else ''\n        if _looks_like_final_score(zvs_text):\n            return True\n    except (AttributeError, TypeError):\n        pass\n    text = ' '.join(str(x) for x in row) if isinstance(row, (list, tuple)) else str(row or '')\n    return any(k in text for k in ('完', '全场', '已完', 'FT')) or _looks_like_final_score(text)\n\n\ndef build_score_market_heat_ranking(\n    odds_map: Any = None,\n    correct_score_rows: Any = None,\n    pool_enriched: Any = None,\n    page_avg_odds: Any = None,\n    heat_source: str = 'okooo_mobile_cs_existing_odds',\n    channel: str = 'mobile',\n) -> dict[str, Any]:\n    rows = []\n    odds_sources: list[tuple[str, Any]] = []\n    if isinstance(odds_map, dict):\n        odds_sources.extend((str(score), raw) for score, raw in odds_map.items())\n    if isinstance(page_avg_odds, dict):\n        odds_sources.extend((str(score), raw) for score, raw in page_avg_odds.items())\n    if isinstance(correct_score_rows, dict):\n        odds_sources.extend((str(score), raw) for score, raw in correct_score_rows.items())\n    elif isinstance(correct_score_rows, (list, tuple)):\n        for item in correct_score_rows:\n            if isinstance(item, dict):\n                score = item.get('score') or item.get('name') or item.get('cs')\n                odds_sources.append((str(score or ''), item))\n            elif isinstance(item, (list, tuple)) and item:\n                odds_sources.append((str(item[0]), item[1] if len(item) > 1 else None))\n            else:\n                odds_sources.append((str(item), None))\n    enriched_by_score: dict[str, Any] = {}\n    if isinstance(pool_enriched, dict):\n        enriched_by_score = {str(k).replace(':', '-'): v for k, v in pool_enriched.items()}\n    elif isinstance(pool_enriched, (list, tuple)):\n        for item in pool_enriched:\n            if isinstance(item, dict):\n                score = str(item.get('score') or item.get('name') or item.get('cs') or '').replace(':', '-')\n                if score:\n                    enriched_by_score[score] = item\n    seen: set[str] = set()\n    for score, raw in odds_sources:\n        score_key = str(score or '').replace(':', '-').strip()\n        if not score_key or score_key.lower() == 'none' or score_key in seen:\n            continue\n        seen.add(score_key)\n        try:\n            odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw\n            if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):\n                odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')\n            odd_f = float(odd) if odd is not None else 0.0\n        except (TypeError, ValueError):\n            odd_f = 0.0\n        enriched = enriched_by_score.get(score_key)\n        row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}\n        if isinstance(enriched, dict):\n            row.update({k: v for k, v in enriched.items() if k not in row})\n        rows.append(row)\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': heat_source,\n        'heat_source': heat_source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef _unavailable(reason: str, **extra: Any) -> dict[str, Any]:\n    data = {'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}\n    data.update(extra)\n    return data\n\n\ndef scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    html = kwargs.get('html') or kwargs.get('text')\n    cache = _cache_path('cs', match_id)\n    if not html and cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    if not html and match_id:\n        url = kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/cs/'\n        try:\n            html = _http_get(str(url), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_mobile_cs_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160])\n    odds = _parse_score_odds_from_text(str(html or ''))\n    heat = build_score_market_heat_ranking(odds)\n    heat.update({'correct_score_available': bool(odds), 'match_id': str(match_id or ''), 'raw_count': len(odds)})\n    if odds:\n        cache.write_text(json.dumps(heat, ensure_ascii=False, indent=2), encoding='utf-8')\n    return heat if odds else _unavailable('okooo_mobile_cs_no_score_odds_found', match_id=str(match_id or ''))\n\n\ndef scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    cache = _cache_path('six', match_id)\n    if cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    html = kwargs.get('html') or kwargs.get('text')\n    if not html and match_id:\n        try:\n            html = _http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_six_market_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160], boards_hit={})\n    text = str(html or '')\n    ou_match = re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    ah_match = re.search(r'(?:让球|亚盘|Handicap)[^+\\-0-9]{0,20}([+\\-]?\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    pack = {\n        'available': bool(ou_match or ah_match),\n        'channel': 'mobile',\n        'match_id': str(match_id or ''),\n        'ou_line': float(ou_match.group(1)) if ou_match else None,\n        'asian_handicap': float(ah_match.group(1)) if ah_match else None,\n        'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)},\n    }\n    if pack['available']:\n        cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')\n        return pack\n    return _unavailable('okooo_six_market_no_lines_found', match_id=str(match_id or ''), boards_hit={})\n\n\ndef scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'ah_books': [], 'ou_books': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'home': [], 'away': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record.setdefault('mobile_ah_ou_books', pack or {'available': False})\n        return record['mobile_ah_ou_books']\n    return {'available': False}\n\n\ndef apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    raw_books = record.get('mobile_ah_ou_books')\n    b = books if isinstance(books, dict) else raw_books if isinstance(raw_books, dict) else {}\n    if b.get('ou_line') is not None:\n        record['ou_line'] = b.get('ou_line')\n    if b.get('asian_handicap') is not None:\n        record['asian_handicap'] = b.get('asian_handicap')\n    return record\n\n\ndef detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, Any]]:\n    if not isinstance(record, dict):\n        return []\n    contradictions = []\n    if record.get('predicted_ou') and record.get('ou_line') is None:\n        contradictions.append({'type': 'missing_ou_line', 'severity': 'low'})\n    return contradictions\n\n\ndef missing_six_market_waters(record: dict[str, Any]) -> list[str]:\n    if not isinstance(record, dict):\n        return ['invalid_record']\n    missing = []\n    for key in ('asian_handicap', 'ou_line', 'odds_1x2'):\n        if not record.get(key):\n            missing.append(key)\n    return missing\n\n\ndef finish_match_water_scrape(record: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record['water_scrape_finished'] = True\n    return {'ok': True, 'missing': missing_six_market_waters(record)}\n\n\ndef six_market_fetch_blocked(record: dict[str, Any]) -> bool:\n    if not isinstance(record, dict):\n        return True\n    block = record.get('six_market_mobile')\n    return isinstance(block, dict) and bool(block.get('block_reason'))\n\n\ndef _contradiction_store(match_id: Any = None) -> Path:\n    if match_id in (None, ''):\n        return _STORE\n    return _STORE.with_name(f'six_market_contradictions_{_safe_id(match_id)}.json')\n\n\ndef save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:\n    match_id = None if items is None else match_id_or_items\n    payload = match_id_or_items if items is None else items\n    path = _contradiction_store(match_id)\n    try:\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(json.dumps(payload or [], ensure_ascii=False, indent=2), encoding='utf-8')\n        return True\n    except OSError as exc:\n        print(f\"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}\")\n        return False\n\n\ndef load_six_market_contradictions(match_id: Any = None) -> list[Any]:\n    \"\"\"读取某场的对账缺口文件。\n\n    文件不存在是正常空状态（本场还没写过缺口），不是错误：不打印告警，\n    直接返回空列表。只有真的读不动（权限/JSON 损坏）才留一行提示。\n    \"\"\"\n    path = _contradiction_store(match_id)\n    if not path.exists():\n        return []\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except FileNotFoundError:\n        # 探测与读取之间被删掉：同样是空状态，不吵。\n        return []\n    except json.JSONDecodeError as exc:\n        print(f\"   ℹ️ [澳客手机CS] 对账缺口文件损坏，按空处理: {path.name} ({exc.msg})\")\n        return []\n    except OSError as exc:\n        print(f\"   ℹ️ [澳客手机CS] 对账缺口文件不可读，按空处理: {path.name} ({type(exc).__name__})\")\n        return []\n    return data if isinstance(data, list) else []\n",
   "odds_index_math": "\"\"\"Odds/index math helpers used by app_v84_hermes.\"\"\"\nfrom __future__ import annotations\n\nimport math\nfrom typing import Any\n\n\ndef _f(value: Any, default: float | None = None) -> float | None:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef normalize_return_rate(value: Any) -> float | None:\n    n = _f(value)\n    if n is None:\n        return None\n    return n / 100.0 if n > 1.5 else n\n\n\ndef return_rate_pct(value: Any) -> float | None:\n    n = normalize_return_rate(value)\n    return None if n is None else n * 100.0\n\n\ndef calc_return_rate(*odds: Any) -> float | None:\n    vals = []\n    for odd in odds:\n        value = _f(odd)\n        if value is not None and value > 1:\n            vals.append(value)\n    if not vals:\n        return None\n    inv = sum(1.0 / v for v in vals)\n    return (1.0 / inv) if inv > 0 else None\n\n\ndef calc_instant_probs(win: Any, draw: Any, lose: Any) -> dict[str, Any]:\n    win_f = _f(win)\n    draw_f = _f(draw)\n    lose_f = _f(lose)\n    if win_f is None or draw_f is None or lose_f is None or win_f <= 1 or draw_f <= 1 or lose_f <= 1:\n        return {'valid': False, 'home': None, 'draw': None, 'away': None, 'return_rate': None}\n    inv_sum = (1.0 / win_f) + (1.0 / draw_f) + (1.0 / lose_f)\n    rr = 1.0 / inv_sum if inv_sum > 0 else None\n    return {\n        'valid': rr is not None,\n        'home': (rr / win_f) if rr else None,\n        'draw': (rr / draw_f) if rr else None,\n        'away': (rr / lose_f) if rr else None,\n        'return_rate': rr,\n        'return_rate_pct': rr * 100.0 if rr else None,\n    }\n\n\ndef calc_kelly_index(prob: Any, odds: Any) -> float | None:\n    p = _f(prob)\n    o = _f(odds)\n    if p is None or o is None or o <= 1:\n        return None\n    return p * o\n\n\ndef apply_six_cs_settlement_v2_to_rec(rec: dict[str, Any]) -> dict[str, Any]:\n    if not isinstance(rec, dict):\n        return {'available': False, 'reason': 'invalid_rec'}\n    board = {\n        'available': True,\n        'ou_line': rec.get('ou_line'),\n        'asian_handicap': rec.get('asian_handicap') or rec.get('ah_line'),\n        'correct_score_available': bool(rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg') or rec.get('odds_correct_score')),\n    }\n    rec['six_cs_settlement_v2'] = board\n    return board\n",
   "odds_fallback": "\"\"\"Fallback odds helpers.\n\nNetwork scrapers return structured unavailable results unless the caller supplies\nalready-fetched data. This avoids missing-module failures without pretending that\nexternal 500.com data exists.\n\"\"\"\nfrom __future__ import annotations\n\nimport os\nfrom typing import Any\n\n\ndef odds_fallback_enabled() -> bool:\n    return os.environ.get('ODDS_FALLBACK_DISABLED', '').lower() not in {'1','true','yes'}\n\n\ndef build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map', channel: str = 'fallback') -> dict[str, Any]:\n    rows=[]\n    if isinstance(odds, dict):\n        for score, odd in odds.items():\n            try:\n                raw_value = odd.get('odds') if isinstance(odd, dict) else odd\n                if raw_value is None:\n                    continue\n                value = float(raw_value)\n            except (TypeError, ValueError):\n                continue\n            if value > 1:\n                rows.append({'score': str(score).replace(':','-'), 'odds': value, 'heat': 1.0/value})\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': source,\n        'heat_source': source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef scrape_500_detail(fixture_id_500: Any, proxies: Any = None) -> dict[str, Any]:\n    return {'available': False, 'source': '500_detail', 'reason': 'external_fetch_not_configured', 'fixture_id_500': str(fixture_id_500 or '')}\n\n\ndef apply_fallback_cs_to_rec(rec: dict[str, Any], m_obj: Any = None, **kwargs: Any) -> dict[str, Any]:\n    odds = rec.get('odds_correct_score') if isinstance(rec, dict) else {}\n    heat = build_heat_from_odds_map(odds, source='fallback_existing_odds')\n    if isinstance(rec, dict):\n        rec['fallback_cs_heat'] = heat\n    return heat\n\n\ndef attach_500_shuju_to_rec(rec: dict[str, Any], force: bool = False) -> dict[str, Any]:\n    pack={'available': False, 'reason': 'external_500_shuju_not_configured'}\n    if isinstance(rec, dict): rec['fallback_500_shuju']=pack\n    return pack\n\n\ndef ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any = None) -> dict[str, Any]:\n    if not isinstance(rec, dict):\n        return {'available': False, 'judgment_ready': False}\n    facts = rec.setdefault('dual_source_facts', {})\n    if not isinstance(facts, dict):\n        facts = {}; rec['dual_source_facts']=facts\n    facts.setdefault('judgment_ready', bool(rec.get('prob_dict') or rec.get('odds_correct_score') or rec.get('correct_score_page_avg')))\n    facts.setdefault('correct_score', {'mobile_entered': bool(rec.get('correct_score_page_avg') or rec.get('odds_correct_score'))})\n    if isinstance(extra_sources, dict):\n        for key, value in extra_sources.items():\n            facts[key] = value\n    return facts\n",
   "sporttery_jc": "\"\"\"Sporttery/Jingcai merge-table helpers.\"\"\"\nfrom __future__ import annotations\n\nfrom typing import Any\n\n_FIXED_CACHE: dict[str, Any] = {}\n\n\ndef get(key: Any, default: Any = None) -> Any:\n    \"\"\"Compatibility helper for module-level cache lookups.\"\"\"\n    return _FIXED_CACHE.get(str(key), default)\n\n\ndef _odds_value(value: Any) -> float | None:\n    try:\n        if isinstance(value, dict): value = value.get('odds') or value.get('sp') or value.get('value')\n        f=float(value)\n        return f if f > 0 else None\n    except (TypeError, ValueError):\n        return None\n\n\ndef build_merged_market_heat_jc_table(heat: Any, jc: Any) -> dict[str, Any]:\n    rows=[]\n    if isinstance(heat, dict):\n        for row in heat.get('ranking') or heat.get('rows') or []:\n            if isinstance(row, dict): rows.append(dict(row))\n    if isinstance(jc, dict):\n        for score, val in jc.items():\n            odd=_odds_value(val)\n            if odd is None: continue\n            found=False\n            for row in rows:\n                if str(row.get('score')).replace(':','-') == str(score).replace(':','-'):\n                    row['jc_odds']=odd; found=True; break\n            if not found:\n                rows.append({'score': str(score).replace(':','-'), 'jc_odds': odd})\n    return {'available': bool(rows), 'rows': rows, 'cross_table': rows}\n\n\ndef format_merged_heat_jc_tg_lines(table: Any) -> list[str]:\n    t=table if isinstance(table, dict) else {}\n    rows=t.get('rows') or []\n    lines=['📊【市均***竞彩对比表】']\n    if not rows:\n        lines.append('  暂无可合并比分数据')\n    else:\n        for row in rows[:10]:\n            if isinstance(row, dict): lines.append(f\"  {row.get('score','?')} 市热={row.get('heat','-')} 竞彩={row.get('jc_odds','-')}\")\n    return lines\n",
@@ -49,6 +49,85 @@ def _flanalyzer_install_embedded_runtime_modules():
 
 _flanalyzer_install_embedded_runtime_modules()
 # <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<
+
+
+def _blade_get_console_cp():
+    """Windows 控制台当前输出代码页；非 Windows 或没有控制台时返回 0。"""
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetConsoleOutputCP() or 0)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - 没有控制台句柄/非 Windows 时按 0 处理
+        return 0
+
+
+def _blade_set_console_cp(codepage):
+    """把 Windows 控制台输出代码页切到 codepage；返回是否成功。"""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.kernel32.SetConsoleOutputCP(int(codepage)))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - 没有控制台句柄/非 Windows 时按失败处理
+        return False
+
+
+def _blade_fix_console_encoding():
+    """把 Windows 控制台输出统一到 UTF-8，避免中文日志变成 `鉁?[ML寮曟搸]`。
+
+    根因：字符串以 UTF-8 字节写出，控制台却按 GBK(936) 解释，于是
+    「✅ [ML引擎]」被读成乱码。两道动作：
+
+      1. 控制台输出代码页切到 65001（UTF-8）。有控制台才切，失败静默跳过。
+      2. sys.stdout 编码表达不了中文（cp437/cp1252/ascii 等）或和代码页
+         不一致时，reconfigure 成 UTF-8 + errors='replace'。
+
+    只在 Windows 上执行；不改任何文件的编码，也不碰 stdin/stderr。
+    """
+    try:
+        if os.name != 'nt' and sys.platform != 'win32':
+            return False
+    except Exception:  # noqa: BLE001 - 平台判断失败按非 Windows 处理
+        return False
+
+    changed = False
+    console_is_utf8 = False
+    try:
+        codepage = _blade_get_console_cp()
+        if codepage == 65001:
+            console_is_utf8 = True
+        elif codepage and _blade_set_console_cp(65001):
+            console_is_utf8 = True
+            changed = True
+    except Exception:  # noqa: BLE001 - 代码页操作失败不影响编码兜底
+        console_is_utf8 = False
+
+    stream = sys.stdout
+    if stream is None:
+        return changed
+    encoding = str(getattr(stream, 'encoding', '') or '')
+    can_encode_chinese = True
+    try:
+        '中文'.encode(encoding or 'ascii')
+    except (UnicodeEncodeError, LookupError):
+        can_encode_chinese = False
+    # 控制台已切 UTF-8 时，stdout 也必须吐 UTF-8 字节，否则又会被读成乱码。
+    needs_utf8 = (not can_encode_chinese) or (
+        console_is_utf8 and encoding.lower().replace('-', '') not in ('utf8', 'utf8mb4')
+    )
+    if not needs_utf8:
+        return changed
+    reconfigure = getattr(stream, 'reconfigure', None)
+    if callable(reconfigure):
+        try:
+            reconfigure(encoding='utf-8', errors='replace')
+            changed = True
+        except Exception:  # noqa: BLE001,S110 - 无法 reconfigure 时保持原状  # nosec B110
+            pass
+    return changed
+
+
+_blade_fix_console_encoding()
+
 
 # ================== 🖥️ CLI 模式探测（必须最先执行，早于 Streamlit/浏览器启动） ==================
 # 支持:
@@ -540,6 +619,91 @@ AUTO_CHAT_ID = (
     or os.environ.get('BLADE_TELEGRAM_CHAT_ID')
     or ''
 ).strip()
+# ===============================================
+
+# ================= 1.5 密钥形态守卫（占位符 / 非 ASCII 一律停用该集成） =================
+# 典型现场：用户在 PowerShell 里跑过 setx DEEPSEEK_API_KEY "你的key"，
+# 于是密钥字段里存的是中文占位符，HTTP 头无法编码，每次调用都抛
+# `'ascii' codec can't encode characters`。这里在启动与首次调用前各校验一次，
+# 命中就打印一行可操作的提示并干净停用该集成；任何分支都不回显密钥值。
+_BLADE_DEEPSEEK_KEY_RE = re.compile(r'^sk-[A-Za-z0-9._\-]{10,}$')
+_BLADE_TELEGRAM_TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_\-]{20,}$')
+_SECRET_GUARD_STATE = {'deepseek': '', 'telegram': ''}
+# 停用不可用密钥时写入的哨兵空值（不是凭据）。
+_DISABLED_SECRET = ''  # nosec B105 - sentinel empty value, not a credential
+
+
+def secret_shape_issue(value, kind):
+    """返回密钥不可用的简短中文原因；空串表示形态可用。
+
+    kind: 'deepseek' 期望 `sk-...`；'telegram' 期望 `<数字>:<base64ish>`。
+    只描述问题，不回显密钥内容。
+    """
+    text = str(value or '')
+    if not text:
+        return ''
+    if not text.isascii():
+        sample = '你的key' if kind == 'deepseek' else '你的token'
+        return f'含非 ASCII 字符，疑似占位符（例如「{sample}」）'
+    if kind == 'deepseek' and not _BLADE_DEEPSEEK_KEY_RE.match(text):
+        return '形态不符（应为 sk- 开头的英数密钥）'
+    if kind == 'telegram' and not _BLADE_TELEGRAM_TOKEN_RE.match(text):
+        return '形态不符（应为 <数字>:<字母数字串>）'
+    return ''
+
+
+def _print_secret_guard_line(kind, reason):
+    """一条可操作提示，重复调用只打印一次，且绝不含密钥值。"""
+    if _SECRET_GUARD_STATE.get(kind) == reason:
+        return
+    _SECRET_GUARD_STATE[kind] = reason
+    if kind == 'deepseek':
+        print(
+            f'[DeepSeek] DEEPSEEK_API_KEY {reason}；'
+            '请运行 configure_blade_quant.ps1 配置真实密钥（本次已停用 DeepSeek 调用）',
+            flush=True,
+        )
+    else:
+        print(
+            f'[TG] TELEGRAM_BOT_TOKEN {reason}；'
+            '请运行 configure_blade_quant.ps1 配置真实 token（本次已停用 Telegram 推送）',
+            flush=True,
+        )
+
+
+def guard_integration_secrets(deepseek_key=None, telegram_token=None, apply=True):
+    """校验 DEEPSEEK_API_KEY / TELEGRAM_BOT_TOKEN 的可用性。
+
+    apply=True 时把不可用的密钥从模块全局清空，使调用方自然走降级分支
+    （_MissingDeepSeekClient / missing_token），而不是每次调用都抛编码错误。
+    返回 {'deepseek': reason, 'telegram': reason}，reason 为空串表示可用。
+    """
+    raw_ds = DEEPSEEK_API_KEY if deepseek_key is None else deepseek_key
+    raw_tg = SNIPER_BOT_TOKEN if telegram_token is None else telegram_token
+    report = {
+        'deepseek': secret_shape_issue(raw_ds, 'deepseek'),
+        'telegram': secret_shape_issue(raw_tg, 'telegram'),
+    }
+    for kind, reason in report.items():
+        if not reason:
+            continue
+        _print_secret_guard_line(kind, reason)
+        if not apply:
+            continue
+        if kind == 'deepseek':
+            globals()['DEEPSEEK_API_KEY'] = _DISABLED_SECRET
+        else:
+            # 停用 Telegram：清空 token，后续 send_tg 直接走 missing_token 分支。
+            globals()['SNIPER_BOT_TOKEN'] = _DISABLED_SECRET
+    return report
+
+
+def deepseek_key_usable():
+    """True when a syntactically sendable DeepSeek key is configured."""
+    return bool(DEEPSEEK_API_KEY) and not secret_shape_issue(DEEPSEEK_API_KEY, 'deepseek')
+
+
+guard_integration_secrets()
 # ===============================================
 
 # 欧洲库 API-Football 与 Gemini 已删除。赛程和盘口只走澳客手机。
@@ -2288,6 +2452,8 @@ def _make_deepseek_client(use_proxy=None):
     """返回 (OpenAI客户端, 是否走代理)。base 保持 /v1。"""
     if use_proxy is None:
         use_proxy = _check_proxy_available()
+    # 占位符/非 ASCII 密钥在 HTTP 头里必然报 codec 错误，构造客户端前先停用。
+    guard_integration_secrets()
     if not DEEPSEEK_API_KEY:
         return _MissingDeepSeekClient(), bool(use_proxy)
     base = str(_DEEPSEEK_BASE_URL or 'https://api.deepseek.com').rstrip('/')
@@ -2451,6 +2617,10 @@ def llm_call_with_retry(messages, temperature=0.7, timeout=90, max_retries=3,
     cfg = _LLM_ROUTER.get('deepseek')
     if not isinstance(cfg, dict):
         raise TypeError('LLM router provider "deepseek" is not configured')
+    # 首次调用前的第二道守卫：配置里残留占位符就停用，不给 codec 错误开口子。
+    _secret_report = guard_integration_secrets()
+    if _secret_report.get('deepseek'):
+        return None
     active_client = cfg['client']()
     active_model = model or cfg['model']
 
@@ -2638,10 +2808,20 @@ class UnifiedFootballMappingEngine:
     def generate_full_matrix(self, lam_h, lam_a):
         """生成全量比分概率矩阵 (矩阵大小 max_goals * max_goals)
 
+        λ 未形成（None/非数）时返回 None，由调用方按未形成处理，
+        不在这里偷偷补一个默认 λ 去算假概率。
+
         【性能优化】numpy矢量化外积替代双层循环，加速4x+；
         numpy不可用时自动降级到纯Python循环。
         """
         mg = self.max_goals
+        try:
+            lam_h = float(lam_h)
+            lam_a = float(lam_a)
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(lam_h) and math.isfinite(lam_a)) or lam_h <= 0 or lam_a <= 0:
+            return None
         if NUMPY_VEC_AVAILABLE and _POISSON_VEC_FACT_TABLE is not None and mg <= _POISSON_VEC_FACT_MAX:
             fact = _POISSON_VEC_FACT_TABLE[:mg]
             goals = np.arange(mg, dtype=np.float64)
@@ -2752,9 +2932,21 @@ class UnifiedFootballMappingEngine:
         }
 
     def execute_all_mappings(self, lam_h, lam_a, ou_line=None, ah_line=None, jingcai_handicap=None):
-        """一键执行已有盘口的联合映射。缺盘口不默认 2.5 / -0.5 / -1。"""
+        """一键执行已有盘口的联合映射。缺盘口不默认 2.5 / -0.5 / -1。
+
+        λ 未形成时返回 {'available': False, 'reason': 'lambda_not_formed'}，
+        不做任何映射，也不拿 None 去建矩阵。
+        """
         matrix = self.generate_full_matrix(lam_h, lam_a)
+        if matrix is None:
+            return {
+                "available": False,
+                "reason": LAMBDA_NOT_FORMED,
+                "lambda_home": lam_h,
+                "lambda_away": lam_a,
+            }
         out = {
+            "available": True,
             "1x2": self.map_1x2(matrix),
             "matrix": matrix,
             "lambda_home": lam_h,
@@ -2786,14 +2978,26 @@ class CoreQuantEngine:
     def calculate_bivariate_poisson(self, lam_h, lam_a, rho=0.0):
         """生成双变量泊松比分概率矩阵 (返回 { 'h-a': prob })
 
+        λ 未形成（None/非数/非正）时返回 {} —— 显式未形成，不补默认 λ。
+
         【性能优化】使用numpy矢量化运算替代三层嵌套循环：
         - 预计算 lam^n/n! 向量，通过外积+切片累加消除内层k循环
         - rho=0时直接退化为独立泊松外积（最常见case，加速3x+）
         - 若numpy/scipy不可用，自动降级到纯Python循环实现
         """
-        lam_h = max(0.05, float(lam_h))
-        lam_a = max(0.05, float(lam_a))
-        rho = max(0.0, min(float(rho), min(lam_h, lam_a) * 0.5))
+        try:
+            lam_h = float(lam_h)
+            lam_a = float(lam_a)
+        except (TypeError, ValueError):
+            return {}
+        if not (math.isfinite(lam_h) and math.isfinite(lam_a)) or lam_h <= 0 or lam_a <= 0:
+            return {}
+        lam_h = max(0.05, lam_h)
+        lam_a = max(0.05, lam_a)
+        try:
+            rho = max(0.0, min(float(rho), min(lam_h, lam_a) * 0.5))
+        except (TypeError, ValueError):
+            rho = 0.0
 
         lam_h_ind = max(0.01, lam_h - rho)
         lam_a_ind = max(0.01, lam_a - rho)
@@ -5513,6 +5717,239 @@ def _tg_fail_should_log():
     return True
 
 
+_TG_DELIVERY_STATE = {
+    'unreachable': False,     # 本轮已确认无法投递（缺 chat_id / token 无效 / 永久 4xx）
+    'suppressed': 0,          # 被折叠掉的“所有方式均失败”次数
+    'last_reason': '',
+    'reasons': set(),         # 本轮已打印过的失败原因（去重）
+}
+_TG_DELIVERY_STATE_LOCK = threading.Lock()
+
+
+def tg_delivery_disabled():
+    """True when this run already established Telegram cannot deliver."""
+    return bool(_TG_DELIVERY_STATE.get('unreachable'))
+
+
+def tg_failure_seen(reason):
+    """Mark one failure reason; True the first time it is seen this run.
+
+    同一条原因只打印一次，避免一场比赛刷几十行相同的失败日志。
+    """
+    key = str(reason or '').strip() or 'unknown'
+    with _TG_DELIVERY_STATE_LOCK:
+        seen = _TG_DELIVERY_STATE.setdefault('reasons', set())
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+
+def _tg_mark_delivery_unreachable(reason='', already_explained=False):
+    """Acknowledge the first real delivery failure; count every later one.
+
+    一条可操作的告警后，本轮后续失败只累加计数，由 tg_delivery_summary()
+    在收尾处汇总一次，避免每场都刷同一行。原因相同则完全不重复打印。
+
+    already_explained=True 表示调用方刚刚已经打印过具体原因（例如永久 4xx
+    的动作提示），这里只记状态与计数，不再补一条泛化告警。
+    """
+    should_warn = False
+    suppressed = 0
+    with _TG_DELIVERY_STATE_LOCK:
+        if not _TG_DELIVERY_STATE['unreachable']:
+            _TG_DELIVERY_STATE['unreachable'] = True
+            _TG_DELIVERY_STATE['last_reason'] = str(reason or '')
+            should_warn = not already_explained
+        else:
+            _TG_DELIVERY_STATE['suppressed'] = int(_TG_DELIVERY_STATE['suppressed']) + 1
+            suppressed = _TG_DELIVERY_STATE['suppressed']
+        seen = _TG_DELIVERY_STATE.setdefault('reasons', set())
+        first_time = str(reason or '') not in seen
+        seen.add(str(reason or ''))
+    if should_warn and first_time:
+        print(
+            "   ⚠️ TG发送失败: 所有方式均失败；本轮不再重复告警"
+            + (f"（{reason}）" if reason else '')
+            + "，收尾时给出累计条数",
+            flush=True,
+        )
+    elif suppressed and suppressed % 25 == 0:
+        print(f"   ℹ️ TG 本轮已累计跳过 {suppressed} 条推送（Telegram 不可达/无效）", flush=True)
+    return should_warn
+
+
+def tg_delivery_summary():
+    """One-line end-of-run summary; empty when nothing failed."""
+    with _TG_DELIVERY_STATE_LOCK:
+        suppressed = int(_TG_DELIVERY_STATE.get('suppressed') or 0)
+        reason = str(_TG_DELIVERY_STATE.get('last_reason') or '')
+        unreachable = bool(_TG_DELIVERY_STATE.get('unreachable'))
+    total = suppressed + (1 if unreachable else 0)
+    if not total:
+        return ''
+    return f"[TG] 本次运行发送失败 {total} 次（原因已在上方{'：' + reason if reason else ''}）"
+
+
+def reset_tg_delivery_state():
+    """Test hook: forget the run-level Telegram failure state."""
+    with _TG_DELIVERY_STATE_LOCK:
+        _TG_DELIVERY_STATE['unreachable'] = False
+        _TG_DELIVERY_STATE['suppressed'] = 0
+        _TG_DELIVERY_STATE['last_reason'] = ''
+        _TG_DELIVERY_STATE['reasons'] = set()
+
+
+# =====================================================================
+# 【TG chat_id · 会话发现与持久化】
+# Telegram 没有“用 token 反查 chat_id”的接口，而 configure 向导只写 token。
+# 所以：轮询里看到任何入站消息的 chat.id 就采纳它，并落到
+# <installdir>/models/data/tg_chat_id.txt（与 feature_store.db 同一个 data 目录）。
+# 下次启动环境变量没配时从这里读。群聊是负数（-100...），一律按字符串保存。
+# =====================================================================
+_TG_CHAT_ID_FILE_NAME = 'tg_chat_id.txt'
+_TG_CHAT_CAPTURE_STATE = {'captured': '', 'printed': ''}
+
+
+def resolve_tg_chat_id_path():
+    """tg_chat_id.txt 的绝对路径：<MODELS_DIR>/data/tg_chat_id.txt。"""
+    return os.path.abspath(os.path.join(_configured_models_dir(), 'data', _TG_CHAT_ID_FILE_NAME))
+
+
+def _normalize_chat_id(value):
+    """chat_id 统一成字符串；空值/非法值返回空串（支持群聊负数）。"""
+    text = str(value if value is not None else '').strip()
+    if not text:
+        return ''
+    # 允许 -1001234567890 / 123456789；其它形态一律拒绝，避免把垃圾写进请求。
+    body = text.removeprefix('-')
+    return text if body.isdigit() and body else ''
+
+
+def load_persisted_tg_chat_id(path=None):
+    """从磁盘读回上次记录的 chat_id；文件不存在/内容无效返回空串。"""
+    target = str(path or resolve_tg_chat_id_path())
+    try:
+        if not os.path.exists(target):
+            return ''
+        with open(target, 'r', encoding='utf-8') as fh:
+            return _normalize_chat_id(fh.readline().strip())
+    except OSError:
+        return ''
+
+
+def persist_tg_chat_id(chat_id, path=None):
+    """把 chat_id 写盘（目录按需创建）。写入失败不影响发送链路。"""
+    value = _normalize_chat_id(chat_id)
+    if not value:
+        return False
+    target = str(path or resolve_tg_chat_id_path())
+    try:
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(target, 'w', encoding='utf-8') as fh:
+            fh.write(value + '\n')
+        return True
+    except OSError as exc:
+        if tg_failure_seen('chat_id 落盘失败'):
+            print(f"   ⚠️ [TG] chat_id 落盘失败（不影响本次回发）: {type(exc).__name__}")
+        return False
+
+
+def current_tg_chat_id():
+    """当前生效的 chat_id：环境变量 > 本轮捕获 > 磁盘记录。"""
+    return (
+        _normalize_chat_id(AUTO_CHAT_ID)
+        or _normalize_chat_id(_TG_CHAT_CAPTURE_STATE.get('captured'))
+        or load_persisted_tg_chat_id()
+    )
+
+
+def _bootstrap_tg_chat_id():
+    """启动时若环境变量为空，就从磁盘补上，并写回 AUTO_CHAT_ID 供旧调用点使用。"""
+    global AUTO_CHAT_ID
+    if _normalize_chat_id(AUTO_CHAT_ID):
+        return _normalize_chat_id(AUTO_CHAT_ID)
+    disk = load_persisted_tg_chat_id()
+    if disk:
+        AUTO_CHAT_ID = disk
+        _TG_CHAT_CAPTURE_STATE['captured'] = disk
+        print(f"   [TG] 已从 {_TG_CHAT_ID_FILE_NAME} 读回会话 chat_id={disk}", flush=True)
+    return disk
+
+
+def capture_tg_chat_id(chat_id, persist=True):
+    """记录入站消息里的 chat.id；变化时打印一次并落盘。
+
+    返回最终生效的 chat_id（字符串），空串表示这次没有可用值。
+    """
+    global AUTO_CHAT_ID
+    value = _normalize_chat_id(chat_id)
+    if not value:
+        return current_tg_chat_id()
+    previous = current_tg_chat_id()
+    if value == previous:
+        _TG_CHAT_CAPTURE_STATE['captured'] = value
+        return value
+    AUTO_CHAT_ID = value
+    _TG_CHAT_CAPTURE_STATE['captured'] = value
+    if persist:
+        persist_tg_chat_id(value)
+    if _TG_CHAT_CAPTURE_STATE.get('printed') != value:
+        _TG_CHAT_CAPTURE_STATE['printed'] = value
+        print(f"[TG] 已记录会话 chat_id={value}（之后自动回发到这里）", flush=True)
+    return value
+
+
+_bootstrap_tg_chat_id()
+
+# =====================================================================
+# 【TG 失败分类】
+# 400/401/403/404 是“这条请求本身永远不可能成功”（chat_id 空、token 错、
+# 被拉黑、接口不存在），换代理/直连/SSL 都没有意义：立即停手、只记一行。
+# 只有网络级错误（超时、连接重置、代理拒绝、SSL）才走代理→直连→SSL 的阶梯。
+# =====================================================================
+_TG_PERMANENT_STATUSES = (400, 401, 403, 404)
+
+
+def _tg_response_body(response):
+    """尽量取出 Telegram 的 description，用来区分“永久配置错误”与临时问题。"""
+    try:
+        text = str(getattr(response, 'text', '') or '')
+    except Exception:  # noqa: BLE001 - 读不到响应体就按空处理
+        return ''
+    return text
+
+
+def _tg_is_permanent_failure(status_code, body=''):
+    """True when this response means retrying can never help."""
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    if code not in _TG_PERMANENT_STATUSES:
+        return False
+    # 400 里有两种：HTML 解析失败（可回退纯文本重发）和真正的配置错误。
+    return not (code == 400 and "can't parse entities" in str(body or ''))
+
+
+def _tg_permanent_failure_hint(body=''):
+    """把永久 4xx 翻译成一句可操作的中文提示（不含 token/URL）。"""
+    text = str(body or '')
+    if 'chat_id is empty' in text:
+        return '缺少 chat_id：先给机器人发一条消息（例如「状态」），程序会自动记录'
+    if 'chat not found' in text:
+        return 'chat_id 不存在或机器人不在该会话：先给机器人发一条消息，让它重新记录会话'
+    if 'bot was blocked' in text:
+        return '机器人已被该会话拉黑：在 Telegram 里先解除拉黑再试'
+    if 'Unauthorized' in text:
+        return 'bot token 无效或已被撤销：请运行 configure_blade_quant.ps1 重新配置 token'
+    return 'Telegram 拒绝了这条请求（永久错误，不再重试）'
+
+
+
+
 def _tg_api_url(method):
     base = str(os.environ.get('TELEGRAM_API_BASE_URL') or 'https://api.telegram.org').strip().rstrip('/')
     return f"{base}/bot{SNIPER_BOT_TOKEN}/{method}"
@@ -5681,35 +6118,46 @@ def _tg_post(url, payload):
                     print(f"   ⏳ [TG] 频率限制，等待{_wait}秒...")
                     _t.sleep(_wait)
                     continue
-                elif r.status_code in (401, 404):
-                    _tg_print_invalid_token_once()
-                    return False
+                elif _tg_is_permanent_failure(r.status_code, _tg_response_body(r)):
+                    # 400/401/403/404：请求本身永久错误，换代理/直连/SSL 都没用，立刻停。
+                    _hint = _tg_permanent_failure_hint(_tg_response_body(r))
+                    if tg_failure_seen(f'HTTP {r.status_code} {_hint}'):
+                        print(f"   ❌ [TG] HTTP {r.status_code}（永久错误，不再重试）：{_hint}", flush=True)
+                    return 'PERMANENT'
                 else:
-                    print(f"   ⚠️ [TG] {label}返回非200: {r.status_code} {r.text[:100]}")
-                    break  # 非网络错误，换策略
+                    _detail = f'HTTP {r.status_code}'
+                    if tg_failure_seen(f'{label}返回{_detail}'):
+                        print(f"   ⚠️ [TG] {label}返回{_detail}: {_tg_response_body(r)[:100]}")
+                    break  # 其它非网络错误，换策略
             except requests.exceptions.ConnectTimeout as e:
-                print(f"   ⚠️ [TG] {label}连接超时: {type(e).__name__}")
+                if tg_failure_seen(f'{label}连接超时'):
+                    print(f"   ⚠️ [TG] {label}连接超时: {type(e).__name__}")
                 if label != '代理':
-                    print("   ❌ [TG] 直连连接超时，停止同路由重试")
                     return False
                 break
             except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 if attempt < max_retries - 1:
                     _backoff = (attempt + 1) * 2  # 2s, 4s, 6s
-                    print(f"   🔄 [TG] {label}第{attempt+1}次失败({type(e).__name__})，{_backoff}秒后重试...")
+                    if tg_failure_seen(f'{label}连接失败'):
+                        print(f"   🔄 [TG] {label}第{attempt+1}次失败({type(e).__name__})，{_backoff}秒后重试...")
                     _t.sleep(_backoff)
                 else:
-                    print(f"   ⚠️ [TG] {label}达到最大重试次数: {type(e).__name__}")
+                    if tg_failure_seen(f'{label}达到最大重试次数'):
+                        print(f"   ⚠️ [TG] {label}达到最大重试次数: {type(e).__name__}")
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
-                    print(f"   🔄 [TG] {label}超时，重试中...")
+                    if tg_failure_seen(f'{label}超时'):
+                        print(f"   🔄 [TG] {label}超时，重试中...")
                     _t.sleep(2)
                 else:
-                    print(f"   ⚠️ [TG] {label}达到最大重试次数(超时)")
+                    if tg_failure_seen(f'{label}超时达上限'):
+                        print(f"   ⚠️ [TG] {label}达到最大重试次数(超时)")
             except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                print(f"   ⚠️ [TG] {label}未知异常: {type(e).__name__}")
+                if tg_failure_seen(f'{label}未知异常'):
+                    print(f"   ⚠️ [TG] {label}未知异常: {type(e).__name__}")
                 break  # 未知异常换策略
-    print("   ❌ [TG] 所有策略均失败（代理/直连/SSL绕过×3次重试）")
+    if tg_failure_seen('所有策略均失败'):
+        print("   ❌ [TG] 所有策略均失败（代理/直连/SSL绕过×3次重试）")
     return False
 
 def send_tg(text, parse_mode=None):
@@ -5721,6 +6169,24 @@ def send_tg(text, parse_mode=None):
     # 保护：空内容不发送
     if not text or not text.strip():
         print("   ⚠️ TG发送跳过：消息内容为空")
+        return
+    # 本轮已确认不可达 / token 形态不可用：不再逐条重试，只累加计数。
+    if tg_delivery_disabled():
+        _tg_mark_delivery_unreachable()
+        return
+    if not SNIPER_BOT_TOKEN:
+        _tg_mark_delivery_unreachable('TELEGRAM_BOT_TOKEN 未配置或不可用')
+        return
+    # 【chat_id 闸门】没有 chat_id 时一个 HTTP 请求都不发：Telegram 必然回
+    # 400 chat_id is empty，重试阶梯只是在打一条永远不可能成功的请求。
+    _chat_id = current_tg_chat_id()
+    if not _chat_id:
+        if tg_failure_seen('缺少 chat_id'):
+            print(
+                '[TG] 缺少 chat_id：先给机器人发一条消息（例如「状态」），程序会自动记录',
+                flush=True,
+            )
+        _tg_mark_delivery_unreachable('缺少 chat_id')
         return
     try:
         if DeepSeekAnalyzer is not None and hasattr(DeepSeekAnalyzer, 'strip_tg_english'):
@@ -5782,7 +6248,7 @@ def send_tg(text, parse_mode=None):
 
     def _send_chunk(chunk, use_parse_mode):
         """Send a single chunk, return True on success"""
-        payload = {"chat_id": AUTO_CHAT_ID, "text": chunk}
+        payload = {"chat_id": _chat_id, "text": chunk}
         if use_parse_mode:
             payload["parse_mode"] = use_parse_mode
         result = _tg_post(url, payload)
@@ -5790,22 +6256,29 @@ def send_tg(text, parse_mode=None):
             # HTML解析失败，立即剥离HTML标签后纯文本重发
             plain_chunk = _strip_html(chunk)
             print("   🔄 [TG] HTML解析失败，回退纯文本发送...")
-            result2 = _tg_post(url, {"chat_id": AUTO_CHAT_ID, "text": plain_chunk})
+            result2 = _tg_post(url, {"chat_id": _chat_id, "text": plain_chunk})
             return result2 is True
         elif result is True:
             return True
+        elif result == 'PERMANENT':
+            # 永久错误：不再用纯文本重打一遍，直接向上返回失败。
+            return False
         else:
             # 网络失败，尝试纯文本
             if use_parse_mode:
                 plain_chunk = _strip_html(chunk)
-                result2 = _tg_post(url, {"chat_id": AUTO_CHAT_ID, "text": plain_chunk})
+                result2 = _tg_post(url, {"chat_id": _chat_id, "text": plain_chunk})
                 return result2 is True
             return False
 
     if len(text) <= max_len and '\x0c' not in text:
+        if tg_delivery_disabled():
+            _tg_mark_delivery_unreachable()
+            return
         ok = _send_chunk(text, parse_mode)
         if not ok:
-            print("   ⚠️ TG发送失败: 所有方式均失败")
+            # _tg_post 已经打印过永久错误的具体原因，这里不再补一条泛化告警。
+            _tg_mark_delivery_unreachable('永久错误（详见上方提示）', already_explained=True)
     else:
         # HTML-aware splitting: split at newlines to avoid breaking tags.
         # 分页符即使正文未超长，也拆成独立 Telegram 消息。
@@ -5852,6 +6325,9 @@ def send_tg(text, parse_mode=None):
             print("   ⚠️ TG发送跳过：所有分段内容均为空白")
             return
         for seq, (i, part) in enumerate(non_empty_parts):
+            if tg_delivery_disabled():
+                _tg_mark_delivery_unreachable()
+                continue
             if total_valid > 1:
                 marker = f"[{seq+1}/{total_valid}]"
                 first, sep, rest = part.partition('\n')
@@ -5870,7 +6346,7 @@ def send_tg(text, parse_mode=None):
                     part = marker + '\n' + part
             ok = _send_chunk(part, parse_mode)
             if not ok:
-                print(f"   ⚠️ TG发送第{seq+1}段失败")
+                _tg_mark_delivery_unreachable(f'第{seq+1}段失败', already_explained=True)
             time.sleep(1)
 
 
@@ -9112,6 +9588,18 @@ def _ur_risk_items(info: dict[str, Any]) -> list[dict[str, Any]]:
             'trigger': f'特征完整度 {completeness:.0%} < 60%',
             'detail': '缺失特征由先验填补，结论稳定性弱于常规场次。',
         })
+    # 数据不足场次：把“缺的是哪个源”写进风险段，报告里能直接看出为什么没比分。
+    missing_inputs = _ur_missing_inputs(info)
+    if missing_inputs and _ur_data_insufficient(info, missing_inputs):
+        risks.insert(0, {
+            'level': '高',
+            'title': '关键输入未形成（数据不足）',
+            'trigger': '；'.join(missing_inputs),
+            'detail': (
+                '上游明确不补默认进球期望，本场不出比分结论；'
+                '补齐手机市均/盘口后重新分析，不要按旧结论或空整合包下单。'
+            ),
+        })
     if not risks:
         risks.append({
             'level': '低',
@@ -9215,12 +9703,67 @@ def _ur_lesson_items(info: dict[str, Any], limit: int = 3) -> list[dict[str, Any
     return matched
 
 
+def _ur_missing_inputs(data: dict[str, Any]) -> list[str]:
+    """列出本场缺失的关键输入（λ 未形成 / 手机市均未就绪 等）。
+
+    优先用分析时写下的 missing_inputs；没有就按字段现算。
+    只依据记录里的字段判断，不猜、不补默认值；同一原因只列一次。
+    """
+    recorded = data.get('missing_inputs')
+    if isinstance(recorded, list) and recorded:
+        return [str(item) for item in recorded if str(item or '').strip()]
+
+    missing: list[str] = []
+
+    def _add(text: str, marker: str) -> None:
+        if not text:
+            return
+        if any(marker in item for item in missing):
+            return
+        missing.append(text)
+
+    _add(str(data.get('score_not_formed_reason') or '').strip(), 'λ')
+    lam_h = data.get('lambda_home') if data.get('lambda_home') is not None else data.get('lam_h')
+    lam_a = data.get('lambda_away') if data.get('lambda_away') is not None else data.get('lam_a')
+    if lam_h is None or lam_a is None:
+        _add('λ 未形成（上游拒绝补默认进球期望）', 'λ')
+    if data.get('correct_score_available') is False:
+        _add('手机市均未就绪（比分市均/盘口未抓到）', '手机市均')
+    if not data.get('odds_1x2') and not data.get('derived_markets') and not data.get('top15_scores'):
+        _add('胜平负赔率未形成', '胜平负赔率')
+    return missing
+
+
+def _ur_record_analysed(data: dict[str, Any]) -> bool:
+    """这条记录是否真的跑过分析（而不是一条空壳/未抓取记录）。"""
+    if data.get('pipeline_scrape_done') or data.get('pipeline_scrape_at'):
+        return True
+    if str(data.get('score_not_formed_reason') or '').strip():
+        return True
+    if isinstance(data.get('odds_1x2'), dict) and data.get('odds_1x2'):
+        return True
+    return bool(data.get('derived_markets') or data.get('top15_scores'))
+
+
+def _ur_data_insufficient(data: dict[str, Any], missing: list[str]) -> bool:
+    """True when this record was analysed but has no score verdict and a recorded reason."""
+    primary = str(data.get('predicted_score') or data.get('first_score') or '').strip()
+    has_score = bool(primary and primary not in ('➖', 'None', 'none'))
+    if has_score or not missing:
+        return False
+    return _ur_record_analysed(data)
+
+
 def build_unified_analysis_report(
     info: Any,
     source: str = 'streamlit',
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    """把任意一场 history 记录压成统一六段骨架。任何字段缺失都不抛异常。"""
+    """把任意一场 history 记录压成统一六段骨架。任何字段缺失都不抛异常。
+
+    λ 未形成 / 手机市均未就绪时不出比分结论，结论段写「数据不足」并点名
+    缺的输入；关键数据仍展示已经到手的赔率/1x2 事实；风险段记下缺失来源。
+    """
     data = info if isinstance(info, dict) else {}
     confidence = _ur_confidence_label(data)
     confidence_score = _ur_confidence_score(data)
@@ -9231,7 +9774,14 @@ def build_unified_analysis_report(
     if str(lock.get('direction') or '') in ('胜', '平', '负'):
         direction = str(lock.get('direction'))
 
-    if primary and primary not in ('➖', 'None', 'none'):
+    missing_inputs = _ur_missing_inputs(data)
+    data_insufficient = _ur_data_insufficient(data, missing_inputs)
+    if data_insufficient:
+        verdict = (
+            '数据不足：' + '；'.join(missing_inputs)
+            + '。本场不出比分结论，不补默认 λ，也不拿空整合包冒充手机市均。'
+        )
+    elif primary and primary not in ('➖', 'None', 'none'):
         verdict = (
             f"首选 {primary}｜次选 {secondary or '未形成'}｜方向 {direction or '未形成'}"
             f"｜置信度 {confidence}（{confidence_score:.1f}%）"
@@ -9246,9 +9796,12 @@ def build_unified_analysis_report(
         {'label': '冷门分', 'value': f'{_ur_float(data.get("cold_score")):.0f}', 'hint': '≥50 触发冷门预警'},
         {'label': 'DTI', 'value': f'{_ur_float(data.get("dti")):.3f}', 'hint': '离散度张力指标'},
         {'label': '大小球', 'value': str(data.get('big_small') or '未形成'), 'hint': f'盘口线 {data.get("ou_line") if data.get("ou_line") is not None else (ou.get("line") if ou.get("line") is not None else "未知")}'},
-        {'label': 'λ 主/客', 'value': f'{_ur_float(data.get("lam_h")):.2f} / {_ur_float(data.get("lam_a")):.2f}', 'hint': '泊松期望进球'},
+        {'label': 'λ 主/客', 'value': _ur_lambda_text(data), 'hint': '泊松期望进球（未形成时不补默认值）'},
         {'label': '特征完整度', 'value': f'{_ur_float(data.get("feature_completeness")):.0%}', 'hint': '低于 60% 需降权'},
     ]
+    # 数据不足时，把已经到手的赔率/1x2 事实单独列出来，别让“缺 λ”吞掉真数据。
+    if data_insufficient:
+        metrics.extend(_ur_arrived_market_metrics(data))
 
     return {
         'schema': UNIFIED_REPORT_SCHEMA,
@@ -9259,6 +9812,8 @@ def build_unified_analysis_report(
         'league': str(data.get('league') or '未知联赛'),
         'confidence': confidence,
         'confidence_score': confidence_score,
+        'data_insufficient': data_insufficient,
+        'missing_inputs': missing_inputs,
         'sections': [
             {
                 'key': 'verdict',
@@ -9269,6 +9824,8 @@ def build_unified_analysis_report(
                 'direction': direction,
                 'primary': primary,
                 'secondary': secondary,
+                'data_insufficient': data_insufficient,
+                'missing_inputs': missing_inputs,
             },
             {'key': 'key_data', 'title': '关键数据', 'metrics': metrics},
             {'key': 'divergence', 'title': '分歧点', 'items': _ur_divergence_items(data)},
@@ -9277,6 +9834,52 @@ def build_unified_analysis_report(
             {'key': 'lessons', 'title': '教训匹配', 'items': _ur_lesson_items(data)},
         ],
     }
+
+
+def _ur_lambda_text(data: dict[str, Any]) -> str:
+    """λ 展示：未形成就明说，不把 None 显示成 0.00。"""
+    lam_h = data.get('lambda_home') if data.get('lambda_home') is not None else data.get('lam_h')
+    lam_a = data.get('lambda_away') if data.get('lambda_away') is not None else data.get('lam_a')
+    if lam_h is None or lam_a is None:
+        return '未形成'
+    return f'{_ur_float(lam_h):.2f} / {_ur_float(lam_a):.2f}'
+
+
+def _ur_arrived_market_metrics(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """数据不足场次里，列出真正到达的盘口事实（1x2 赔率 / 盘口线）。"""
+    rows: list[dict[str, Any]] = []
+    odds_1x2 = _ur_mapping(data.get('odds_1x2'))
+    if odds_1x2:
+        home = _safe_odds(odds_1x2.get('Home', odds_1x2.get('home')))
+        draw = _safe_odds(odds_1x2.get('Draw', odds_1x2.get('draw')))
+        away = _safe_odds(odds_1x2.get('Away', odds_1x2.get('away')))
+        if home or draw or away:
+            rows.append({
+                'label': '胜平负赔率',
+                'value': ' / '.join(
+                    '-' if value is None else f'{value:.2f}' for value in (home, draw, away)
+                ),
+                'hint': '1X2 已到达（主/平/客），但 λ 未形成，不出比分',
+            })
+    implied = _ur_market_implied_1x2(data)
+    if implied:
+        rows.append({
+            'label': '去水隐含',
+            'value': (
+                f"主{implied['home']:.1%}/平{implied['draw']:.1%}/客{implied['away']:.1%}"
+            ),
+            'hint': f"返还率 {implied['return_rate']:.1%}，仅记市场事实",
+        })
+    line = data.get('ou_line')
+    if line is None:
+        line = _ur_mapping(_ur_mapping(data.get('derived_markets')).get('ou')).get('line')
+    if line is not None:
+        rows.append({
+            'label': '大小球盘口',
+            'value': str(line),
+            'hint': '盘口线已到达，缺少 λ 无法算理论大小球概率',
+        })
+    return rows
 
 
 def _ur_section(report: dict[str, Any], key: str) -> dict[str, Any]:
@@ -9729,9 +10332,18 @@ def calc_poisson_prob(lam_h, lam_a, max_goals=8, rho=-0.05, matrix_context=None,
     已全部废弃并转为 GBDTEnsembleClassifier 的输入特征）。
     matrix_context 参数仅为向后兼容保留，其内容不参与概率计算。
     zip_inflation: None=跟随全局开关；True/False 强制开/关厚尾修正。
+
+    λ 未形成（None/非数/非正）时返回 {} —— 明确未形成，绝不补默认 λ。
     """
-    lam_h = max(0.05, float(lam_h))
-    lam_a = max(0.05, float(lam_a))
+    try:
+        lam_h = float(lam_h)
+        lam_a = float(lam_a)
+    except (TypeError, ValueError):
+        return {}
+    if not (math.isfinite(lam_h) and math.isfinite(lam_a)) or lam_h <= 0 or lam_a <= 0:
+        return {}
+    lam_h = max(0.05, lam_h)
+    lam_a = max(0.05, lam_a)
 
     # ── numpy矢量化路径：Dixon-Coles泊松矩阵 ──
     if NUMPY_VEC_AVAILABLE and _POISSON_VEC_FACT_TABLE is not None and max_goals <= _POISSON_VEC_FACT_MAX:
@@ -10403,7 +11015,12 @@ def _ou_line_lambda_floor(market_ou_line):
 
 
 def _lift_lambda_pair_to_floor(lam_h, lam_a, floor_total):
-    """总量低于下限时按现有攻防比补足，不改主客比例。"""
+    """总量低于下限时按现有攻防比补足，不改主客比例。
+
+    λ 未形成时原样返回 (lam_h, lam_a, False)：不补、不改。
+    """
+    if not lambda_ready(lam_h, lam_a):
+        return lam_h, lam_a, False
     total = float(lam_h) + float(lam_a)
     if floor_total is None or total <= 1e-9 or total + 1e-9 >= float(floor_total):
         return float(lam_h), float(lam_a), False
@@ -16708,7 +17325,10 @@ def calc_weighted_diff_distribution(lam_h, lam_a, max_goals=8):
     当预期总进球 (λ_h+λ_a) ≥ 3 时，用负二项分布替换泊松，
       以增加高比分场次的尾部概率。任何异常回退到原泊松卷积。
     返回 dict[int, float]（key 为 h-a 的分差值）。
+    λ 未形成时返回 {}（未形成，不补默认 λ）。
     """
+    if not lambda_ready(lam_h, lam_a):
+        return {}
     try:
         lam1 = max(0.05, float(lam_h))
         lam2 = max(0.05, float(lam_a))
@@ -17161,6 +17781,14 @@ def apply_dynamic_lambda_adjustments(lam_h, lam_a, dynamic_context=None,
     if trap_signal:
         home_adj *= 0.96
         away_adj *= 0.96
+
+    # λ 未形成：不调整、不补默认值，明确回报 None 供调用方按未形成处理。
+    if not lambda_ready(lam_h, lam_a):
+        return None, None, {
+            'available': False,
+            'reason': LAMBDA_NOT_FORMED,
+            'detail': lambda_not_formed_reason(lam_h, lam_a),
+        }
 
     lam_h_new = max(0.15, float(lam_h) * (1.0 + home_adj))
     lam_a_new = max(0.15, float(lam_a) * (1.0 + away_adj))
@@ -22385,6 +23013,87 @@ def build_probability_cluster(prob_dict, first_score, second_score,
 
 
 # =====================================================================
+# 【λ未形成 · NOT_FORMED 统一出口】
+# 上游 pipeline 明确“不补默认进球期望”（λ 为 None），所以本文件里任何
+# 涉及 λ 的算术/比较都必须先过这道闸：要么返回明确的未形成结果，要么
+# 走已经 documented 的降级分支，绝不允许把 None 送进 `- lam` 这类表达式。
+# =====================================================================
+LAMBDA_NOT_FORMED = 'lambda_not_formed'
+NOT_FORMED_SCORE = (None, None, LAMBDA_NOT_FORMED)
+_LAMBDA_NOT_FORMED_REASONS = {
+    'lambda_not_formed': 'λ 未形成（上游拒绝补默认进球期望）',
+    'mobile_market_not_ready': '手机市均未就绪，λ 无法标定',
+    'prob_matrix_empty': '比分概率矩阵未形成',
+    'pool_not_formed': '15 进 2 候选池未形成',
+}
+
+
+def _one_lambda_ready(value):
+    """单侧 λ 是否已形成（有限正数）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0
+
+
+def lambda_ready(lam_h, lam_a):
+    """两个 λ 都是有限正数才算“已形成”。"""
+    return _one_lambda_ready(lam_h) and _one_lambda_ready(lam_a)
+
+
+def lambda_not_formed_reason(lam_h, lam_a, prob_dict=None,
+                             mobile_market_ready=None):
+    """说明 λ 为什么没形成；返回可直接进结论段的短语（不含 traceback）。"""
+    missing = []
+    if not _one_lambda_ready(lam_h) and not _one_lambda_ready(lam_a):
+        missing.append('λ 未形成')
+    elif not _one_lambda_ready(lam_h):
+        missing.append('主队 λ 未形成')
+    elif not _one_lambda_ready(lam_a):
+        missing.append('客队 λ 未形成')
+    if missing:
+        missing[0] = missing[0] + '（上游拒绝补默认进球期望）'
+    parts = list(missing)
+    if mobile_market_ready is False:
+        parts.append('手机市均未就绪')
+    if prob_dict is not None and not prob_dict:
+        parts.append('比分概率矩阵为空')
+    return '；'.join(parts) or '比分未形成'
+
+
+def is_not_formed_result(first_score, second_score, note=None):
+    """判断一处 15进2 输出是不是“未形成”，用于报告分流。"""
+    if first_score not in (None, '') or second_score not in (None, ''):
+        return False
+    if note is None:
+        return True
+    return any(mark in str(note) for mark in (
+        LAMBDA_NOT_FORMED, 'λ 未形成', '未形成', '数据不足',
+    ))
+
+
+def _safe_lambda(value, default=0.0):
+    """λ 的数值安全转换：None/NaN/非数一律回落到 default（仅用于展示/门控）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return number if math.isfinite(number) else float(default)
+
+
+def _safe_odds(value, default=None):
+    """赔率安全转换：非正数或不可转换时返回 default，避免 None 参与比较。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number) or number <= 0:
+        return default
+    return number
+
+
+# =====================================================================
 # 【架构升级①·结构化解析顺序（第五层/第六层）】
 # 确立绝对的、从高维到低维的结构化解析顺序：
 #   第1步 比分盈利矩阵（赔率体系的尽头，最大风险敲口与最完整庄家意图）
@@ -22664,7 +23373,8 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # p
                          euro_odds_500=None, api_football_odds_response=None,
                          league_name='', static_manipulation_score=0.0,
                          static_manipulation_details=None,
-                         direction_lock_payload=None):
+                         direction_lock_payload=None,
+                         mobile_market_ready=None):
     """
     【核心算法】15进2矩阵 × 核心博弈论模型
     四阶漏斗：3%铁律强切 → 宏观资金主盘绞杀 → 核心博弈论过滤 → 双波胆锁定
@@ -22675,7 +23385,9 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # p
         ou_line: 大小球盘口
         odds_correct_score: 波胆赔率字典（可选）
         ai_report: DeepSeek生成的报告文本（用于信号提取）
-        lam_h, lam_a: 主客队进球期望值（用于古诺模型等）
+        lam_h, lam_a: 主客队进球期望值（用于古诺模型等）。可以是 None：
+            上游 pipeline 在进球期望未形成时明确不补默认 λ，此时本函数
+            不抛异常，直接返回未形成结果 (None, None, 'lambda_not_formed')。
         cup_mode: 是否淘汰赛模式（影响零和/非零和博弈权重）
         ai_fund_signal: 第一步资金分析提取的信号字典（可选）
             {'fund_direction': 'home'|'away'|'neutral',
@@ -22687,9 +23399,52 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # p
              'handicap_divergence': True|False,
              'retreat_direction': 'over'|'under'|None}
         deepseek_game_signals: DeepSeek Step3 结构化博弈论判断结果（可选）
+        mobile_market_ready: 上游手机市均是否就绪（可选，只用于说明未形成原因）
     返回: (first_score, second_score, game_theory_log)
+
+    【未形成契约】λ 未形成（任一侧为 None/非有限值）或 prob_dict 为空时：
+        返回 (None, None, 'lambda_not_formed') 或 (None, None, 'prob_matrix_empty')。
+        调用方据此出“数据不足”报告，不得把 None 当成 0.0 参与后续计算。
     """
     import re
+    # =====================================================
+    # 【Step 0·λ 未形成闸门】上游拒绝补默认进球期望时，这里必须显式返回
+    # 未形成结果。曾在此处直接把 None 送进 abs(lam_h - lam_a)，导致
+    # TypeError 让整场分析中断（15 场全崩）。闸门放在任何算术之前。
+    # =====================================================
+    _lam_reason = ''
+    if not lambda_ready(lam_h, lam_a):
+        _lam_reason = LAMBDA_NOT_FORMED
+        print(
+            "   ⏭️ [15进2] "
+            + lambda_not_formed_reason(lam_h, lam_a, prob_dict, mobile_market_ready)
+            + "：不计算比分，按数据不足回报"
+        )
+        if isinstance(anomaly_payload_out, dict):
+            anomaly_payload_out['lambda_gate'] = {
+                'available': False,
+                'reason': _lam_reason,
+                'detail': lambda_not_formed_reason(lam_h, lam_a, prob_dict, mobile_market_ready),
+                'lam_h': lam_h if lam_h is not None else None,
+                'lam_a': lam_a if lam_a is not None else None,
+                'mobile_market_ready': mobile_market_ready,
+            }
+        return None, None, _lam_reason
+    if not prob_dict:
+        print("   ⏭️ [15进2] 比分概率矩阵未形成：不计算比分，按数据不足回报")
+        if isinstance(anomaly_payload_out, dict):
+            anomaly_payload_out['lambda_gate'] = {
+                'available': False,
+                'reason': 'prob_matrix_empty',
+                'detail': _LAMBDA_NOT_FORMED_REASONS['prob_matrix_empty'],
+                'lam_h': _safe_lambda(lam_h),
+                'lam_a': _safe_lambda(lam_a),
+                'mobile_market_ready': mobile_market_ready,
+            }
+        return None, None, 'prob_matrix_empty'
+    # 闸门之后才允许进入数值域：此处两个 λ 一定已是有限正数。
+    lam_h = float(lam_h)
+    lam_a = float(lam_a)
     # =====================================================
     # 【Step 1】直接使用 Dixon-Coles 泊松矩阵作为基座，不再做三模型融合；决策统一由 DeviationDrivenEngine 完成
     # =====================================================
@@ -23261,10 +24016,11 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # p
     game_theory_scores = {}
     triggered_models = []
 
-    # 预计算辅助变量
-    home_odd = odds_1x2_dict.get('Home', 3.0) if odds_1x2_dict else 3.0
-    away_odd = odds_1x2_dict.get('Away', 3.0) if odds_1x2_dict else 3.0
-    draw_odd = odds_1x2_dict.get('Draw', 3.3) if odds_1x2_dict else 3.3
+    # 预计算辅助变量（赔率可能是 None/非数：统一走 _safe_odds，默认值参与比较，
+    # 绝不让 None 进 abs() 或大小比较里）
+    home_odd = _safe_odds(odds_1x2_dict.get('Home') if isinstance(odds_1x2_dict, dict) else None, 3.0)
+    away_odd = _safe_odds(odds_1x2_dict.get('Away') if isinstance(odds_1x2_dict, dict) else None, 3.0)
+    draw_odd = _safe_odds(odds_1x2_dict.get('Draw') if isinstance(odds_1x2_dict, dict) else None, 3.3)
     odds_gap = abs(home_odd - away_odd)
     ah = asian_handicap if asian_handicap is not None else 0.0
     ou = ou_line if ou_line is not None else None
@@ -23545,14 +24301,20 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # p
         # 11. 最大最小（Minimax）：庄家最小化最大损失——选择低赔付结果
         minimax_triggered = False
         minimax_adjust = 0.0
-        if odds_correct_score:
+        # 波胆赔率可能是 None/非数：先过 _safe_odds，None 不参与 > < 比较
+        _cs_clean = {
+            _k: _safe_odds(_v)
+            for _k, _v in (odds_correct_score or {}).items()
+            if _safe_odds(_v) is not None
+        } if isinstance(odds_correct_score, dict) else {}
+        if _cs_clean:
             # 找出庄家赔付最少的比分（赔率最低）
-            min_odd_score = min(odds_correct_score, key=lambda k: odds_correct_score[k] if odds_correct_score[k] > 0 else 999)
-            min_odd_val = odds_correct_score.get(min_odd_score, 999)
+            min_odd_score = min(_cs_clean, key=lambda k: _cs_clean[k])
+            min_odd_val = _cs_clean.get(min_odd_score, 999.0)
             if s == min_odd_score and min_odd_val < 8.0:
                 minimax_triggered = True
-            elif odds_correct_score.get(s, 0) > 0:
-                current_odd = odds_correct_score[s]
+            elif _cs_clean.get(s, 0.0) > 0:
+                current_odd = _cs_clean[s]
                 # 庄家愿意高赔的比分 = 庄家认为不太可能，但如果波松概率还不错则有价值
                 if current_odd > 15.0 and poisson_p > 0.05:
                     minimax_triggered = True
@@ -23924,12 +24686,16 @@ def execute_15to2_matrix(prob_dict, odds_1x2_dict, asian_handicap, ou_line,  # p
         print(f"   ⚠️ [止血补丁三] 陷阱预警守门异常: {_bp3_trap_exc}")
 
     # 辅助信号（不参与激活判断，但用于陷阱类型描述和置信度增强）
-    cond_a = bool(trap_signal) or profit_exposure_conflict  # 庄家敗口主动陷阱信号
-    cond_b = (exposure_direction and exposure_direction != 'neutral' and  # 赔率反向信号
-              exposure_direction != odds_implied_dir and
-              exposure_direction in ('home', 'away'))
-    cond_c = synergy_trap  # 盘口误导信号
-    cond_d = rr_anomaly    # 返还率异常信号
+    # 全部显式布尔化：exposure_direction 可能是空串，`'' and ...` 会返回 ''，
+    # 后面 sum([cond_a, cond_b, cond_c]) 就会炸（TypeError: int + str）。
+    cond_a = bool(bool(trap_signal) or bool(profit_exposure_conflict)) if 'trap_signal' in locals() else bool(profit_exposure_conflict)
+    cond_b = bool(
+        exposure_direction and exposure_direction != 'neutral'  # 赔率反向信号
+        and exposure_direction != odds_implied_dir
+        and exposure_direction in ('home', 'away')
+    )
+    cond_c = bool(synergy_trap)  # 盘口误导信号
+    cond_d = bool(rr_anomaly)    # 返还率异常信号
 
     # 【改进#6】陷阱预警增强阈值：DTI < 0.15 且 预期总进球与实际分布偏差较大时追加触发。
     # 作为三维主判断之外的“补位阈值”，仅在 DTI 极低且总进球存在明显偏差时才论发，
@@ -33563,7 +34329,29 @@ trap_signal: true/false（是否存在陷阱信号）
                 fid,
                 locals().get('_blade_direction_lock_payload'),
             ),
+            mobile_market_ready=bool(
+                isinstance(rec, dict) and rec.get('correct_score_available')
+            ) if isinstance(rec, dict) else None,
         )
+        # 【数据不足契约】λ/概率矩阵未形成时，execute_15to2_matrix 明确回报
+        # (None, None, reason)，本场继续走完并出“数据不足”报告，绝不中断整批。
+        matrix_formed = not is_not_formed_result(first_score, second_score, game_theory_note)
+        _matrix_skip_reason = ''
+        _matrix_skip_detail = ''
+        if not matrix_formed:
+            _mobile_ready = (
+                bool(rec.get('correct_score_available')) if isinstance(rec, dict) else None
+            )
+            _matrix_skip_detail = lambda_not_formed_reason(
+                lam_h_dyn, lam_a_dyn, prob_dict, _mobile_ready,
+            )
+            _matrix_skip_reason = (
+                'λ 未形成' if not lambda_ready(lam_h_dyn, lam_a_dyn) else '比分概率矩阵未形成'
+            )
+            # None 只留在契约里。下游全是字符串拼接/比较，统一换成空比分，
+            # 再由 score_not_formed_reason 说明为什么没有比分。
+            first_score, second_score = '', ''
+            print(f"   ℹ️ [15进2] 本场比分未形成（{_matrix_skip_detail}）：继续出数据不足报告")
         try:
             _m15_lp = lookup_direction_lock_payload(
                 history if isinstance(locals().get('history'), dict) else None,
@@ -34114,7 +34902,10 @@ trap_signal: true/false（是否存在陷阱信号）
         if total_dir > 0:
             for k, value in dir_scores.items():
                 dir_scores[k] = value / total_dir
-        pred_dir_str = max(dir_scores, key=dir_scores.get)
+        # 比分未形成时没有概率矩阵，方向也只能记“未形成”，不按空分布取最大值。
+        pred_dir_str = max(dir_scores, key=dir_scores.get) if total_dir > 0 else ''
+        if not matrix_formed:
+            pred_dir_str = ''
         try:
             _lock_payload = lookup_direction_lock_payload(
                 history if isinstance(locals().get('history'), dict) else None,
@@ -34443,17 +35234,25 @@ Top5比分及概率：
                 + str(_evidence or '')[:6000]
             )
         report = ''
-        try:
-            resp3 = deepseek_call_with_retry(
-                messages=[{"role": "system", "content": step3_sys},
-                          {"role": "user", "content": step3_user}],
-                timeout=90, temperature=0.2, max_retries=2,
-                model=AI_MODEL_NAME or 'deepseek-flash',
+        # 比分未形成时不问 LLM 解释两个不存在的比分：直接出“数据不足”报告。
+        if not matrix_formed:
+            step3_user = (
+                f"赛事：{cn_name}\n开赛：{bj_time}\n联赛：{league_name}\n"
+                + f"数据不足：{_matrix_skip_detail}。\n"
+                + "不要生成比分结论，不要编造首选/次选。"
             )
-            report = resp3.choices[0].message.content if resp3 and getattr(resp3, 'choices', None) else ''
-        except Exception as _step3_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   ⚠️ [Step3最终报告] 调用失败: {_step3_err}")
-            report = ''
+        else:
+            try:
+                resp3 = deepseek_call_with_retry(
+                    messages=[{"role": "system", "content": step3_sys},
+                              {"role": "user", "content": step3_user}],
+                    timeout=90, temperature=0.2, max_retries=2,
+                    model=AI_MODEL_NAME or 'deepseek-flash',
+                )
+                report = resp3.choices[0].message.content if resp3 and getattr(resp3, 'choices', None) else ''
+            except Exception as _step3_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
+                print(f"   ⚠️ [Step3最终报告] 调用失败: {_step3_err}")
+                report = ''
         import re as _re_report
         report = _re_report.sub(
             r'(?m)^\s*\d+\.\s*🎯?\s*终极[^\n]*[\s\S]*?(?=^\s*\d+\.|\Z)',
@@ -34466,16 +35265,28 @@ Top5比分及概率：
             except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
                 pass
         if not report:
-            report = (
-                f"🗡️ 【刀片分析报告】 {_match_head}\n"
-                f"🏙️ 【联赛/杯赛】 {league_name}"
-                + (f" | {cup_mode_name}" if cup_mode_name != '常规' else '')
-                + "\n"
-                + (f"方向锁【{_step3_dir}】\n" if _step3_dir else '')
-                + f"首选 {_rpt_first}｜次选 {_rpt_second}\n"
-                + (f"提拉：{_lift3}\n" if _step3_dir else '')
-                + "文字报告本次未生成，比分以方向锁内的终裁为准。"
-            )
+            if not matrix_formed:
+                report = (
+                    f"🗡️ 【刀片分析报告】 {_match_head}\n"
+                    f"🏙️ 【联赛/杯赛】 {league_name}"
+                    + (f" | {cup_mode_name}" if cup_mode_name != '常规' else '')
+                    + "\n"
+                    + f"数据不足：{_matrix_skip_detail}。\n"
+                    + "本场不出比分结论：上游拒绝补默认进球期望，也不拿空整合包冒充手机市均。\n"
+                    + "已到达的盘口/赔率事实保留在统一研判报告的【关键数据】段。\n"
+                    + "补齐数据源后重新分析，不要按旧结论下单。"
+                )
+            else:
+                report = (
+                    f"🗡️ 【刀片分析报告】 {_match_head}\n"
+                    f"🏙️ 【联赛/杯赛】 {league_name}"
+                    + (f" | {cup_mode_name}" if cup_mode_name != '常规' else '')
+                    + "\n"
+                    + (f"方向锁【{_step3_dir}】\n" if _step3_dir else '')
+                    + f"首选 {_rpt_first}｜次选 {_rpt_second}\n"
+                    + (f"提拉：{_lift3}\n" if _step3_dir else '')
+                    + "文字报告本次未生成，比分以方向锁内的终裁为准。"
+                )
         elif _step3_dir and f"方向锁【{_step3_dir}】" not in report[:80]:
             report = (
                 f"🗡️ 【刀片分析报告】 {_match_head}\n"
@@ -34621,6 +35432,19 @@ Top5比分及概率：
             "predicted_result": pred_dir_str,
             "predicted_score": first_score,
             "second_score": second_score,
+            "score_formed": bool(matrix_formed),
+            "score_not_formed_reason": _matrix_skip_detail,
+            "missing_inputs": [] if matrix_formed else _ur_missing_inputs({
+                'score_not_formed_reason': _matrix_skip_detail,
+                'lambda_home': lam_h_dyn,
+                'lambda_away': lam_a_dyn,
+                'correct_score_available': (
+                    bool(_doko.get('correct_score_available')) if isinstance(_doko, dict) else None
+                ),
+                'odds_1x2': odds_1x2_dict,
+                'derived_markets': derived_markets,
+                'top15_scores': ranked_scores,
+            }),
             "actual_score": _hist_score,
             "full_report": report,
             "top_score_prob": top_score_prob,
@@ -39073,9 +39897,20 @@ Top5比分及概率：
                     },
                 }
 
-                # 实例化并生成报告
-                _tg_report_gen = TelegramReportGenerator(SNIPER_BOT_TOKEN, AUTO_CHAT_ID)
-                _tg_structured_report = _tg_report_gen.generate_report(_tg_match_meta, _tg_analysis_data)
+                # 实例化并生成报告（chat_id 走统一解析：环境变量 > 入站捕获 > 磁盘记录）
+                _tg_resolved_chat_id = current_tg_chat_id()
+                if not _tg_resolved_chat_id:
+                    # 没有 chat_id 就只生成文本、不发请求：否则必然是 400 chat_id is empty。
+                    if tg_failure_seen('缺少 chat_id'):
+                        print(
+                            '[TG] 缺少 chat_id：先给机器人发一条消息（例如「状态」），程序会自动记录',
+                            flush=True,
+                        )
+                    _tg_report_gen = None
+                    _tg_structured_report = ''
+                else:
+                    _tg_report_gen = TelegramReportGenerator(SNIPER_BOT_TOKEN, _tg_resolved_chat_id)
+                    _tg_structured_report = _tg_report_gen.generate_report(_tg_match_meta, _tg_analysis_data)
 
                 # 追加竞彩让球信息（如果有）
                 if _jc_tg_txt_for_report:
@@ -39095,7 +39930,8 @@ Top5比分及概率：
                     _md_sel_txt = (_market_defense_result.get('adjusted_selection') or {}).get('primary') or '未形成候选'
                     _tg_structured_report += f'\n🛡️市场序防线：深盘诱买风险触发，剥离热区烟雾弹({_md_traps})，防线收敛首选={_md_sel_txt}'
 
-                _final_sections.append(_tg_structured_report)
+                if _tg_structured_report:
+                    _final_sections.append(_tg_structured_report)
             except Exception as _tg_gen_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                 # 降级回退：使用原有精简格式
                 print(f"   ⚠️ [TelegramReportGenerator] 结构化报告生成异常，回退精简格式: {_tg_gen_err}")
@@ -39717,7 +40553,9 @@ Top5比分及概率：
                     first_score = _ds_fs
         except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
             pass
-        return first_score
+        # 未形成场次返回空串（不是 None）：本场已分析完并落了数据不足记录，
+        # 调用方据此区分“正常无比分”与“分析异常”。
+        return first_score or ''
 
     except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
         print(f"   ⚠️ 分析受阻: {e}")
@@ -43269,6 +44107,16 @@ def listen():
             if res.get('ok') and res.get('result'):
                 for item in res['result']:
                     offset = item['update_id'] + 1
+                    # 入站消息里的 chat.id 是 Telegram 唯一能告诉我们“该发回哪里”的来源。
+                    # 先采纳再处理指令：这样用户发的第一条指令就会触发自动记录。
+                    try:
+                        _msg_obj = item.get('message') or item.get('edited_message') or {}
+                        _chat = _msg_obj.get('chat') if isinstance(_msg_obj, dict) else None
+                        if isinstance(_chat, dict):
+                            capture_tg_chat_id(_chat.get('id'))
+                    except Exception as _cap_err:  # noqa: BLE001 - 记录 chat_id 失败不能中断轮询
+                        if tg_failure_seen('chat_id 记录失败'):
+                            print(f"   ⚠️ [TG] chat_id 记录失败: {type(_cap_err).__name__}", flush=True)
                     msg = str((item.get('message') or {}).get('text') or '').strip()
                     if not msg:
                         continue
