@@ -1,0 +1,72 @@
+{
+  "available": true,
+  "channel": "mobile",
+  "match_id": "1347776",
+  "ou_line": 3.25,
+  "asian_handicap": -1.0,
+  "odds_1x2": {
+    "home": 4.55,
+    "draw": 4.2,
+    "away": 1.47,
+    "Home": 4.55,
+    "Draw": 4.2,
+    "Away": 1.47
+  },
+  "boards_hit": {
+    "亚盘让球": true,
+    "大小球": true,
+    "胜平负": true
+  },
+  "missing": [],
+  "source_report": {
+    "ah": {
+      "url": "https://m.okooo.com/match/handicap.php?MatchID=1347776",
+      "channel": "mobile",
+      "status": 200,
+      "bytes": 95392,
+      "title": "",
+      "blocked": false,
+      "error": "",
+      "stage": "ok",
+      "line_text": "受一球"
+    },
+    "ou": {
+      "url": "https://m.okooo.com/match/ah.php?type=daxiao&matchId=1347776",
+      "channel": "mobile",
+      "status": 200,
+      "bytes": 13148,
+      "title": "",
+      "blocked": false,
+      "error": "",
+      "stage": "ok",
+      "line_text": "3.25"
+    },
+    "1x2": {
+      "url": "https://m.okooo.com/match/odds.php?MatchID=1347776",
+      "channel": "mobile",
+      "status": 200,
+      "bytes": 90907,
+      "title": "",
+      "blocked": false,
+      "error": "",
+      "stage": "ok"
+    }
+  },
+  "fetch_urls": [
+    "https://m.okooo.com/match/handicap.php?MatchID=1347776",
+    "https://m.okooo.com/match/ah.php?type=daxiao&matchId=1347776",
+    "https://m.okooo.com/match/odds.php?MatchID=1347776"
+  ],
+  "asian_handicap_text": "受一球",
+  "ah_start_line": -0.75,
+  "ah_start_text": "受半/一",
+  "ah_home_water": 1.9,
+  "ah_away_water": 2.55,
+  "ah_line_source": "avg_row",
+  "ou_line_text": "3.25",
+  "ou_start_line": 3.25,
+  "ou_over_water": 1.93,
+  "ou_under_water": 1.77,
+  "ou_line_source": "mode(6/20)",
+  "odds_1x2_company": "竞彩官方"
+}

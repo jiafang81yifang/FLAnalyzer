@@ -410,13 +410,15 @@ def test_cs_unavailable_reason_names_url_status_and_stage(monkeypatch: pytest.Mo
         'error': 'HTTP 405', 'html': '',
     }
     monkeypatch.setattr(okooo, '_fetch_detail', lambda *a, **k: blocked)
-    pack = okooo.scrape_okooo_mobile_cs_zuizhi('999001')
+    # 耐心重试会真的 sleep；这里只测 reason 形态，关掉等待。
+    pack = okooo.scrape_okooo_mobile_cs_zuizhi('999001', patience_retries=0)
     assert pack['available'] is False
     assert pack['reason'] == 'external_okooo_mobile_cs_fetch_failed'
     detail = pack['error']
     assert 'okooo.com' in detail and '/cs/' in detail
     assert 'HTTP 405' in detail
     assert 'stage=' in detail
+    assert pack.get('parse_stage') == 'fetch_failed'
 
 
 def test_cs_parser_reads_the_real_datatable_shape() -> None:
@@ -562,3 +564,120 @@ def test_replay_of_the_live_log_has_no_banned_lines() -> None:
     )
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-2000:]
     assert 'REPLAY PASS' in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Mobile water pages. Fixtures are the real pages captured from m.okooo.com on
+# 2026-11-25; the desktop pages cannot supply these three boards at all
+# (/ah/ intermittent 405, /overunder/ 平均值 row paywalled to '-', /odds/
+# company rows rendered by JS), so these parsers are the primary path.
+# ---------------------------------------------------------------------------
+
+FIXTURES = ROOT / 'tests' / 'fixtures'
+
+
+def test_mobile_pages_decode_from_mixed_encodings() -> None:
+    """AH/1X2/交易盈亏 are GBK; the 大小球 page is UTF-8 despite no charset tag."""
+    ah = (FIXTURES / 'okooo_mobile_ah.html').read_bytes()
+    ou = (FIXTURES / 'okooo_mobile_ou.html').read_bytes()
+    for raw, needle in ((ah, '亚指'), (ou, '大球')):
+        text = okooo.decode_okooo_html(raw)
+        assert needle in text, f'{needle} not decoded — mojibake would break every selector'
+    # A blanket gb18030 decode would corrupt the UTF-8 page.
+    assert '大球' not in ou.decode('gb18030', 'replace')
+
+
+def test_mobile_ah_parser_matches_verified_company_row() -> None:
+    """澳**票 start 1.93 受半/一 1.85 → latest 2.17 受半球 1.61 (verified live)."""
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_mobile_ah.html').read_bytes())
+    parsed = okooo._mobile_ah_line(text)
+    assert parsed['stage'] == 'ok'
+    assert parsed['line_source'] == 'avg_row'
+    assert parsed['asian_handicap'] is not None
+    assert parsed['company_rows'] >= 20
+    rows = re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', text)
+    macau = next(r for r in rows if '澳**票' in r)
+    cells = re.findall(r'<td[^>]*>([\s\S]*?)</td>', macau)
+    start = okooo._tag_text(cells[1], None, ['zhu', 'chu', 'ke'])
+    latest = okooo._tag_text(cells[2], None, ['xinzhu', 'xin', 'xinke'])
+    assert (start['zhu'], start['chu'], start['ke']) == ('1.93', '受半/一', '1.85')
+    assert (latest['xinzhu'], latest['xin'], latest['xinke']) == ('2.17', '受半球', '1.61')
+    # 受半球 = 主队受让 0.5 → -0.5 的语汇在此行；整页平均行为受一球。
+    assert okooo.ah_text_to_line('受半球') == -0.5
+
+
+def test_mobile_ou_parser_reads_line_and_waters() -> None:
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_mobile_ou.html').read_bytes())
+    parsed = okooo._mobile_ou_line(text)
+    assert parsed['stage'] == 'ok'
+    assert parsed['ou_line'] is not None
+    assert parsed['company_rows'] >= 15
+    assert parsed['line_source'].startswith('mode(')
+    assert parsed['over_water'] is not None and parsed['under_water'] is not None
+
+
+def test_mobile_1x2_parser_matches_jingcai_row() -> None:
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_mobile_1x2.html').read_bytes())
+    parsed = okooo._mobile_1x2(text)
+    assert parsed['stage'] == 'ok'
+    assert parsed['company'] == '竞彩官方'
+    odds = parsed['odds_1x2']
+    assert (odds['home'], odds['draw'], odds['away']) == (4.55, 4.2, 1.47)
+
+
+def test_mobile_exchange_pnl_reports_betfair_absence_honestly() -> None:
+    """The real page has 竞足保存盈亏 data and a 必发 block that says 暂无数据."""
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_mobile_exchanges.html').read_bytes())
+    parsed = okooo._mobile_exchange_pnl(text)
+    assert parsed['available'] is True
+    assert parsed['jc_saved']['胜']['pnl'] == 489356.0
+    assert parsed['saved_total'] == 2099228.0
+    assert parsed['betfair_available'] is False
+    assert '暂无数据' in parsed['betfair_note']
+
+
+def test_six_markets_prefers_mobile_and_records_every_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each board tries mobile first; a 405 on mobile falls through to desktop."""
+    pages = {
+        'handicap.php': ('okooo_mobile_ah.html', 200),
+        'ah.php?type=daxiao': ('okooo_mobile_ou.html', 200),
+        'match/odds.php': ('okooo_mobile_1x2.html', 200),
+    }
+    seen: list[str] = []
+
+    def fake_fetch(url, proxies=None, session=None, retries=1, timeout=15):
+        seen.append(url)
+        for needle, (fixture, status) in pages.items():
+            if needle in url:
+                raw = (FIXTURES / fixture).read_bytes()
+                return {
+                    'ok': status == 200, 'url': url, 'status': status,
+                    'bytes': len(raw), 'title': '', 'blocked': False,
+                    'error': '', 'html': okooo.decode_okooo_html(raw),
+                }
+        return {'ok': False, 'url': url, 'status': 405, 'bytes': 2657,
+                'title': '405', 'blocked': True, 'error': 'HTTP 405', 'html': ''}
+
+    monkeypatch.setattr(okooo, '_fetch_detail', fake_fetch)
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(FIXTURES / '_cache_six'))
+    pack = okooo.scrape_okooo_mobile_six_markets('1347776')
+    assert pack['available'] is True
+    assert pack['asian_handicap'] is not None
+    assert pack['ou_line'] is not None
+    assert (pack['odds_1x2']['home'], pack['odds_1x2']['draw'], pack['odds_1x2']['away']) == (4.55, 4.2, 1.47)
+    assert pack['missing'] == []
+    # Mobile endpoints were the ones used — desktop was never needed.
+    assert all('m.okooo.com' in url for url in seen), seen
+    for kind in ('ah', 'ou', '1x2'):
+        report = pack['source_report'][kind]
+        assert report['url'] and report['status'] == 200 and report['bytes'] > 0
+        assert report['stage'] == 'ok'
+
+
+def test_cs_referer_candidates_target_the_match_page() -> None:
+    """The 波胆 page 405s on a homepage referer and 200s on the match page."""
+    referers = okooo._referers_for('https://www.okooo.com/soccer/match/1347776/cs/')
+    assert referers[0] == 'https://www.okooo.com/soccer/match/1347776/'
+    assert okooo._referers_for('https://m.okooo.com/match/odds.php?MatchID=1') == [
+        'https://m.okooo.com/jczq/'
+    ]

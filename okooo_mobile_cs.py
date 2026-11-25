@@ -71,21 +71,134 @@ def _http_get(url: str, proxies: Any = None, session: Any = None, retries: int =
 
 
 _WARMUP_URL = 'https://www.okooo.com/'
+_MOBILE_WARMUP_URL = 'https://m.okooo.com/jczq/'
+
+_DESKTOP_UA = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+)
+# 手机页只认手机 UA：同一个 URL 用桌面 UA 会被 WAF 挡成 403/405。
+_MOBILE_UA = (
+    'Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
+)
 
 
-def _warm_session(proxies: Any = None) -> Any:
+def decode_okooo_html(raw: Any, headers: Any = None) -> str:
+    """把澳客页面字节解成文本。中文选择器全靠这一步，解错就什么都匹配不到。
+
+    真实情况（2026-11-25 现场核对）：
+      * 桌面页与多数手机页：`<meta charset="GBK">`，body 是 GBK。
+      * 手机大小球页 `ah.php?type=daxiao`：**UTF-8**，而且整页是
+        `\\uXXXX` 转义，没有任何 charset 声明。
+    所以顺序是：meta charset → 严格 UTF-8 → gb18030 → 宽松 UTF-8，
+    并且把 `\\uXXXX` 反转义。绝不用「先 gb18030 不行再换」这种猜测顺序，
+    因为 GBK 字节流常常也能被 UTF-8 之外的编码解出半对半错的乱码。
+    """
+    if isinstance(raw, str):
+        text = raw
+    else:
+        data = bytes(raw or b'')
+        if not data:
+            return ''
+        head = data[:4096].lower()
+        meta = re.search(rb'charset\s*=\s*["\']?\s*([a-z0-9_\-]+)', head)
+        candidates: list[str] = []
+        if meta:
+            declared = meta.group(1).decode('ascii', 'ignore').strip().lower()
+            if declared in {'gbk', 'gb2312', 'gb18030'}:
+                candidates = ['gb18030']
+            elif declared:
+                candidates = [declared]
+        candidates += ['utf-8', 'gb18030']
+        text = ''
+        for encoding in candidates:
+            try:
+                text = data.decode(encoding)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if not text:
+            text = data.decode('utf-8', 'replace')
+    if '\\u' in text:
+        try:
+            # 大小球页整页是 JS 转义串，反转义后才能匹配 class 名。
+            text = text.encode('utf-8').decode('unicode_escape')
+            text = text.encode('latin-1', 'ignore').decode('utf-8', 'ignore') or text
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+    return text
+
+
+def _tag_text(html: Any, attr: Any, names: Any) -> dict[str, str]:
+    """从一段 HTML 里取「标记落在 names 里」的标签文本。
+
+    澳客两种写法都有，必须都认：
+      * 手机亚指/欧指页：`<span type="xinzhu">2.17</span>`（属性）
+      * 手机大小球页：`<span class="sort-xin-daqiu fontblue">1.93</span>`（class 片段）
+    标签和属性还会跨行（`<em\\n class="..." type="xin">`），所以先压平空白再匹配。
+    """
+    wanted = {str(n) for n in (names or []) if n}
+    out: dict[str, str] = {}
+    for match in re.finditer(r'<(\w+)([^>]*)>([^<]*)', str(html or '')):
+        attrs = re.sub(r'\s+', ' ', match.group(2))
+        marks: set[str] = set()
+        found = re.search(r'type\s*=\s*["\']([^"\']+)["\']', attrs)
+        if found:
+            marks.add(found.group(1))
+        classes = re.search(r'class\s*=\s*["\']([^"\']+)["\']', attrs)
+        if classes:
+            marks.update(classes.group(1).split())
+        hit = wanted & marks
+        if not hit:
+            continue
+        value = re.sub(r'\s+', ' ', match.group(3)).strip()
+        # 同一标签可能同时命中多个别名，按优先级全部写入，先到先得。
+        for name in hit:
+            out.setdefault(name, value)
+    return out
+
+
+def _num_of(raw: Any) -> float | None:
+    token = str(raw or '').replace(',', '').replace('%', '').strip()
+    if not token:
+        return None
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _referers_for(url: str) -> list[str]:
+    """给一个页面挑 Referer 候选。
+
+    现场核对（2026-11-25）：桌面波胆页
+      * `Referer: https://www.okooo.com/`            → 405
+      * `Referer: .../soccer/match/<id>/` 或 `/odds/` → 200
+    所以对 /soccer/match/<id>/xxx/ 这类页面，先用「同场次页」当来源，
+    首页只作最后兜底。手机页用手机赛程页。
+    """
+    if 'm.okooo.com' in url:
+        return [_MOBILE_WARMUP_URL]
+    found = re.search(r'https?://[^/]+(/soccer/match/\d+/)', url)
+    if found:
+        base = url.split('/soccer/match/')[0]
+        return [f'{base}{found.group(1)}', _WARMUP_URL]
+    return [_WARMUP_URL]
+
+
+def _warm_session(proxies: Any = None, mobile: bool = False, referer: str | None = None) -> Any:
     """建一个带站点 cookie 的会话。
 
-    澳客对没有 cookie 的直连请求直接回 405（阿里云 WAF 拦截页），
-    先用会话访问首页拿到 acw_tc/PHPSESSID，再抓详情页就正常。
-    这就是「每次必失败」的真实原因：原实现用 requests 裸 get，从不带 cookie。
+    澳客对没有 cookie 的直连请求直接回 405/403（阿里云 WAF 拦截页），
+    先用会话访问一个正常页拿到 cookie，再抓详情页就正常。
     """
     try:
         sess = requests.Session()
         sess.get(
-            _WARMUP_URL,
+            referer or (_MOBILE_WARMUP_URL if mobile else _WARMUP_URL),
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'User-Agent': _MOBILE_UA if mobile else _DESKTOP_UA,
                 'Accept-Language': 'zh-CN,zh;q=0.9',
             },
             proxies=_proxy_dict(proxies),
@@ -99,32 +212,35 @@ def _warm_session(proxies: Any = None) -> Any:
 def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: int = 1, timeout: int = 15) -> dict[str, Any]:
     """抓一个页面并把「实际发生了什么」原样带回来，供不可用原因使用。
 
-    返回 {ok, url, status, bytes, title, blocked, error, html}。
-    状态码/异常类/页面标题都进 reason，下一次日志就能直接判断是封禁、改版还是网络。
-
-    被 WAF 拦住（405/403）时，用带首页 cookie 的会话重试一次——
-    没 cookie 的裸请求在澳客是 100% 405，这不是站点不可用。
+    返回 {ok, url, status, bytes, title, blocked, error, html, encoding, referer}。
+    手机页自动用手机 UA 并带手机赛程页来源；桌面页按 _referers_for 逐个试——
+    波胆页对 Referer 敏感，来源页不对就是 405，这不是站点不可用。
     """
     info: dict[str, Any] = {
         'ok': False, 'url': url, 'status': 0, 'bytes': 0,
-        'title': '', 'blocked': False, 'error': '', 'html': '',
+        'title': '', 'blocked': False, 'error': '', 'html': '', 'encoding': '', 'referer': '',
     }
+    is_mobile = 'm.okooo.com' in url
+    referers = _referers_for(url)
     last_error = ''
-    attempts = max(1, retries) * 2  # 每次尝试都留一次「warm session」重试
+    attempts = max(1, retries) * (len(referers) + 1)
     active_session = session
+    referer = referers[0] if referers else _WARMUP_URL
     for attempt in range(attempts):
+        headers = {
+            'User-Agent': _MOBILE_UA if is_mobile else _DESKTOP_UA,
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Referer': referer,
+        }
         try:
             sess = active_session or requests
-            resp = sess.get(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                'Accept-Language': 'zh-CN,zh;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Referer': _WARMUP_URL,
-            }, proxies=_proxy_dict(proxies), timeout=timeout)
+            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)
             info['status'] = int(resp.status_code)
             info['bytes'] = len(resp.content or b'')
-            resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'
-            html = resp.text or ''
+            info['referer'] = referer
+            info['encoding'] = str(resp.encoding or '').lower()
+            html = decode_okooo_html(resp.content or b'', resp.headers)
             info['html'] = html
             title = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL | re.IGNORECASE)
             info['title'] = re.sub(r'\s+', ' ', title.group(1)).strip()[:80] if title else ''
@@ -139,10 +255,17 @@ def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: i
                 info['error'] = ''
                 return info
             last_error = f'HTTP {resp.status_code}'
-            if info['blocked'] and active_session is None:
-                # 裸请求被 WAF 拦：换带首页 cookie 的会话再来一次。
-                active_session = _warm_session(proxies)
-                continue
+            if info['blocked']:
+                # 被拦：换一个 Referer 再试；还有候选就继续，别在同一组合上死等。
+                nxt = _next_referer(referers, referer)
+                if nxt:
+                    referer = nxt
+                    active_session = _warm_session(proxies, mobile=is_mobile, referer=referer)
+                    continue
+                if active_session is None:
+                    active_session = _warm_session(proxies, mobile=is_mobile, referer=referer)
+                    continue
+                break
             if 400 <= resp.status_code < 500:
                 break
         except requests.RequestException as exc:
@@ -154,6 +277,15 @@ def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: i
             time.sleep(min(3, 2**attempt))
     info['error'] = last_error or 'empty response'
     return info
+
+
+def _next_referer(referers: list[str], current: str) -> str | None:
+    """取当前 Referer 之后的下一个候选；没有就返回 None。"""
+    try:
+        index = referers.index(current)
+    except ValueError:
+        return referers[0] if referers else None
+    return referers[index + 1] if index + 1 < len(referers) else None
 
 
 def _read_json_cache(path: Path) -> dict[str, Any] | None:
@@ -474,8 +606,21 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
         ]
     fetch: dict[str, Any] = {}
     tried: list[str] = []
+    # 波胆页的 405 是间歇的：现场核对过「同 Referer 等 35s 再要就 200」。
+    # 所以对第一候选做有界耐心重试（默认 2 轮、每轮间隔 35s），
+    # 仍然拿不到才如实报失败。绝不在这里编数据。
+    patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_CS_PATIENCE') or 2) or 0)
+    gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_CS_PATIENCE_GAP') or 35) or 35)
     for url in urls:
         fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+        for _attempt in range(patience if url == urls[0] else 0):
+            if fetch.get('ok'):
+                break
+            if not fetch.get('blocked'):
+                # 不是被 WAF 拦（例如 404）就没必要等，直接换下一条来源。
+                break
+            time.sleep(gap)
+            fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
         tried.append(
             f'{url} → '
             + (f'HTTP {fetch.get("status")}' if fetch.get('status') else str(fetch.get('error') or 'no-response'))
@@ -624,7 +769,11 @@ def _first_1x2_row(html: Any) -> dict[str, Any]:
 
 
 def _first_ou_line(html: Any) -> dict[str, Any]:
-    """桌面大小球页：均值行的盘口与大小水位。"""
+    """桌面大小球页：均值行的盘口与大小水位。
+
+    注意：真实页面的 `#avgObj` 平均值行是按权限遮的（全 `-`），
+    所以这里几乎永远回 `avg_row_has_no_line`。大小球以手机页 `_mobile_ou_line` 为准。
+    """
     out: dict[str, Any] = {'ou_line': None, 'line_text': '', 'stage': 'ok'}
     text = str(html or '')
     if '数据加载中' in text and text.count('数据加载中') >= 1 and '均值' not in text:
@@ -650,6 +799,218 @@ def _first_ou_line(html: Any) -> dict[str, Any]:
             out['line_text'] = found.group(1)
             return out
     out['stage'] = 'avg_row_has_no_line'
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 手机页解析（m.okooo.com/match/*.php）
+#
+# 用户实盘日志里的三块水位只有手机页真的给了数：
+#   亚指   handicap.php?MatchID=<id>      25 家公司，span[type=zhu|xinzhu] + em[type=chu|xin]
+#   大小球 ah.php?type=daxiao&matchId=<id> 21 家，span.sort-{chu,xin}-{daqiu,xiaoqiu} + span.filter-*
+#   胜平负 odds.php?MatchID=<id>          竞**方 行 span[type=xinsheng|xinping|xinfu]
+# 桌面页 /ah/ 间歇 405、/overunder/ 均价行被权限遮、/odds/ 公司行由 JS 渲染，
+# 三者都取不到数，因此这些函数是主路径，桌面只留波胆。
+# ---------------------------------------------------------------------------
+
+def _mobile_ah_line(html: Any) -> dict[str, Any]:
+    """手机亚指页：取「平均指数」行的最新盘口；没有就退回众数。"""
+    out: dict[str, Any] = {
+        'asian_handicap': None, 'line_text': '', 'stage': 'ok',
+        'start_line': None, 'start_text': '', 'home_water': None, 'away_water': None,
+        'company_rows': 0, 'line_source': '',
+    }
+    text = str(html or '')
+    rows = re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', text, re.IGNORECASE)
+    if not rows:
+        out['stage'] = 'no_rows'
+        return out
+    per_row: list[dict[str, Any]] = []
+    for row in rows:
+        cells = re.findall(r'<td[^>]*>([\s\S]*?)</td>', row, re.IGNORECASE)
+        if len(cells) < 3:
+            continue
+        name = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', cells[0])).strip()
+        start = _tag_text(cells[1], None, ['zhu', 'chu', 'ke'])
+        latest = _tag_text(cells[2], None, ['xinzhu', 'xin', 'xinke'])
+        if not latest:
+            continue
+        per_row.append({'name': name, 'start': start, 'latest': latest})
+    if not per_row:
+        out['stage'] = 'no_odds_rows'
+        return out
+    out['company_rows'] = len(per_row)
+    pick = next((r for r in per_row if '平均' in r['name']), per_row[0])
+    if '平均' in pick['name']:
+        out['line_source'] = 'avg_row'
+    else:
+        # 没有平均行：用最新盘口的众数，并标明来源，绝不写死一条盘口。
+        counted: dict[str, int] = {}
+        for row in per_row:
+            label = str(row['latest'].get('xin') or '')
+            if label:
+                counted[label] = counted.get(label, 0) + 1
+        if counted:
+            best = max(counted.items(), key=lambda kv: kv[1])[0]
+            pick = next(r for r in per_row if str(r['latest'].get('xin')) == best)
+            out['line_source'] = f'mode({counted[best]}/{len(per_row)})'
+        else:
+            out['stage'] = 'no_line_text'
+            return out
+    out['line_text'] = str(pick['latest'].get('xin') or '')
+    out['start_text'] = str(pick['start'].get('chu') or '')
+    out['asian_handicap'] = ah_text_to_line(out['line_text'])
+    out['start_line'] = ah_text_to_line(out['start_text'])
+    out['home_water'] = _num_of(pick['latest'].get('xinzhu'))
+    out['away_water'] = _num_of(pick['latest'].get('xinke'))
+    if out['asian_handicap'] is None:
+        out['stage'] = f'unmapped_line_text:{out["line_text"][:12]}'
+    return out
+
+
+def _mobile_ou_line(html: Any) -> dict[str, Any]:
+    """手机大小球页：盘口线取最新 `filter-xin` 的众数，水位取同一条线的公司。"""
+    out: dict[str, Any] = {
+        'ou_line': None, 'line_text': '', 'stage': 'ok',
+        'start_line': None, 'over_water': None, 'under_water': None,
+        'company_rows': 0, 'line_source': '',
+    }
+    text = str(html or '')
+    rows = re.findall(r'<tr[^>]*class="[^"]*jsContentItem[^"]*"[^>]*>([\s\S]*?)</tr>', text, re.IGNORECASE)
+    if not rows:
+        rows = re.findall(r'<tbody class="[^"]*jsContent[^"]*"[^>]*>([\s\S]*?)</tbody>', text, re.IGNORECASE)
+    if not rows:
+        out['stage'] = 'no_rows'
+        return out
+    lines: list[float] = []
+    first: dict[str, Any] = {}
+    for row in rows:
+        latest = _tag_text(row, None, ['sort-xin-daqiu', 'filter-xin', 'sort-xin-xiaoqiu'])
+        if not latest:
+            continue
+        line_value = _num_of(latest.get('filter-xin'))
+        if line_value is None:
+            continue
+        out['company_rows'] += 1
+        lines.append(line_value)
+        if not first:
+            start = _tag_text(row, None, ['sort-chu-daqiu', 'filter-chu', 'sort-chu-xiaoqiu'])
+            first = {
+                'line': line_value,
+                'over': _num_of(latest.get('sort-xin-daqiu')),
+                'under': _num_of(latest.get('sort-xin-xiaoqiu')),
+                'start_line': _num_of(start.get('filter-chu')),
+            }
+    if not lines:
+        out['stage'] = 'no_line'
+        return out
+    counted: dict[float, int] = {}
+    for value in lines:
+        counted[value] = counted.get(value, 0) + 1
+    mode_line, mode_hits = max(counted.items(), key=lambda kv: kv[1])
+    # 取与盘口众数一致的第一个公司作为水位样本，保证水位与盘口同源。
+    for row in rows:
+        latest = _tag_text(row, None, ['sort-xin-daqiu', 'filter-xin', 'sort-xin-xiaoqiu'])
+        if _num_of(latest.get('filter-xin')) == mode_line:
+            out['over_water'] = _num_of(latest.get('sort-xin-daqiu'))
+            out['under_water'] = _num_of(latest.get('sort-xin-xiaoqiu'))
+            start = _tag_text(row, None, ['sort-chu-daqiu', 'filter-chu', 'sort-chu-xiaoqiu'])
+            out['start_line'] = _num_of(start.get('filter-chu'))
+            break
+    out['ou_line'] = mode_line
+    out['line_text'] = f'{mode_line:g}'
+    out['line_source'] = f'mode({mode_hits}/{len(lines)})'
+    return out
+
+
+def _mobile_1x2(html: Any) -> dict[str, Any]:
+    """手机欧指页：竞**方 行的最新胜/平/负（手机页有服务端渲染的公司行）。"""
+    out: dict[str, Any] = {'odds_1x2': {}, 'company': '', 'stage': 'ok', 'company_rows': 0}
+    text = str(html or '')
+    rows = re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', text, re.IGNORECASE)
+    out['company_rows'] = sum(1 for row in rows if 'xin' in row)
+    for row in rows:
+        cells = re.findall(r'<td[^>]*>([\s\S]*?)</td>', row, re.IGNORECASE)
+        if len(cells) < 3:
+            continue
+        name = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', cells[0])).strip()
+        if name == '竞**方':
+            latest = _tag_text(cells[2], None, ['xinsheng', 'xinping', 'xinfu'])
+            home = _num_of(latest.get('xinsheng'))
+            draw = _num_of(latest.get('xinping'))
+            away = _num_of(latest.get('xinfu'))
+            if None in (home, draw, away):
+                # 有些场次竞彩官方水位缺失，退回该行的初盘，并说明来源。
+                start = _tag_text(cells[1], None, ['sheng', 'ping', 'fu'])
+                home = home if home is not None else _num_of(start.get('sheng'))
+                draw = draw if draw is not None else _num_of(start.get('ping'))
+                away = away if away is not None else _num_of(start.get('fu'))
+                out['stage'] = 'latest_missing_used_start' if None not in (home, draw, away) else 'odds_incomplete'
+            if None in (home, draw, away):
+                return out
+            out['company'] = '竞彩官方'
+            out['odds_1x2'] = {
+                'home': home, 'draw': draw, 'away': away,
+                'Home': home, 'Draw': draw, 'Away': away,
+            }
+            return out
+    out['stage'] = 'company_row_missing'
+    return out
+
+
+def _mobile_exchange_pnl(html: Any) -> dict[str, Any]:
+    """手机交易盈亏页：竞足保存盈亏 / 竞足人气盈亏 / 必发交易盈亏 三段。"""
+    out: dict[str, Any] = {
+        'available': False, 'stage': 'ok', 'betfair_available': False,
+        'jc_saved': {}, 'jc_popularity': {}, 'betfair_trade': {},
+        'betfair_note': '', 'saved_total': None,
+    }
+    text = str(html or '')
+    sections = re.split(r'<section class="exchange-box"', text)
+    if len(sections) <= 1:
+        out['stage'] = 'no_exchange_sections'
+        return out
+
+    def _table_rows(chunk: str) -> dict[str, dict[str, float | None]]:
+        rows: dict[str, dict[str, float | None]] = {}
+        for row in re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', chunk, re.IGNORECASE):
+            cells = [
+                re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', cell)).strip()
+                for cell in re.findall(r'<td[^>]*>([\s\S]*?)</td>', row, re.IGNORECASE)
+            ]
+            if not cells or cells[0] not in ('胜', '平', '负'):
+                continue
+            numbers = [_num_of(value) for value in cells[1:]]
+            rows[cells[0]] = {
+                'odds': numbers[0] if len(numbers) > 0 else None,
+                'volume': numbers[1] if len(numbers) > 1 else None,
+                'pnl': numbers[2] if len(numbers) > 2 else None,
+            }
+        return rows
+
+    for chunk in sections[1:]:
+        title = re.search(r'<div class="exchange-title">\s*([^<]+)', chunk)
+        name = re.sub(r'\s+', ' ', title.group(1)).strip() if title else ''
+        rows = _table_rows(chunk)
+        total = re.search(r'<div class="num">([\d,]+)</div>', chunk)
+        if name.startswith('竞足保存盈亏'):
+            out['jc_saved'] = rows
+            out['saved_total'] = _num_of(total.group(1)) if total else None
+        elif name.startswith('竞足人气盈亏'):
+            out['jc_popularity'] = rows
+        elif name.startswith('必发交易盈亏'):
+            out['betfair_trade'] = rows
+            has_value = any(
+                (item.get('volume') or 0) or (item.get('pnl') or 0)
+                for item in rows.values()
+            ) if rows else False
+            out['betfair_available'] = bool(has_value)
+            if not has_value:
+                # 页面自己写着「暂无数据」：如实说必发这段没有数，而不是伪造。
+                out['betfair_note'] = '必发交易盈亏: 页面显示暂无数据（该公司/交易所未对该场挂盘）'
+    out['available'] = bool(out['jc_saved'] or out['jc_popularity'])
+    if not out['available'] and not out['betfair_note']:
+        out['stage'] = 'no_pnl_rows'
     return out
 
 
@@ -682,63 +1043,103 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
         pack['missing'] = ['asian_handicap', 'ou_line', 'odds_1x2']
         return pack
 
-    plan = (
-        ('ah', f'https://www.okooo.com/soccer/match/{mid}/ah/', 'asian_handicap'),
-        ('ou', f'https://www.okooo.com/soccer/match/{mid}/overunder/', 'ou_line'),
-        ('1x2', f'https://www.okooo.com/soccer/match/{mid}/odds/', 'odds_1x2'),
+    # 每块盘口按「手机页优先 → 桌面页兜底」依次尝试，直到拿到数为止。
+    # 理由（2026-11-25 现场核对）：桌面 /ah/ 间歇 405、/overunder/ 均价行被权限
+    # 遮成 `-`、/odds/ 公司行由 JS 渲染；手机三页都是服务端渲染，真给数。
+    plan: tuple[tuple[str, str, tuple[tuple[str, str, Any], ...]], ...] = (
+        (
+            'ah', 'asian_handicap', (
+                (f'https://m.okooo.com/match/handicap.php?MatchID={mid}', 'mobile', _mobile_ah_line),
+                (f'https://www.okooo.com/soccer/match/{mid}/ah/', 'desktop', _first_avg_index_row),
+            ),
+        ),
+        (
+            'ou', 'ou_line', (
+                (f'https://m.okooo.com/match/ah.php?type=daxiao&matchId={mid}', 'mobile', _mobile_ou_line),
+                (f'https://www.okooo.com/soccer/match/{mid}/overunder/', 'desktop', _first_ou_line),
+            ),
+        ),
+        (
+            '1x2', 'odds_1x2', (
+                (f'https://m.okooo.com/match/odds.php?MatchID={mid}', 'mobile', _mobile_1x2),
+                (f'https://www.okooo.com/soccer/match/{mid}/odds/', 'desktop', _first_1x2_row),
+            ),
+        ),
     )
-    for kind, url, field in plan:
-        page = _fetch_detail(url, proxies=proxies, session=session, retries=1)
-        report = {
-            'url': url,
-            'status': int(page.get('status') or 0),
-            'bytes': int(page.get('bytes') or 0),
-            'title': str(page.get('title') or ''),
-            'blocked': bool(page.get('blocked')),
-            'error': str(page.get('error') or ''),
-            'stage': '',
-        }
-        pack['fetch_urls'].append(url)
-        if not page.get('ok'):
-            report['stage'] = 'fetch_failed'
-            pack['source_report'][kind] = report
-            pack['missing'].append(field)
-            continue
-        html = page.get('html')
-        if kind == 'ah':
-            parsed = _first_avg_index_row(html)
-            report['stage'] = 'ok' if parsed['latest_line'] is not None else 'avg_row_no_line'
-            report['line_text'] = parsed['latest_line_text']
-            if parsed['latest_line'] is not None:
-                pack['asian_handicap'] = parsed['latest_line']
-                pack['asian_handicap_text'] = parsed['latest_line_text']
-                pack['ah_start_line'] = parsed['start_line']
-                pack['ah_start_text'] = parsed['start_line_text']
-                pack['ah_home_water'] = parsed['latest_home']
-                pack['ah_away_water'] = parsed['latest_away']
-                pack['boards_hit']['亚盘让球'] = True
+    for kind, field, sources in plan:
+        board = {'ah': '亚盘让球', 'ou': '大小球', '1x2': '胜平负'}[kind]
+        _attempts: list[dict[str, Any]] = []
+        for url, channel, parser in sources:
+            page = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+            pack['fetch_urls'].append(url)
+            report = {
+                'url': url,
+                'channel': channel,
+                'status': int(page.get('status') or 0),
+                'bytes': int(page.get('bytes') or 0),
+                'title': str(page.get('title') or ''),
+                'blocked': bool(page.get('blocked')),
+                'error': str(page.get('error') or ''),
+                'stage': '',
+            }
+            if not page.get('ok'):
+                report['stage'] = 'fetch_failed'
+                _attempts.append(report)
+                # 被 WAF 拦或网络失败：换下一条来源，别在同一页死等。
+                continue
+            parsed = parser(page.get('html'))
+            if kind == 'ah':
+                value = parsed.get('asian_handicap')
+                report['stage'] = parsed.get('stage') or ('ok' if value is not None else 'no_line')
+                report['line_text'] = parsed.get('line_text') or ''
+                if value is not None:
+                    pack['asian_handicap'] = value
+                    pack['asian_handicap_text'] = parsed.get('line_text') or ''
+                    pack['ah_start_line'] = parsed.get('start_line')
+                    pack['ah_start_text'] = parsed.get('start_text') or ''
+                    pack['ah_home_water'] = parsed.get('home_water')
+                    pack['ah_away_water'] = parsed.get('away_water')
+                    pack['ah_line_source'] = parsed.get('line_source') or ''
+                    pack['boards_hit'][board] = True
+            elif kind == 'ou':
+                value = parsed.get('ou_line')
+                report['stage'] = parsed.get('stage') or ('ok' if value is not None else 'no_line')
+                report['line_text'] = parsed.get('line_text') or ''
+                if value is not None:
+                    pack['ou_line'] = value
+                    pack['ou_line_text'] = parsed.get('line_text') or ''
+                    pack['ou_start_line'] = parsed.get('start_line')
+                    pack['ou_over_water'] = parsed.get('over_water')
+                    pack['ou_under_water'] = parsed.get('under_water')
+                    pack['ou_line_source'] = parsed.get('line_source') or ''
+                    pack['boards_hit'][board] = True
             else:
-                pack['missing'].append(field)
-        elif kind == 'ou':
-            parsed = _first_ou_line(html)
-            report['stage'] = parsed['stage']
-            report['line_text'] = parsed['line_text']
-            if parsed['ou_line'] is not None:
-                pack['ou_line'] = parsed['ou_line']
-                pack['ou_line_text'] = parsed['line_text']
-                pack['boards_hit']['大小球'] = True
-            else:
-                pack['missing'].append(field)
+                odds = parsed.get('odds_1x2') or {}
+                report['stage'] = parsed.get('stage') or ('ok' if odds else 'no_odds')
+                if odds:
+                    pack['odds_1x2'] = odds
+                    pack['odds_1x2_company'] = parsed.get('company') or ''
+                    pack['boards_hit'][board] = True
+            _attempts.append(report)
+            if pack['boards_hit'].get(board):
+                break
+        if len(_attempts) == 1:
+            pack['source_report'][kind] = _attempts[0]
         else:
-            parsed = _first_1x2_row(html)
-            report['stage'] = parsed['stage']
-            if parsed['odds_1x2']:
-                pack['odds_1x2'] = parsed['odds_1x2']
-                pack['odds_1x2_company'] = parsed['company']
-                pack['boards_hit']['胜平负'] = True
-            else:
-                pack['missing'].append(field)
-        pack['source_report'][kind] = report
+            last = _attempts[-1] if _attempts else {}
+            pack['source_report'][kind] = {
+                'url': _attempts[0]['url'] if _attempts else '',
+                'channel': _attempts[0]['channel'] if _attempts else '',
+                'status': _attempts[0]['status'] if _attempts else 0,
+                'bytes': _attempts[0]['bytes'] if _attempts else 0,
+                'title': _attempts[0]['title'] if _attempts else '',
+                'blocked': any(a.get('blocked') for a in _attempts),
+                'error': last.get('error', ''),
+                'stage': last.get('stage', ''),
+                'attempts': _attempts,
+            }
+        if not pack['boards_hit'].get(board):
+            pack['missing'].append(field)
 
     pack['available'] = bool(pack['boards_hit'])
     _hit_n = len(pack['boards_hit'])
@@ -760,7 +1161,69 @@ def scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) ->
 
 
 def scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
-    return {'available': False, 'match_id': str(match_id or ''), 'reason': 'external_fetch_not_configured'}
+    """手机交易盈亏页：竞足保存盈亏 / 竞足人气盈亏 / 必发交易盈亏。
+
+    真实来源是 `m.okooo.com/match/exchanges.php`（桌面必发页已 405/失效）。
+    必发那一段在很多场次是页面自己写着「暂无数据」，这种情况如实回报，
+    不把竞足保存盈亏冒充成必发。
+    """
+    mid = str(match_id or '').strip()
+    if not mid:
+        return {'available': False, 'match_id': '', 'reason': 'no_match_id', 'writes_first_score': False}
+    url = f'https://m.okooo.com/match/exchanges.php?MatchID={mid}'
+    page = _fetch_detail(url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
+    report = {
+        'url': url,
+        'status': int(page.get('status') or 0),
+        'bytes': int(page.get('bytes') or 0),
+        'title': str(page.get('title') or ''),
+        'blocked': bool(page.get('blocked')),
+    }
+    if not page.get('ok'):
+        return {
+            'available': False,
+            'channel': 'mobile',
+            'source_path': '手机竞足→析→盈亏',
+            'match_id': mid,
+            'reason': 'external_okooo_exchange_fetch_failed',
+            'block_reason': 'external_okooo_exchange_fetch_failed',
+            'error': f"{url} → HTTP {report['status'] or page.get('error')}",
+            'source_report': report,
+            'writes_first_score': False,
+        }
+    parsed = _mobile_exchange_pnl(page.get('html'))
+
+    def _as_rows(block: Any) -> list[dict[str, Any]]:
+        rows = []
+        for side in ('胜', '平', '负'):
+            item = (block or {}).get(side) if isinstance(block, dict) else None
+            if isinstance(item, dict):
+                rows.append({'wdl': side, **item})
+        return rows
+
+    out = {
+        'available': bool(parsed.get('available')),
+        'channel': 'mobile',
+        'source_path': '手机竞足→析→盈亏',
+        'match_id': mid,
+        'jc_saved': {'rows': _as_rows(parsed.get('jc_saved'))},
+        'jc_popularity': {'rows': _as_rows(parsed.get('jc_popularity'))},
+        'betfair_trade': {'rows': _as_rows(parsed.get('betfair_trade'))},
+        'betfair_available': bool(parsed.get('betfair_available')),
+        'betfair_note': parsed.get('betfair_note') or '',
+        'saved_total': parsed.get('saved_total'),
+        'parse_stage': parsed.get('stage'),
+        'source_report': report,
+        'writes_first_score': False,
+    }
+    if not out['available']:
+        out['reason'] = 'okooo_exchange_no_pnl_rows'
+        out['block_reason'] = 'okooo_exchange_no_pnl_rows'
+        out['error'] = (
+            f"{url} 200 {report['bytes']}B title={report['title'] or '-'} "
+            f"stage={parsed.get('stage')}"
+        )
+    return out
 
 
 def scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:

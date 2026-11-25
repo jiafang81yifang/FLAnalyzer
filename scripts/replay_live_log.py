@@ -128,19 +128,21 @@ def _install_no_network(okooo: Any, app: Any) -> dict[str, int]:
 
     okooo.scrape_okooo_mobile_cs_zuizhi = _cs  # type: ignore[assignment]
     okooo.scrape_okooo_mobile_six_markets = _six  # type: ignore[assignment]
-
-    def _detail(match_id, *a: Any, **k: Any) -> dict[str, Any]:
-        calls['detail'] += 1
-        # 真实 scrape_okooo_detail 只依赖下面两个已被替换的模块函数，
-        # 所以这里保留原函数引用即可（由 _install_no_network 之外的调用方使用）。
-        return {}
-
-    # 不替换 scrape_okooo_detail：真实抓取函数里才有「⚠️ [澳客手机CS] 不可用 reason=…」
-    # 与「🔄 [手机六盘口] … 来源=…」两行，重放必须覆盖它们。
-    # 只把它依赖的两个模块级抓取函数换掉（见上）。
     app.scrape_okooo_mobile_cs_zuizhi = _cs  # type: ignore[assignment]
     app.scrape_okooo_mobile_six_markets = _six  # type: ignore[assignment]
     app.scrape_betfair_profit_loss = _betfair  # type: ignore[assignment]
+    # 盈亏/亚大书两个挂接器现在会真的联网；重放必须保持离线，全部替换掉。
+    app._attach_mobile_exchange_pnl = lambda rec, mid, proxies=None: {
+        'available': False, 'channel': 'mobile', 'reason': 'replay_offline',
+        'block_reason': 'replay_offline', 'betfair_available': False,
+        'betfair_note': '重放离线：未请求交易所页',
+    }
+    app._attach_mobile_ah_ou_books = lambda rec, mid, proxies=None: {
+        'available': False, 'reason': 'replay_offline',
+    }
+    app._attach_mobile_lineup = lambda rec, mid, proxies=None: {
+        'available': False, 'reason': 'replay_offline',
+    }
     for name in (
         'enrich_okooo_cs_facts', 'attach_okooo_ids_to_matches', 'scrape_okooo_cs_facts',
         'fetch_okooo_mobile_schedule', 'fetch_okooo_jingcai_list',
