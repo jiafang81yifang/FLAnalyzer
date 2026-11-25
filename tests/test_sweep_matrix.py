@@ -327,6 +327,23 @@ def _check_case(pool_size, water, channel, source, stub_shape, gap_state) -> lis
     if app.chart31_pool_verdict(chart_none)['status'] == 'full':
         fails.append('(x) chart claimed full market with no odds at all')
 
+    # ---- (xi) call-site ordering: seed takes the RECORD, not the books pack ----
+    # Both app call sites once passed the books pack, which nested it and let the
+    # six pack overwrite the AH company detail. Guard the contract directly.
+    _books = {'available': True,
+              'asian_handicap': {'rows': [{'latest': {'line': -0.5}}],
+                                 'companies': [{'name': '澳**票', 'changes': [1, 2]}]},
+              'over_under': {'companies': [{'name': 'P'}]}}
+    _holder: dict[str, Any] = {'mobile_ah_ou_books': dict(_books)}
+    okooo.seed_mobile_ah_ou_books(_holder, {'available': True, 'asian_handicap': -0.5})
+    _merged = _holder.get('mobile_ah_ou_books') or {}
+    if not (_merged.get('asian_handicap') or {}).get('companies'):
+        fails.append('(xi) seeding with the record lost the AH company detail')
+    if 'mobile_ah_ou_books' in _merged:
+        fails.append('(xi) seeding nested a mobile_ah_ou_books key inside the pack')
+    if _merged.get('asian_handicap_line') != -0.5:
+        fails.append('(xi) the scalar line was not preserved alongside the detail')
+
     return fails
 
 

@@ -27695,7 +27695,10 @@ def _ensure_mobile_six(rec, mid, force=False):
     _attach_mobile_exchange_pnl(rec, mid)
     _attach_mobile_lineup_if_missing(rec, mid)
     _attach_mobile_ah_ou_books(rec, mid)
-    rec['mobile_ah_ou_books'] = seed_mobile_ah_ou_books(rec.get('mobile_ah_ou_books'), pack)
+    # seed 的第一个参数是**记录**（它自己读 record['mobile_ah_ou_books']）。
+    # 这里曾把 books 包当记录传进去：函数内部读不到已挂上的明细，就把六盘口包
+    # 整个当成结果返回，赋值又把 books 包覆盖掉，公司明细与时间线全丢。
+    seed_mobile_ah_ou_books(rec, pack)
     _ou_before = pack.get('ou_line')
     _ah_before = pack.get('asian_handicap')
     apply_mobile_books_lines(rec)
@@ -27896,6 +27899,15 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
     # ── 手机失败 / 无澳客ID：live.500.com + 析页清洗兜底（骨架仍走 DeepSeek 对比表）──
     # 竞彩 31 比分赔率齐全时，31 项已有真实市场赔率，不必再跑 500 兜底。
     # 注意：这不影响前面的市均抓取（books_avg/page_avg 仍要抓，供 heat 与双源闸门用）。
+    # 判「要不要跑 500 兜底」之前，必须先把 jc31 抓到手。
+    # 这行以前没有：guard 读的正是还没被填充的字段（实测 jc=0 → 500 兜底白跑一趟，
+    # 而 _ensure_mobile_six 在 27961 才把 jc31 写进来）。
+    # _ensure_mobile_six 自身有 _core_ok 短路，数据已在时几乎不花时间。
+    if mid and not rec.get('jc_score_odds'):
+        try:
+            _ensure_mobile_six(rec, mid)
+        except Exception as _jc_pre_err:  # noqa: BLE001 - 预取失败仍按原逻辑走兜底
+            print(f"   ℹ️ [兜底] jc31 预取跳过: {type(_jc_pre_err).__name__}")
     _jc31_n = len(rec.get('jc_score_odds') or {}) if isinstance(rec.get('jc_score_odds'), dict) else 0
     if _jc31_n >= 31:
         print(
@@ -28061,10 +28073,8 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
         _attach_mobile_exchange_pnl(result, match_id, proxies=_proxies)
         _attach_mobile_lineup(result, match_id, proxies=_proxies)
         _attach_mobile_ah_ou_books(result, match_id, proxies=_proxies)
-        result['mobile_ah_ou_books'] = seed_mobile_ah_ou_books(
-            result.get('mobile_ah_ou_books'),
-            result.get('six_market_mobile'),
-        )
+        # 同上：传记录，不传 books 包；返回值也不要再赋回同一个键。
+        seed_mobile_ah_ou_books(result, result.get('six_market_mobile'))
         _ou_before = _six_ok.get('ou_line')
         _ah_before = _six_ok.get('asian_handicap')
         apply_mobile_books_lines(result)

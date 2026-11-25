@@ -1341,6 +1341,147 @@ def test_seed_keeps_ah_company_detail_and_the_scalar_line() -> None:
     assert okooo.missing_six_market_waters(rec) == []
 
 
+def test_scrape_okooo_detail_order_keeps_ah_company_detail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Item 12: the REAL scrape_okooo_detail ordering must keep the AH detail.
+
+    This drives attach -> seed -> apply exactly as scrape_okooo_detail does, so it
+    fails if either seed call site passes the books pack instead of the record.
+    """
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache'))
+    books = {
+        'available': True,
+        'asian_handicap': {
+            'rows': [{'name': '平均', 'latest': {'line': -0.75}}],
+            'companies': [
+                {'name': '澳**票', 'pid': '84', 'latest': {'line': -0.75},
+                 'changes': [{'line': -0.75}, {'line': -0.5}],
+                 'detail_url': 'https://m.okooo.com/match/change.php?mid=1&pid=84&Type=Handicap'},
+            ],
+        },
+        'over_under': {'companies': [{'name': 'Pinnacle', 'latest': {'line': 2.5}}]},
+    }
+    six = {
+        'available': True, 'channel': 'mobile', 'match_id': '1347776',
+        'asian_handicap': -0.75, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+        'boards_hit': {'亚盘让球': True, '大小球': True, '胜平负': True},
+        'missing': [], 'source_report': {},
+    }
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books', lambda *a, **k: dict(books))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    result = app.scrape_okooo_detail('1347776')
+
+    assert isinstance(result.get('asian_handicap'), float), result.get('asian_handicap')
+    detail = result.get('ah_detail') or {}
+    assert detail.get('companies'), 'AH company list must survive the seed/apply chain'
+    assert detail['companies'][0]['name'] == '澳**票'
+    assert len(detail['companies'][0]['changes']) == 2, 'change.php timeline must survive'
+    assert okooo.missing_six_market_waters(result) == []
+
+
+def test_ensure_mobile_six_order_keeps_ah_company_detail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Item 12 (other call site): _ensure_mobile_six must also keep the detail."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache2'))
+    books = {
+        'available': True,
+        'asian_handicap': {
+            'rows': [{'name': '平均', 'latest': {'line': -0.5}}],
+            'companies': [{'name': '立*', 'pid': '82', 'changes': [{'line': -0.5}]}],
+        },
+        'over_under': {'companies': [{'name': 'P'}]},
+    }
+    six = {
+        'available': True, 'channel': 'mobile',
+        'asian_handicap': -0.5, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+        'boards_hit': {'亚盘让球': True, '大小球': True, '胜平负': True},
+        'missing': [], 'source_report': {},
+    }
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_detail', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books', lambda *a, **k: dict(books))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    # Waters already present so _ensure_mobile_six skips the gap refill and takes
+    # the six-market -> seed -> apply path (the 27698 call site);
+    # the existing six pack is not "core ok", so it still refreshes.
+    rec: dict[str, Any] = {
+        'okooo_match_id': '1347776',
+        'asian_handicap': -0.75, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+        'six_market_mobile': {'available': False, 'channel': 'mobile'},
+    }
+    app._ensure_mobile_six(rec, '1347776', force=True)
+
+    assert isinstance(rec.get('asian_handicap'), float), rec.get('asian_handicap')
+    detail = rec.get('ah_detail') or {}
+    assert detail.get('companies'), 'AH company list must survive _ensure_mobile_six'
+    assert detail['companies'][0]['name'] == '立*'
+
+
+def test_jc31_is_fetched_before_the_500_fallback_decision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Item 13: the guard used to read jc_score_odds before anything populated it.
+
+    Deliberately does NOT pre-populate jc_score_odds: the stub six-market scrape
+    supplies it, exactly as the live flow does, and the 500 path must not fire.
+    """
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache3'))
+    jc31 = {option: 9.0 for option in pipe_mod.JCZQ_ALL_OPTIONS}
+    six = {
+        'available': True, 'channel': 'mobile', 'match_id': '1347776',
+        'asian_handicap': -0.5, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+        'jc_score_odds': jc31,
+        'jc_score_source': '手机竞足→更多玩法→胜平负比分',
+        'boards_hit': {'亚盘让球': True, '大小球': True, '胜平负': True, '胜平负比分': True},
+        'missing': [], 'source_report': {},
+    }
+    five_hundred: list[str] = []
+
+    def fake_fallback(rec, m_obj=None, **kwargs):
+        five_hundred.append('500')
+        return {'available': False, 'source': 'fallback_existing_odds'}
+
+    fb_mod = importlib.import_module('odds_fallback')
+    monkeypatch.setattr(fb_mod, 'apply_fallback_cs_to_rec', fake_fallback)
+    # CS scrape returns nothing, but the detail scrape is what carries jc31 in the
+    # real flow (scrape_okooo_detail calls scrape_okooo_mobile_six_markets itself).
+    monkeypatch.setattr(
+        app, 'scrape_okooo_detail',
+        lambda *a, **k: {**six, 'okooo_match_id': '1347776'},
+    )
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'attach_okooo_ids_to_matches', lambda rows: rows)
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    rec: dict[str, Any] = {'okooo_match_id': '1347776', 'match': 'H vs A'}
+    assert not rec.get('jc_score_odds'), 'test must start with no jc31'
+    app.enrich_history_okooo_cs_facts(rec, cn_name='H vs A')
+
+    assert five_hundred == [], '500 fallback must not run once jc31 is available'
+    assert len(rec.get('jc_score_odds') or {}) == 31
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}
