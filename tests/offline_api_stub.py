@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Offline HTTPS/HTTP fake for api.telegram.org and api.deepseek.com.
 
 Routes are chosen from the URL path so the wizard's real code paths run
@@ -45,7 +44,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self):  # BaseHTTPRequestHandler names this handler do_GET
         self._record()
         path = self.path.split('?')[0]
 

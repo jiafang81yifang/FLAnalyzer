@@ -533,6 +533,137 @@ def audit_parse_robustness(audit: Audit, root: Path) -> None:
                 audit.record(f'robust:{fn_name}:{arg!r}', True)
 
 
+def audit_unified_report(audit: Audit, root: Path, workdir: Path) -> None:
+    """The unified report skeleton must be one formatter with three renderers."""
+    os.environ['MODELS_DIR'] = str(workdir / 'models')
+    app = import_app(root)
+
+    audit.record('report:schema-version', getattr(app, 'UNIFIED_REPORT_SCHEMA', '') == 'blade.unified_report.v1',
+                 str(getattr(app, 'UNIFIED_REPORT_SCHEMA', None)))
+    keys = tuple(getattr(app, 'UNIFIED_REPORT_SECTION_KEYS', ()))
+    audit.record(
+        'report:section-order',
+        keys == ('verdict', 'key_data', 'divergence', 'risk', 'evidence', 'lessons'),
+        str(keys),
+    )
+    audit.record('report:telegram-limit', int(getattr(app, 'UNIFIED_REPORT_TELEGRAM_LIMIT', 0)) == 4096,
+                 str(getattr(app, 'UNIFIED_REPORT_TELEGRAM_LIMIT', None)))
+    audit.record('report:telegram-budget-under-limit',
+                 int(getattr(app, 'UNIFIED_REPORT_TELEGRAM_BUDGET', 0)) < 4096,
+                 str(getattr(app, 'UNIFIED_REPORT_TELEGRAM_BUDGET', None)))
+
+    sample = {
+        'match': '模板主队 vs 模板客队',
+        'league': '测试联赛',
+        'confidence': '中偏高',
+        'predicted_score': '2-1',
+        'second_score': '1-1',
+        'predicted_result': '胜',
+        'fusion_confidence': 64.2,
+        'cold_score': 58,
+        'dti': 0.31,
+        'big_small': '大球',
+        'ou_line': 2.5,
+        'lam_h': 1.7,
+        'lam_a': 1.0,
+        'feature_completeness': 0.55,
+        'is_edge': True,
+        'odds_1x2': {'Home': 2.1, 'Draw': 3.4, 'Away': 3.6},
+        'derived_markets': {
+            '1x2': {'home': 0.55, 'draw': 0.24, 'away': 0.21},
+            'ou': {'line': 2.5, 'over': 0.61, 'under': 0.39},
+        },
+        'tg_implied_probs': {'prob_0': 0.08, 'prob_1': 0.18, 'prob_2': 0.24,
+                             'prob_3': 0.22, 'prob_4': 0.14, 'prob_5': 0.07,
+                             'prob_6': 0.04, 'prob_7plus': 0.03},
+        'pipeline_scrape_at': '2026-01-01 00:00:00',
+        'top15_scores': [('2-1', {}), ('1-1', {})],
+        'data_500_available': True,
+    }
+    report = app.build_unified_analysis_report(sample, source='audit')
+    audit.record('report:build-schema', report.get('schema') == app.UNIFIED_REPORT_SCHEMA, str(report.get('schema')))
+    audit.record('report:build-sections',
+                 [s.get('key') for s in report.get('sections') or []] == list(app.UNIFIED_REPORT_SECTION_KEYS))
+    verdict = next((s for s in report.get('sections') or [] if s.get('key') == 'verdict'), {})
+    audit.record('report:verdict-present', '首选 2-1' in str(verdict.get('verdict')), str(verdict.get('verdict'))[:120])
+    audit.record('report:verdict-confidence', verdict.get('confidence') == '中偏高', str(verdict.get('confidence')))
+    risk = next((s for s in report.get('sections') or [] if s.get('key') == 'risk'), {})
+    risk_items = risk.get('items') or []
+    audit.record('report:risk-has-triggers', bool(risk_items) and all(i.get('trigger') for i in risk_items),
+                 str([i.get('trigger') for i in risk_items])[:160])
+    divergence = next((s for s in report.get('sections') or [] if s.get('key') == 'divergence'), {})
+    audit.record('report:divergence-sorted',
+                 [float(i.get('magnitude_pp') or 0) for i in divergence.get('items') or []]
+                 == sorted((float(i.get('magnitude_pp') or 0) for i in divergence.get('items') or []), reverse=True))
+
+    cli = app.format_unified_report_cli(report)
+    for token in ('[结论]', '[关键数据]', '[分歧点]', '[风险与陷阱]', '[证据链]', '[教训匹配]'):
+        audit.record(f'report:cli-section:{token}', token in cli)
+
+    tg = app.format_unified_report_telegram(report)
+    audit.record('report:tg-under-limit', len(tg) <= app.UNIFIED_REPORT_TELEGRAM_LIMIT, f'{len(tg)} chars')
+    audit.record('report:tg-keeps-verdict', '【结论】' in tg)
+    audit.record('report:tg-keeps-risk', '【风险与陷阱】' in tg)
+
+    # 超长输入时仍必须保住结论与风险，且总长不超 4096。
+    huge = dict(sample)
+    huge['full_report'] = '填充' * 20000
+    huge['game_theory_note'] = '博弈日志' * 5000
+    huge['predicted_score'] = '2-1' + '（超长说明）' * 400
+    huge_report = app.build_unified_analysis_report(huge, source='audit')
+    huge_tg = app.format_unified_report_telegram(huge_report)
+    audit.record('report:tg-truncation-under-limit', len(huge_tg) <= 4096, f'{len(huge_tg)} chars')
+    audit.record('report:tg-truncation-keeps-verdict', '【结论】' in huge_tg)
+    audit.record('report:tg-truncation-keeps-risk', '【风险与陷阱】' in huge_tg)
+    audit.record('report:tg-custom-budget', len(app.format_unified_report_telegram(report, max_chars=600)) <= 600)
+
+    # 三种渲染器必须能在同一份报告上共存，且空记录不能抛异常。
+    audit.no_raise('report:build-empty', lambda: app.build_unified_analysis_report({}, source='audit'))
+    audit.no_raise('report:build-garbage', lambda: app.build_unified_analysis_report('not a dict', source='audit'))
+    empty_report = app.build_unified_analysis_report({}, source='audit')
+    audit.record('report:empty-verdict-message', '尚未形成结论' in str(
+        next((s.get('verdict') for s in empty_report.get('sections') or [] if s.get('key') == 'verdict'), '')
+    ))
+    audit.record('report:empty-cli-no-raise', bool(app.format_unified_report_cli(empty_report)))
+    audit.record('report:empty-tg-no-raise', bool(app.format_unified_report_telegram(empty_report)))
+
+    # CLI 与 Telegram 指令必须真的走同一个 formatter。
+    source = (root / APP).read_text(encoding='utf-8')
+    audit.record('report:cli-renderer-wired', 'format_unified_report_cli(' in source)
+    audit.record('report:telegram-renderer-wired', 'format_unified_report_telegram(' in source)
+    audit.record('report:streamlit-renderer-wired', 'render_unified_report_streamlit(' in source)
+    audit.record('report:cli-report-flag', "'--report'" in source or '"--report"' in source)
+
+
+def audit_war_room(audit: Audit, root: Path) -> None:
+    """War room layout: section navigation, status strip, metric/badge/empty-state helpers."""
+    source = (root / APP).read_text(encoding='utf-8')
+    for section in ('overview', 'schedule', 'analysis', 'review', 'furnace', 'lessons', 'status'):
+        audit.record(f'war:sections:{section}', f"'{section}':" in source)
+    for helper in (
+        '_ui_render_status_strip',
+        '_ui_render_summary_cards',
+        '_ui_render_confidence_mix',
+        '_ui_metric_row',
+        '_ui_table_style',
+        '_ui_conf_badge',
+        '_ui_risk_badge',
+        '_render_top_nav',
+    ):
+        audit.record(f'war:helper:{helper}', f'def {helper}' in source)
+    audit.record('war:sidebar-nav', 'war_room_section' in source)
+    audit.record('war:status-strip-db', "schema v" in source)
+    audit.record('war:status-strip-sklearn', 'sklearn' in source)
+    audit.record('war:status-strip-deepseek', 'DeepSeek' in source)
+    audit.record('war:status-strip-telegram', 'Telegram' in source)
+    audit.record('war:status-strip-proxy', '代理' in source)
+    # 依赖安全：只能用 streamlit / pandas / plotly / numpy。
+    for forbidden in ('import altair', 'import bokeh', 'import matplotlib', 'import seaborn'):
+        audit.record(f'war:no-extra-dep:{forbidden}', forbidden not in source)
+    # 用户可见动作的错误横幅不得再是裸 except: pass。
+    audit.record('war:page-error-banner', '渲染失败' in source)
+
+
 def audit_streamlit(audit: Audit, root: Path, workdir: Path) -> None:
     os.environ['MODELS_DIR'] = str(workdir / 'models')
     os.environ.pop('TELEGRAM_BOT_TOKEN', None)
@@ -873,6 +1004,8 @@ def main() -> int:
         audit_odds(audit, root)
         audit_parse_robustness(audit, root)
         audit_node(audit, root)
+        audit_unified_report(audit, root, workdir)
+        audit_war_room(audit, root)
         audit_streamlit(audit, root, workdir)
 
     for result in audit.results:

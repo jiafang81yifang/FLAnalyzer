@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -197,7 +198,14 @@ def test_full_audit_harness_passes() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert 'TOTAL 262  PASS 262  FAIL 0' in proc.stdout
+    assert 'FAIL 0' in proc.stdout
+    # The audit matrix only ever grows; assert monotonic growth, never a fixed count.
+    match = re.search(r'TOTAL\s+(\d+)\s+PASS\s+(\d+)\s+FAIL\s+(\d+)', proc.stdout)
+    assert match, proc.stdout[-2000:]
+    total, passed, failed = (int(part) for part in match.groups())
+    assert failed == 0, proc.stdout[-2000:]
+    assert total == passed
+    assert total >= 262, f'audit matrix shrank to {total} checks'
 
 
 class FakeTextNode:

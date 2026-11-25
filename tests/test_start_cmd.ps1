@@ -56,11 +56,15 @@ function Get-GeneratedStartCmd {
     $endOfLine = $installerText.IndexOf("`n", $end)
     $block = $installerText.Substring($start, $endOfLine - $start)
 
+    # The installer computes $StartBat from $InstallDir before the block, so the
+    # prologue must define $InstallDir first and $StartBat exactly as it does.
     $prologue = @(
         '$ErrorActionPreference = ''Stop''',
         ('$InstallDir = ''' + ($OutDir -replace "'", "''") + ''''),
+        ('$StartBat = ''' + ((Join-Path $OutDir 'start.cmd') -replace "'", "''") + ''''),
         ('$proxyLine = ''' + ($ProxyLine -replace "'", "''") + ''''),
-        '$sq = [string][char]39'
+        '$SQ = [string][char]39',
+        '$DQ = [string][char]34'
     ) -join "`n"
 
     $scriptText = $prologue + "`n" + $block + "`n"
@@ -288,9 +292,16 @@ Write-Host '-- 7. installer wires the wizard hint and --check summary' -Foregrou
 $instSrc = [System.IO.File]::ReadAllText($Installer, [System.Text.Encoding]::UTF8)
 Check 'installer: prints the exact hint line' ($instSrc -match '配置 Telegram / DeepSeek 请运行 configure_blade_quant.ps1。')
 Check 'installer: downloads the wizard when missing' ($instSrc -match 'configure_blade_quant\.ps1' -and $instSrc -match 'Invoke-WebRequest')
-Check 'installer: falls back across refs' ($instSrc -match 'configRefs')
+# The wizard is now downloaded from the same immutable commit as the app, with
+# a CDN mirror fallback, instead of trying branch refs.
+Check 'installer: downloads the wizard from the pinned commit' (
+    $instSrc -match 'PinCommit' -and $instSrc -match 'Get-RemoteArtifact'
+) 'installer no longer pins the wizard download'
+Check 'installer: has a CDN mirror fallback' ($instSrc -match 'cdn\.jsdelivr\.net')
 Check 'installer: invokes --check' ($instSrc -match '--check')
-Check 'installer: check failure cannot abort install' ($instSrc -match 'catch \{\s*\r?\n\s*Write-Warn')
+Check 'installer: aborts loudly if the wizard cannot run' (
+    $instSrc -match '配置向导无法运行'
+) 'the wizard is required now, so a silent skip would hide a broken install'
 
 Write-Host ''
 Write-Host ("TOTAL " + $script:Checks + "  FAIL " + $script:Failures + "  SKIP " + $script:Skipped) -ForegroundColor Cyan
