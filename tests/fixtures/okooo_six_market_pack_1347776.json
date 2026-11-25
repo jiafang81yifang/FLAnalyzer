@@ -3,7 +3,18 @@
   "channel": "mobile",
   "match_id": "1347776",
   "ou_line": 3.25,
-  "asian_handicap": -1.0,
+  "ou_line_text": "3.25",
+  "ou_start_line": 3.25,
+  "ou_over_water": 1.93,
+  "ou_under_water": 1.77,
+  "ou_line_source": "mode(6/20)",
+  "asian_handicap": -0.75,
+  "asian_handicap_text": "受半/一",
+  "ah_start_line": -0.75,
+  "ah_start_text": "受半/一",
+  "ah_home_water": 2.05,
+  "ah_away_water": 1.8,
+  "ah_line_source": "avg_row",
   "odds_1x2": {
     "home": 4.55,
     "draw": 4.2,
@@ -12,6 +23,7 @@
     "Draw": 4.2,
     "Away": 1.47
   },
+  "odds_1x2_company": "竞彩官方",
   "boards_hit": {
     "亚盘让球": true,
     "大小球": true,
@@ -23,12 +35,12 @@
       "url": "https://m.okooo.com/match/handicap.php?MatchID=1347776",
       "channel": "mobile",
       "status": 200,
-      "bytes": 95392,
-      "title": "",
+      "bytes": 95380,
+      "title": "亚指-萨格勒布vs勒沃库森【欧联】-澳客",
       "blocked": false,
       "error": "",
       "stage": "ok",
-      "line_text": "受一球"
+      "line_text": "受半/一"
     },
     "ou": {
       "url": "https://m.okooo.com/match/ah.php?type=daxiao&matchId=1347776",
@@ -45,28 +57,12 @@
       "url": "https://m.okooo.com/match/odds.php?MatchID=1347776",
       "channel": "mobile",
       "status": 200,
-      "bytes": 90907,
-      "title": "",
+      "bytes": 90920,
+      "title": "欧指-萨格勒布vs勒沃库森【欧联】-澳客",
       "blocked": false,
       "error": "",
       "stage": "ok"
     }
   },
-  "fetch_urls": [
-    "https://m.okooo.com/match/handicap.php?MatchID=1347776",
-    "https://m.okooo.com/match/ah.php?type=daxiao&matchId=1347776",
-    "https://m.okooo.com/match/odds.php?MatchID=1347776"
-  ],
-  "asian_handicap_text": "受一球",
-  "ah_start_line": -0.75,
-  "ah_start_text": "受半/一",
-  "ah_home_water": 1.9,
-  "ah_away_water": 2.55,
-  "ah_line_source": "avg_row",
-  "ou_line_text": "3.25",
-  "ou_start_line": 3.25,
-  "ou_over_water": 1.93,
-  "ou_under_water": 1.77,
-  "ou_line_source": "mode(6/20)",
-  "odds_1x2_company": "竞彩官方"
+  "_fixture_note": "Captured from m.okooo.com for match 1347776 on 2026-11-25; values are real reads."
 }

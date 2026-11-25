@@ -1230,22 +1230,90 @@ def scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict
     return {'available': False, 'match_id': str(match_id or ''), 'home': [], 'away': [], 'reason': 'external_fetch_not_configured'}
 
 
+def _is_filled(value: Any) -> bool:
+    """一个值算不算「有内容」。空串/空容器/None 都算没有。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
+# apply_mobile_books_lines 要搬的字段：三块水位 + 它们的来源与水位值。
+# odds_1x2 漏搬过一次，导致「抓到了但记录还是空的」，进而触发重复抓取。
+_MOBILE_BOOKS_FIELDS = (
+    'ou_line', 'ou_line_text', 'ou_start_line', 'ou_over_water', 'ou_under_water', 'ou_line_source',
+    'asian_handicap', 'asian_handicap_text', 'ah_start_line', 'ah_start_text',
+    'ah_home_water', 'ah_away_water', 'ah_line_source',
+    'odds_1x2', 'odds_1x2_company',
+)
+_MOBILE_BOOKS_PROVENANCE = ('boards_hit', 'missing', 'source_report', 'fetch_urls', 'channel', 'match_id')
+
+
 def seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:
-    if isinstance(record, dict):
-        record.setdefault('mobile_ah_ou_books', pack or {'available': False})
+    """把盘口包放进 record['mobile_ah_ou_books']，供 apply_mobile_books_lines 读取。
+
+    以前用 setdefault：先挂上的空壳（available=False）会把后来真正的数据挡在外面，
+    于是 seed 之后再 apply 仍然什么都没有。现在改成按字段合并，有值的覆盖空值。
+    """
+    if not isinstance(record, dict):
+        return {'available': False}
+    incoming = pack if isinstance(pack, dict) else {}
+    existing = record.get('mobile_ah_ou_books')
+    if not isinstance(existing, dict):
+        record['mobile_ah_ou_books'] = dict(incoming) if incoming else {'available': False}
         return record['mobile_ah_ou_books']
-    return {'available': False}
+    if incoming:
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if _is_filled(value) or key not in merged:
+                merged[key] = value
+        record['mobile_ah_ou_books'] = merged
+    return record['mobile_ah_ou_books']
 
 
 def apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:
+    """把盘口包里的水位写回记录。
+
+    三块水位都必须搬（odds_1x2 曾漏搬），并且带上来源字段，下游才能看到出处。
+    规则：包里有值才写，绝不拿空值覆盖记录里已有的非空值。
+    取值顺序：显式传入的包 → 已挂上的 mobile_ah_ou_books → six_market_mobile，
+    逐字段取第一个有值的，这样空壳挡不住真数据。
+    """
     if not isinstance(record, dict):
         return {}
-    raw_books = record.get('mobile_ah_ou_books')
-    b = books if isinstance(books, dict) else raw_books if isinstance(raw_books, dict) else {}
-    if b.get('ou_line') is not None:
-        record['ou_line'] = b.get('ou_line')
-    if b.get('asian_handicap') is not None:
-        record['asian_handicap'] = b.get('asian_handicap')
+    sources = [
+        books,
+        record.get('mobile_ah_ou_books'),
+        record.get('six_market_mobile'),
+    ]
+    picked: dict[str, Any] = {}
+    for key in _MOBILE_BOOKS_FIELDS:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            value = source.get(key)
+            if _is_filled(value):
+                picked[key] = value
+                break
+    for key, value in picked.items():
+        record[key] = value
+    provenance: dict[str, Any] = {}
+    for key in _MOBILE_BOOKS_PROVENANCE:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            value = source.get(key)
+            if _is_filled(value):
+                provenance[key] = value
+                break
+    if provenance:
+        existing = record.get('mobile_water_provenance')
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(provenance)
+        record['mobile_water_provenance'] = merged
     return record
 
 

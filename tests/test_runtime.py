@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
 import sqlite3
@@ -636,7 +637,9 @@ def test_mobile_exchange_pnl_reports_betfair_absence_honestly() -> None:
     assert '暂无数据' in parsed['betfair_note']
 
 
-def test_six_markets_prefers_mobile_and_records_every_source(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_six_markets_prefers_mobile_and_records_every_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """Each board tries mobile first; a 405 on mobile falls through to desktop."""
     pages = {
         'handicap.php': ('okooo_mobile_ah.html', 200),
@@ -659,7 +662,8 @@ def test_six_markets_prefers_mobile_and_records_every_source(monkeypatch: pytest
                 'title': '405', 'blocked': True, 'error': 'HTTP 405', 'html': ''}
 
     monkeypatch.setattr(okooo, '_fetch_detail', fake_fetch)
-    monkeypatch.setenv('OKOOO_CACHE_DIR', str(FIXTURES / '_cache_six'))
+    # 缓存写进 tmp_path：绝不能把抓取缓存落成 tests/fixtures 里的「测试夹具」。
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache'))
     pack = okooo.scrape_okooo_mobile_six_markets('1347776')
     assert pack['available'] is True
     assert pack['asian_handicap'] is not None
@@ -681,3 +685,79 @@ def test_cs_referer_candidates_target_the_match_page() -> None:
     assert okooo._referers_for('https://m.okooo.com/match/odds.php?MatchID=1') == [
         'https://m.okooo.com/jczq/'
     ]
+
+
+def _captured_pack() -> dict[str, Any]:
+    """The real mobile pack captured from m.okooo.com for 1347776."""
+    return json.loads((FIXTURES / 'okooo_six_market_pack_1347776.json').read_text(encoding='utf-8'))
+
+
+def test_apply_mobile_books_lines_carries_every_board() -> None:
+    """Defect: apply only copied ah/ou, so odds_1x2 stayed empty and triggered re-fetch."""
+    pack = _captured_pack()
+    record: dict[str, Any] = {'okooo_match_id': pack['match_id']}
+    okooo.apply_mobile_books_lines(record, pack)
+    assert record['asian_handicap'] == pack['asian_handicap']
+    assert record['ou_line'] == pack['ou_line']
+    assert record['odds_1x2'] == pack['odds_1x2']
+    # provenance comes along so downstream can see where the numbers came from
+    assert record['mobile_water_provenance']['boards_hit'] == pack['boards_hit']
+    assert record['ou_line_source'] == pack['ou_line_source']
+    assert record['ah_line_source'] == pack['ah_line_source']
+
+
+def test_seed_then_apply_leaves_no_water_gaps() -> None:
+    """End-to-end: scrape → seed → apply must satisfy missing_six_market_waters.
+
+    Uses a real captured pack, so this cannot regress into a hand-built dict that
+    happens to have the fields the code wants.
+    """
+    pack = _captured_pack()
+    record: dict[str, Any] = {'okooo_match_id': pack['match_id']}
+    okooo.seed_mobile_ah_ou_books(record, pack)
+    okooo.apply_mobile_books_lines(record)
+    assert okooo.missing_six_market_waters(record) == []
+    assert len(record['odds_1x2']) >= 3
+    assert record['odds_1x2']['home'] == 4.55
+    assert record['odds_1x2']['draw'] == 4.2
+    assert record['odds_1x2']['away'] == 1.47
+
+
+def test_empty_stub_cannot_block_the_real_pack() -> None:
+    """An unavailable stub already on the record must not shadow real data."""
+    pack = _captured_pack()
+    record: dict[str, Any] = {
+        'okooo_match_id': pack['match_id'],
+        'mobile_ah_ou_books': {'available': False},
+    }
+    okooo.seed_mobile_ah_ou_books(record, pack)
+    okooo.apply_mobile_books_lines(record)
+    assert okooo.missing_six_market_waters(record) == []
+    assert record['mobile_ah_ou_books']['odds_1x2'] == pack['odds_1x2']
+
+
+def test_apply_never_overwrites_a_non_empty_value_with_an_empty_one() -> None:
+    """A failed scrape must not erase water the record already has."""
+    record: dict[str, Any] = {
+        'odds_1x2': {'home': 9.0, 'draw': 9.0, 'away': 9.0},
+        'ou_line': 2.5,
+        'asian_handicap': 0.5,
+    }
+    okooo.apply_mobile_books_lines(record, {
+        'available': False, 'odds_1x2': {}, 'ou_line': None, 'asian_handicap': None,
+        'ou_line_text': '',
+    })
+    assert record['odds_1x2'] == {'home': 9.0, 'draw': 9.0, 'away': 9.0}
+    assert record['ou_line'] == 2.5
+    assert record['asian_handicap'] == 0.5
+    assert 'ou_line_text' not in record
+
+
+def test_six_market_pack_fixture_is_not_a_scrape_cache() -> None:
+    """The pack fixture must be a curated capture, not tests/fixtures/_cache_*."""
+    assert not list((ROOT / 'tests' / 'fixtures').glob('_cache_*')), (
+        'scrape caches must not be committed as fixtures'
+    )
+    pack = _captured_pack()
+    assert pack['_fixture_note']
+    assert pack['source_report']['1x2']['status'] == 200

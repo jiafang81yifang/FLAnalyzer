@@ -17,3 +17,6 @@ __pycache__/
 # Local credentials written by configure_blade_quant.ps1 (never commit these)
 config.env
 *.local.env
+
+# Scrape-cache byproduct; tests must use captured fixtures, not live caches.
+tests/fixtures/_cache_*/
