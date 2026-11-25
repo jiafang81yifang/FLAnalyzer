@@ -158,9 +158,18 @@ if (-not $depsWereReady) {
     Write-Host '    (simulated venv has no deps; the refresh will reinstall them)' -ForegroundColor DarkYellow
 }
 
-# Stale app: not the real thing at all, just bytes that must be replaced.
-[System.IO.File]::WriteAllText((Join-Path $refreshDir 'app_v84_hermes.py'), "# stale app from an older install`nprint('stale')`n", (New-Object System.Text.UTF8Encoding($false)))
+# Stale app that looks like a real older build: the first 100 lines of the
+# current app plus a marker, so it is plausibly "the old pinned app".
+$staleMarker = '# STALE-APP-MARKER: this must not survive a refresh'
+$appAtMerge = Join-Path $RepoRoot 'app_v84_hermes.py'
+$head100 = (Get-Content -LiteralPath $appAtMerge -TotalCount 100) -join "`n"
+[System.IO.File]::WriteAllText(
+    (Join-Path $refreshDir 'app_v84_hermes.py'),
+    ($head100 + "`n" + $staleMarker + "`n"),
+    (New-Object System.Text.UTF8Encoding($false)))
 $staleAppSha = Get-Sha (Join-Path $refreshDir 'app_v84_hermes.py')
+$staleAppBytes = (Get-Item -LiteralPath (Join-Path $refreshDir 'app_v84_hermes.py')).Length
+Check 'refresh-fixture: stale app is a plausible old build' ($head100.Length -gt 1000) ("bytes=" + $staleAppBytes)
 
 # The OLD launcher: sets only OKOOO_PROXY, no config.env support at all.
 $oldBat = @(
@@ -221,8 +230,39 @@ Check 'refresh: config.env mtime untouched' ($cfgWriteTimeBefore -eq (Get-Item -
 
 # --- both shipped files are the pinned ones ---
 $appSha = Get-Sha (Join-Path $refreshDir 'app_v84_hermes.py')
-Check 'refresh: app was replaced with the pinned build' ($appSha -ne $staleAppSha) ("stale=" + $staleAppSha + " now=" + $appSha)
-Check 'refresh: app is the real single-file build' ((Get-Item -LiteralPath (Join-Path $refreshDir 'app_v84_hermes.py')).Length -gt 2MB)
+Check 'refresh: app was replaced (hash changed)' ($appSha -ne $staleAppSha) ("stale=" + $staleAppSha + " now=" + $appSha)
+
+# The refreshed app must be byte-identical to the app at the pinned commit.
+$pinnedSha = (Get-Content -LiteralPath (Join-Path $RepoRoot 'install_blade_quant.ps1') |
+    Where-Object { $_ -match "^\s*\`$PinCommit\s*=\s*'([0-9a-f]{40})'" } |
+    ForEach-Object { [regex]::Match($_, "'([0-9a-f]{40})'").Groups[1].Value } |
+    Select-Object -First 1)
+Check 'refresh: installer pin was read' ($pinnedSha -match '^[0-9a-f]{40}$') ("pin=" + $pinnedSha)
+
+$refreshedApp = Join-Path $refreshDir 'app_v84_hermes.py'
+$refreshedText = [System.IO.File]::ReadAllText($refreshedApp, [System.Text.Encoding]::UTF8)
+Check 'refresh: stale marker is gone' (-not $refreshedText.Contains($staleMarker))
+Check 'refresh: app is the new (larger) build' ((Get-Item -LiteralPath $refreshedApp).Length -gt 2MB) ("bytes=" + (Get-Item -LiteralPath $refreshedApp).Length)
+
+# md5 of the refreshed app must equal md5 of the app at the pinned commit.
+if ($pinnedSha -match '^[0-9a-f]{40}$') {
+    $pinnedAppMd5 = (& git -C $RepoRoot show ($pinnedSha + ':app_v84_hermes.py') 2>$null | Out-String)
+    # Compare through a temp file so line endings are not mangled by the pipeline.
+    $pinnedTemp = Join-Path $refreshDir '_pinned_app_ref.py'
+    & git -C $RepoRoot cat-file blob ($pinnedSha + ':app_v84_hermes.py') > $pinnedTemp
+    $pinnedMd5 = (Get-FileHash -LiteralPath $pinnedTemp -Algorithm MD5).Hash.ToLower()
+    $refreshedMd5 = (Get-FileHash -LiteralPath $refreshedApp -Algorithm MD5).Hash.ToLower()
+    Check 'refresh: refreshed app md5 equals the merge-commit app md5' ($pinnedMd5 -eq $refreshedMd5) ("pinned=" + $pinnedMd5 + " refreshed=" + $refreshedMd5)
+}
+
+# The refreshed app must still be a valid program: compiles and diagnoses.
+if (Test-Path -LiteralPath $venvPython) {
+    & $venvPython -c "import py_compile,sys; py_compile.compile(r'$refreshedApp', doraise=True); print('compile ok')" 2>&1 | Out-Null
+    Check 'refresh: refreshed app passes py_compile' ($LASTEXITCODE -eq 0)
+    $env:PYTHONIOENCODING = 'utf-8'
+    & $venvPython $refreshedApp --diagnose 2>&1 | Out-Null
+    Check 'refresh: refreshed app passes --diagnose' ($LASTEXITCODE -eq 0)
+}
 $wizardPath = Join-Path $refreshDir 'configure_blade_quant.ps1'
 Check 'refresh: wizard was downloaded' (Test-Path -LiteralPath $wizardPath)
 Check 'refresh: wizard is a real PowerShell script' (
