@@ -62,5 +62,13 @@
     "bytes": null,
     "captured": "2026-11-25",
     "used_by": "test_apply_mobile_books_lines_* / test_seed_then_apply_*"
+  },
+  "okooo_jczq_oddsdata.html": {
+    "url": "https://m.okooo.com/jczq/",
+    "status": 200,
+    "bytes": 183625,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "test_jczq_oddsdata_* (orderid 4005 = match 1347780, 31/31 SportteryScore codes 30..60)"
   }
 }

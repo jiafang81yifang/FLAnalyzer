@@ -137,6 +137,57 @@ class V1631StandardUnifiedEngine:
     _TEMPLATE_FALLBACK = '未形成'
 
 
+def _poisson_score_probs(lam_home: float, lam_away: float, max_goals: int = 10) -> dict[str, float]:
+    """独立泊松比分矩阵，聚合成竞彩31项（含三个「其它」）。
+
+    返回 {option: 概率(0..1)}，31 项齐全。λ 来自已冻结的模型值，
+    因此这不是编造数据，而是把冻结参数摊开成 31 项。
+    """
+    import math as _math
+
+    def _pmf(lam: float, k: int) -> float:
+        return _math.exp(-lam) * (lam ** k) / _math.factorial(k)
+
+    home_pmf = [_pmf(lam_home, k) for k in range(max_goals + 1)]
+    away_pmf = [_pmf(lam_away, k) for k in range(max_goals + 1)]
+    listed = {
+        'home': ['1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2'],
+        'draw': ['0-0', '1-1', '2-2', '3-3'],
+        'away': ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5'],
+    }
+    out: dict[str, float] = {}
+    dir_total = {'home': 0.0, 'draw': 0.0, 'away': 0.0}
+    for h in range(max_goals + 1):
+        for a in range(max_goals + 1):
+            p = home_pmf[h] * away_pmf[a]
+            if h > a:
+                dir_total['home'] += p
+            elif h == a:
+                dir_total['draw'] += p
+            else:
+                dir_total['away'] += p
+            key = f'{h}-{a}'
+            if h > a:
+                label = 'home'
+            elif h == a:
+                label = 'draw'
+            else:
+                label = 'away'
+            if key in listed[label]:
+                out[key] = p
+    listed_sum = {'home': 0.0, 'draw': 0.0, 'away': 0.0}
+    for label, options in listed.items():
+        for option in options:
+            listed_sum[label] += out.get(option, 0.0)
+    out['胜其它'] = max(0.0, dir_total['home'] - listed_sum['home'])
+    out['平其它'] = max(0.0, dir_total['draw'] - listed_sum['draw'])
+    out['负其它'] = max(0.0, dir_total['away'] - listed_sum['away'])
+    total = sum(out.values())
+    if total > 0:
+        out = {k: v / total for k, v in out.items()}
+    return out
+
+
 class DeepSeekAnalyzer:
     """Deterministic analyzer/formatter surface used by app_v84_hermes."""
 
@@ -198,8 +249,11 @@ class DeepSeekAnalyzer:
         clean: dict[str, float] = {}
         if isinstance(odds, dict):
             for score, odd in odds.items():
+                raw_value = odd.get('odds') if isinstance(odd, dict) else odd
+                if raw_value is None:
+                    continue
                 try:
-                    value = float(odd.get('odds') if isinstance(odd, dict) else odd)
+                    value = float(raw_value)
                 except (TypeError, ValueError):
                     continue
                 if value > 1:
@@ -292,6 +346,37 @@ class DeepSeekAnalyzer:
             if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
                 row['market'] = round(100.0 / odd_f, 4)
                 row['market_source'] = kwargs.get('extra_market_source') or 'market_avg_odds'
+        # 竞彩 31 比分赔率是「九个市均覆盖不到的选项」唯一的合法来源
+        # （5-0/5-1/5-2/0-5/1-5/2-5 与三个「其它」）。只补市场概率，不动理论。
+        jc_odds = kwargs.get('jc_score_odds')
+        if isinstance(jc_odds, dict):
+            for score, odd in jc_odds.items():
+                key = _norm_score(score)
+                odd_f = _f(odd)
+                if not key or odd_f is None or odd_f <= 1:
+                    continue
+                row = by_score.setdefault(key, {'score': key})
+                if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
+                    row['market'] = round(100.0 / odd_f, 4)
+                    row['market_source'] = 'jc_score_odds'
+                if _f(row.get('jc_odds')) is None:
+                    row['jc_odds'] = odd_f
+        # 理论概率：用已冻结的 λ 泊松分布补齐（λ 冻结是既定事实，不是编造）。
+        lam_h = _f(kwargs.get('lam_home'))
+        lam_a = _f(kwargs.get('lam_away'))
+        if lam_h and lam_a and lam_h > 0 and lam_a > 0:
+            try:
+                probs = _poisson_score_probs(lam_h, lam_a)
+            except Exception:  # noqa: BLE001 - λ 不可用时保持 theory 为空
+                probs = {}
+            if probs:
+                for option in JCZQ_ALL_OPTIONS:
+                    row = by_score.setdefault(option, {'score': option})
+                    if _f(row.get('theory') or row.get('theory_prob')) is None:
+                        value = probs.get(option)
+                        if value is not None:
+                            row['theory'] = round(value * 100.0, 4)
+                            row['theory_source'] = 'frozen_lambda_poisson'
         full_rows: list[dict[str, Any]] = []
         for option in JCZQ_ALL_OPTIONS:
             row = by_score.get(option) or {'score': option}

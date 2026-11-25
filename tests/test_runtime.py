@@ -22,6 +22,8 @@ if str(ROOT) not in sys.path:
 
 app = importlib.import_module('app_v84_hermes')
 okooo = importlib.import_module('okooo_mobile_cs')
+pipe_mod = importlib.import_module('blade_deepseek_pipeline')
+math_mod = importlib.import_module('odds_index_math')
 
 
 @pytest.fixture(autouse=True)
@@ -645,6 +647,7 @@ def test_six_markets_prefers_mobile_and_records_every_source(
         'handicap.php': ('okooo_mobile_ah.html', 200),
         'ah.php?type=daxiao': ('okooo_mobile_ou.html', 200),
         'match/odds.php': ('okooo_mobile_1x2.html', 200),
+        'm.okooo.com/jczq/': ('okooo_jczq_oddsdata.html', 200),
     }
     seen: list[str] = []
 
@@ -664,6 +667,8 @@ def test_six_markets_prefers_mobile_and_records_every_source(
     monkeypatch.setattr(okooo, '_fetch_detail', fake_fetch)
     # 缓存写进 tmp_path：绝不能把抓取缓存落成 tests/fixtures 里的「测试夹具」。
     monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache'))
+    # jczq 页也走真实夹具，否则会进「被拦 → 等待重试」的分支把测试拖慢。
+    monkeypatch.setenv('OKOOO_JCZQ_PATIENCE', '0')
     pack = okooo.scrape_okooo_mobile_six_markets('1347776')
     assert pack['available'] is True
     assert pack['asian_handicap'] is not None
@@ -942,8 +947,112 @@ def test_lineup_and_books_stubs_expose_a_reason_field() -> None:
         assert app._pack_reason(pack) not in ('empty', 'invalid_payload')
 
 
+def test_jczq_oddsdata_yields_all_31_jc_score_odds() -> None:
+    """Defect 5: the only real source of jc_score_odds (which had no writer)."""
+    html = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata.html').read_bytes())
+    parsed = okooo.parse_jczq_score_odds(html, '1347780')
+    assert parsed['available'] is True
+    assert parsed['orderid'] == '4005'
+    assert parsed['raw_count'] == 31
+    assert len(parsed['odds']) == 31
+    # Canonical 竞彩 code order, corroborated by the same page's
+    # HalfFull '28'=2.75 (负负, away favourite) and TotalGoals peaking at '03'.
+    assert parsed['odds']['1-0'] == 11.0
+    assert parsed['odds']['2-1'] == 10.5
+    assert parsed['odds']['1-1'] == 6.25
+    assert parsed['odds']['0-1'] == 7.25
+    # The 9 options the 市均 can never cover are present here.
+    for option in ('5-0', '5-1', '5-2', '0-5', '1-5', '2-5', '胜其它', '平其它', '负其它'):
+        assert option in parsed['odds'], option
+
+
+def test_jczq_oddsdata_maps_orderid_not_match_id() -> None:
+    """oddsData is keyed by orderid; passing a match id as the key must not work."""
+    html = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata.html').read_bytes())
+    direct = okooo.parse_jczq_score_odds(html, '4005')
+    assert direct['available'] is False  # no row carries matchid="4005"
+    assert direct['stage'] == 'orderid_not_found'
+
+
+def test_jczq_odds_feed_the_31_pool_pack() -> None:
+    """theory from frozen λ + market from JC odds ⇒ all 31 formed."""
+    html = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata.html').read_bytes())
+    jc = okooo.parse_jczq_score_odds(html, '1347780')['odds']
+    pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.4, lam_away=1.2, jc_score_odds=jc,
+    )
+    audit = pipe_mod.DeepSeekAnalyzer.audit_theo_mkt_31_rows(pack['rows'])
+    assert pack['formed_count'] == 31
+    assert audit['complete'] is True, audit['missing']
+    # 市均不可覆盖的 9 项，其 market 必须来自竞彩比分赔率
+    by_score = {r['score']: r for r in pack['rows']}
+    for option in ('5-0', '胜其它'):
+        assert by_score[option]['market_source'] == 'jc_score_odds'
+
+
+def test_theo_pack_keeps_theory_empty_without_lambda() -> None:
+    """No λ ⇒ theory stays None (never invented), so the audit reports it."""
+    pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack([], jc_score_odds={'1-0': 11.0})
+    audit = pipe_mod.DeepSeekAnalyzer.audit_theo_mkt_31_rows(pack['rows'])
+    assert audit['complete'] is False
+    assert any('理论概率缺' in item for item in audit['missing'])
+
+
+def test_settlement_v2_refuses_all_none_input() -> None:
+    """Defect 8: it used to claim available=True with every field None."""
+    empty = math_mod.apply_six_cs_settlement_v2_to_rec({})
+    assert empty['available'] is False
+    assert empty['block_reason'] == 'missing_inputs:ou_line/asian_handicap/correct_score'
+    full = math_mod.apply_six_cs_settlement_v2_to_rec({
+        'ou_line': 3.25, 'asian_handicap': -0.75,
+        'correct_score_page_avg': {'1:0': 8.0},
+    })
+    assert full['available'] is True
+    assert 'block_reason' not in full
+
+
+def test_resolve_direction_returns_pair_and_str_shim() -> None:
+    """Defect 7: the app unpacks two values; the module returned a str."""
+    arb_mod = importlib.import_module('convergence_arbitrator')
+    direction, resolution = arb_mod.resolve_direction(['1-0', '2-1', '0-1'])
+    assert direction == '胜'
+    assert isinstance(resolution, dict)
+    assert resolution['counts'] == {'胜': 2, '平': 0, '负': 1}
+    # empty input still yields a 2-tuple
+    empty = arb_mod.resolve_direction([])
+    assert isinstance(empty, tuple) and len(empty) == 2 and empty[0] == ''
+    # the str-shaped caller helper
+    assert arb_mod.resolve_direction_value(['1-0']) == '胜'
+
+
+def test_settlement_and_audit_counts_agree() -> None:
+    """Defect 8b: 31池三视图 must not print a success count against a failed audit."""
+    pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack([{'score': '1-0', 'theory': 9.0, 'market': 8.0}])
+    audit = pipe_mod.DeepSeekAnalyzer.audit_theo_mkt_31_rows(pack['rows'])
+    assert audit['complete'] is False
+    # the message the app prints must be derivable from the audit itself
+    assert audit['formed'] < 31
+    assert audit['rows'] == 31
+
+
+def test_gate_books_n_matches_the_key_it_read() -> None:
+    """Defect 9: books_in_pack and cs_n must describe the same field."""
+    fallback_mod = importlib.import_module('odds_fallback')
+    rec = {
+        'correct_score_page_avg': {f'{i}-0': 9.0 for i in range(25)},
+        'correct_score_channel': 'desktop_cs',
+        'asian_handicap': -0.75, 'ou_line': 3.25,
+        'odds_1x2': {'home': 4.55, 'draw': 4.2, 'away': 1.47},
+    }
+    gate = fallback_mod.ensure_dual_source_before_judgment(rec)
+    assert gate['cs_books_n'] == 25
+    assert gate['books_from'] == 'correct_score_page_avg'
+    assert rec['dual_source_facts']['correct_score']['books_n'] == 25
+    assert len(rec['dual_source_facts']['correct_score']['books_avg']) == 25
+    assert gate['ready'] is True
+
+
 def test_every_fixture_declares_its_source() -> None:
-    """Fixture hygiene: real captures with URL + status + bytes recorded."""
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}
     assert files, 'no fixtures found'

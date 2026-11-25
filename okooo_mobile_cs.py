@@ -476,7 +476,21 @@ def build_score_market_heat_ranking(
 
 
 def _unavailable(reason: str, **extra: Any) -> dict[str, Any]:
-    data = {'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}
+    """统一的不可用载板。
+
+    即使不可用也带空的 ranking / top_scores / source / channel，
+    调方不必对「有没有这个键」做分支（自检与下游都按同一形状读取）。
+    """
+    data = {
+        'available': False,
+        'channel': 'mobile',
+        'reason': reason,
+        'block_reason': reason,
+        'source': '',
+        'heat_source': '',
+        'ranking': [],
+        'top_scores': [],
+    }
     data.update(extra)
     return data
 
@@ -1173,6 +1187,52 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
             pack['missing'].append(field)
 
     pack['available'] = bool(pack['boards_hit'])
+    # 竞彩比分 31 项：唯一真实来源是竞足赛程页的 oddsData.SportteryScore。
+    # 只在这里抓一次，写进 jc_score_odds，供 _stamp_more_play_scores 落盘。
+    try:
+        _jc_fetch = _fetch_detail(
+            'https://m.okooo.com/jczq/', proxies=proxies, session=session, retries=1,
+        )
+        # 与波胆/阵容页同受间歇 WAF 影响：被拦时有界重试，别让 31 项比分静默变空。
+        for _jc_try in range(int(os.environ.get('OKOOO_JCZQ_PATIENCE') or 2)):
+            if _jc_fetch.get('ok') or not _jc_fetch.get('blocked'):
+                break
+            time.sleep(float(os.environ.get('OKOOO_JCZQ_PATIENCE_GAP') or 30))
+            _jc_fetch = _fetch_detail(
+                'https://m.okooo.com/jczq/', proxies=proxies, session=session, retries=1,
+            )
+        _jc_report = {
+            'url': 'https://m.okooo.com/jczq/',
+            'channel': 'mobile',
+            'status': int(_jc_fetch.get('status') or 0),
+            'bytes': int(_jc_fetch.get('bytes') or 0),
+            'title': str(_jc_fetch.get('title') or ''),
+            'blocked': bool(_jc_fetch.get('blocked')),
+            'error': str(_jc_fetch.get('error') or ''),
+            'stage': '',
+        }
+        if _jc_fetch.get('ok'):
+            _jc = parse_jczq_score_odds(_jc_fetch.get('html'), mid)
+            _jc_report['stage'] = _jc.get('stage') or ''
+            _jc_report['orderid'] = _jc.get('orderid') or ''
+            if _jc.get('available'):
+                pack['jc_score_odds'] = dict(_jc['odds'])
+                pack['jc_score_source'] = '手机竞足→更多玩法→胜平负比分'
+                pack['jc_score_orderid'] = _jc.get('orderid') or ''
+                pack['boards_hit']['胜平负比分'] = True
+            else:
+                pack['jc_score_block_reason'] = (
+                    f"oddsData 未取到本场31项 stage={_jc.get('stage')} "
+                    f"orderid={_jc.get('orderid') or '-'}"
+                )
+        else:
+            _jc_report['stage'] = 'fetch_failed'
+            pack['jc_score_block_reason'] = (
+                f"HTTP {_jc_report['status'] or _jc_fetch.get('error')}"
+            )
+        pack['source_report']['jczq_scores'] = _jc_report
+    except Exception as _jc_err:  # noqa: BLE001 - 比分赔率抓取失败不影响三块水位
+        pack['jc_score_block_reason'] = f'{type(_jc_err).__name__}: {_jc_err}'
     _hit_n = len(pack['boards_hit'])
     if _hit_n == 3:
         try:
@@ -1609,7 +1669,115 @@ def scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict
     return out
 
 
-def _is_filled(value: Any) -> bool:
+# 竞彩比分 31 个选项的官方代码顺序：30..42 主胜、43..47 平、48..60 客胜。
+# 与 oddsData.OddsList.SportteryScore 的键一一对应。
+_JCZQ_SCORE_CODES: tuple[tuple[str, str], ...] = (
+    *((str(30 + i), s) for i, s in enumerate(
+        ['1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2', '胜其它']
+    )),
+    *((str(43 + i), s) for i, s in enumerate(['0-0', '1-1', '2-2', '3-3', '平其它'])),
+    *((str(48 + i), s) for i, s in enumerate(
+        ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5', '负其它']
+    )),
+)
+_JCZQ_CODE_TO_SCORE = dict(_JCZQ_SCORE_CODES)
+JCZQ_SCORE_OPTIONS = tuple(score for _code, score in _JCZQ_SCORE_CODES)
+
+
+def _decode_js_object(text: str, marker: str = 'var oddsData') -> dict[str, Any] | None:
+    """从页面里切出 `var oddsData = {...}` 并 json.loads。
+
+    不能直接对切片 json.loads：切片边界要按花括号配对算（还要跳过字符串里的括号）。
+    """
+    start = text.find(marker)
+    if start < 0:
+        return None
+    brace = text.find('{', start)
+    if brace < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    end = -1
+    for idx in range(brace, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end = idx + 1
+                break
+    if end < 0:
+        return None
+    try:
+        data = json.loads(text[brace:end])
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _jc_orderid_for_match(html: str, match_id: Any) -> str:
+    """在竞足赛程页里把 matchid 映射到 orderid（oddsData 是按 orderid 键的）。
+
+    同一行里有 `matchid="<id>"` 和 `id="match_<orderid>" orderid="<orderid>"`，
+    但两者先后不定，所以按 jsMatchItem 分块后在同一块内取。
+    """
+    wanted = str(match_id or '').strip()
+    if not wanted:
+        return ''
+    for block in re.split(r'<div[^>]*class="[^"]*jsMatchItem[^"]*"', str(html or '')):
+        if f'matchid="{wanted}"' not in block:
+            continue
+        found = re.search(r'orderid="(\d+)"', block)
+        if found:
+            return found.group(1)
+    return ''
+
+
+def parse_jczq_score_odds(html: Any, match_id: Any) -> dict[str, Any]:
+    """从 m.okooo.com/jczq/ 取本场 31 个竞彩比分赔率。
+
+    返回 {'available', 'odds': {score: odd}, 'orderid', 'raw_count', 'stage'}。
+    这是 `jc_score_odds` 的唯一真实来源（此前只有读者没有写者，31池比分永远空）。
+    """
+    text = str(html or '')
+    out: dict[str, Any] = {'available': False, 'odds': {}, 'orderid': '', 'raw_count': 0, 'stage': 'ok'}
+    data = _decode_js_object(text)
+    if not data:
+        out['stage'] = 'odds_data_missing'
+        return out
+    orderid = _jc_orderid_for_match(text, match_id)
+    if not orderid:
+        out['stage'] = 'orderid_not_found'
+        return out
+    out['orderid'] = orderid
+    slot = data.get(orderid) if isinstance(data.get(orderid), dict) else {}
+    score_block = ((slot.get('OddsList') or {}).get('SportteryScore') or {})
+    if not isinstance(score_block, dict) or not score_block:
+        out['stage'] = 'sporttery_score_missing'
+        return out
+    odds: dict[str, float] = {}
+    for code, score in _JCZQ_SCORE_CODES:
+        value = _num_of(score_block.get(code))
+        if value is not None and value > 1:
+            odds[score] = value
+    out['raw_count'] = len(score_block)
+    out['odds'] = odds
+    out['available'] = len(odds) >= 31
+    if not out['available']:
+        out['stage'] = f'incomplete_{len(odds)}_of_31'
+    return out
     """一个值算不算「有内容」。空串/空容器/None 都算没有。"""
     if value is None:
         return False
@@ -1629,6 +1797,17 @@ _MOBILE_BOOKS_FIELDS = (
     'odds_1x2', 'odds_1x2_company',
 )
 _MOBILE_BOOKS_PROVENANCE = ('boards_hit', 'missing', 'source_report', 'fetch_urls', 'channel', 'match_id')
+
+
+def _is_filled(value: Any) -> bool:
+    """一个值算不算「有内容」。空串/空容器/None 都算没有。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
 
 
 def seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:

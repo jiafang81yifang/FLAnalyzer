@@ -97,8 +97,18 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
 
     books_avg = rec.get('correct_score_books_avg')
     page_avg = rec.get('correct_score_page_avg')
-    if not isinstance(books_avg, dict) or not books_avg:
-        books_avg = page_avg if isinstance(page_avg, dict) else {}
+    site_avg = rec.get('correct_score_site_avg')
+    books_from = ''
+    if isinstance(books_avg, dict) and books_avg:
+        books_from = 'correct_score_books_avg'
+    elif isinstance(page_avg, dict) and page_avg:
+        books_avg = page_avg
+        books_from = 'correct_score_page_avg'
+    elif isinstance(site_avg, dict) and site_avg:
+        books_avg = site_avg
+        books_from = 'correct_score_site_avg'
+    else:
+        books_avg = {}
     cs_books_n = len(books_avg) if isinstance(books_avg, dict) else 0
     mobile_channel = str(rec.get('correct_score_channel') or '').lower()
     mobile_entered = bool(cs_books_n and mobile_channel in {'mobile', 'desktop_cs', 'okooo_cs'})
@@ -118,12 +128,11 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
     # 水位缺口必须每次从字段现算。缓存的 rec['water_gaps'] 可能是上一轮（或抓取失败时）
     # 留下的旧名单；信它会把「三块都齐」的记录判成未就绪，日志就会出现
     # reason=水位缺asian_handicap/ou_line/odds_1x2 而实际并不缺。
+    # 水位缺口每次从字段现算，缓存的 rec['water_gaps'] 不再参与判断。
+    # 曾经的写法信缓存名单，结果把「三块都齐」的记录判成未就绪
+    # （reason=水位缺asian_handicap/ou_line/odds_1x2），也把纯空记录的缺项
+    # 交给一份可能过期的名单。现算永远以字段为准。
     water_gaps = _local_water_gaps(rec)
-    if not water_gaps and not any(rec.get(k) not in (None, '', {}, []) for k in
-                                 ('asian_handicap', 'ou_line', 'odds_1x2')):
-        # 三块字段完全不存在（纯缓存记录）：才用缓存名单，避免把空记录当齐全。
-        cached = rec.get('water_gaps') if isinstance(rec.get('water_gaps'), list) else []
-        water_gaps = [str(g) for g in cached]
     rec['water_gaps'] = list(water_gaps)
 
     cs_block = str(rec.get('cs_block_reason') or '').strip()
@@ -140,6 +149,8 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
         'mobile_entered': mobile_entered,
         'books_n': cs_books_n,
         'books_avg': dict(books_avg) if isinstance(books_avg, dict) else {},
+        # 读的是哪个键必须写清楚：日志里的 books=N 与 cs_n 必须同源同值。
+        'books_from': books_from,
     }
     for slot in filled_from_500:
         facts[f'filled_500_{slot}'] = fallback_500.get(slot)
@@ -150,6 +161,7 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
         'cs_books_n': cs_books_n,
         'filled_from_500': filled_from_500,
         'kept_mobile': kept_mobile,
+        'books_from': books_from,
         'water_gaps': list(water_gaps),
         'reason': '' if ready else '；'.join(reasons) or '数据不足且未给出原因',
     }
