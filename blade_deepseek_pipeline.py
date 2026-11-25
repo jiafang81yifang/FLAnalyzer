@@ -6,9 +6,9 @@ External DeepSeek calls remain in the main app where credentials/config live.
 """
 from __future__ import annotations
 
-from html import escape
 import re
-from typing import Any
+from html import escape
+from typing import Any, ClassVar
 
 JCZQ_MACRO_BAIT_SCORES = {"1-0", "0-1", "1-1", "2-1", "1-2"}
 _RUNTIME: dict[str, Any] = {}
@@ -58,7 +58,8 @@ def _score_wdl(score: Any) -> str:
 
 def audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]:
     ctx = match_context if isinstance(match_context, dict) else {}
-    payload = ctx.get('direction_lock_payload') if isinstance(ctx.get('direction_lock_payload'), dict) else {}
+    raw_payload = ctx.get('direction_lock_payload')
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
     ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0
     try:
         ratio_f = float(ratio or 0)
@@ -119,7 +120,7 @@ def compare_short_abs_hot(info: Any) -> dict[str, Any]:
 
 
 class V1631StandardUnifiedEngine:
-    _TEMPLATES = {'胜': '主胜', '平': '平局', '负': '客胜'}
+    _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}
     _TEMPLATE_FALLBACK = '未形成'
 
 
@@ -198,6 +199,8 @@ class DeepSeekAnalyzer:
                     try:
                         if isinstance(odd, dict):
                             odd = odd.get('odds') or odd.get('avg') or odd.get('value')
+                        if odd is None:
+                            continue
                         f = float(odd)
                     except (TypeError, ValueError):
                         continue
@@ -208,7 +211,10 @@ class DeepSeekAnalyzer:
     @staticmethod
     def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:
         clean = [r for r in (rows or []) if isinstance(r, dict)]
-        pos = [r for r in clean if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)]
+        pos = [
+            r for r in clean
+            if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)
+        ]
         return {'available': bool(clean), 'rows': clean, 'pos_rows': pos, 'pos_count': len(pos), 'system_prejudge': {}}
 
     @staticmethod
@@ -434,6 +440,7 @@ def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bo
         return _local_analysis(messages, json_mode=json_mode)
     import json
     import time
+
     import requests
     url = f"{cfg['base_url']}/v1/chat/completions"
     payload: dict[str, Any] = {
@@ -446,9 +453,16 @@ def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bo
         payload['response_format'] = {'type': 'json_object'}
     headers = {'Authorization': f"Bearer {cfg['api_key']}", 'Content-Type': 'application/json'}
     last_err: Exception | None = None
+    request_timeout = float(timeout or cfg['timeout'] or 60)
     for attempt in range(max(1, int(max_retries or 1))):
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=timeout or cfg['timeout'], stream=stream)
+            resp = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=request_timeout,
+                stream=stream,
+            )
             if resp.status_code == 429 and attempt < max_retries - 1:
                 time.sleep(min(30, 2 ** attempt)); continue
             resp.raise_for_status()

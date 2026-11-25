@@ -1,5 +1,6 @@
 """Odds/index math helpers used by app_v84_hermes."""
 from __future__ import annotations
+
 import math
 from typing import Any
 
@@ -25,24 +26,30 @@ def return_rate_pct(value: Any) -> float | None:
 
 
 def calc_return_rate(*odds: Any) -> float | None:
-    vals = [_f(o) for o in odds if _f(o) and _f(o) > 1]
+    vals = []
+    for odd in odds:
+        value = _f(odd)
+        if value is not None and value > 1:
+            vals.append(value)
     if not vals:
         return None
-    inv = sum(1.0 / float(v) for v in vals)
+    inv = sum(1.0 / v for v in vals)
     return (1.0 / inv) if inv > 0 else None
 
 
 def calc_instant_probs(win: Any, draw: Any, lose: Any) -> dict[str, Any]:
-    vals = {'win': _f(win), 'draw': _f(draw), 'lose': _f(lose)}
-    if any(v is None or v <= 1 for v in vals.values()):
+    win_f = _f(win)
+    draw_f = _f(draw)
+    lose_f = _f(lose)
+    if win_f is None or draw_f is None or lose_f is None or win_f <= 1 or draw_f <= 1 or lose_f <= 1:
         return {'valid': False, 'home': None, 'draw': None, 'away': None, 'return_rate': None}
-    inv_sum = sum(1.0 / float(v) for v in vals.values())
+    inv_sum = (1.0 / win_f) + (1.0 / draw_f) + (1.0 / lose_f)
     rr = 1.0 / inv_sum if inv_sum > 0 else None
     return {
         'valid': rr is not None,
-        'home': (rr / vals['win']) if rr else None,
-        'draw': (rr / vals['draw']) if rr else None,
-        'away': (rr / vals['lose']) if rr else None,
+        'home': (rr / win_f) if rr else None,
+        'draw': (rr / draw_f) if rr else None,
+        'away': (rr / lose_f) if rr else None,
         'return_rate': rr,
         'return_rate_pct': rr * 100.0 if rr else None,
     }

@@ -1,5 +1,6 @@
 """Sporttery/Jingcai merge-table helpers."""
 from __future__ import annotations
+
 from typing import Any
 
 _FIXED_CACHE: dict[str, Any] = {}

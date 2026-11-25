@@ -7,59 +7,77 @@ reachable service data, so app_v84_hermes can run without optional private code.
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+import requests
 
 _STORE = Path('reports/six_market_contradictions.json')
 
 
 # ---- HTTP/cache helpers ----
 def _cache_dir() -> Path:
-    import os
-    d=Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))
+    d = Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _cache_path(kind: str, match_id: Any) -> Path:
-    safe=re.sub(r'[^A-Za-z0-9_.-]+', '_', str(match_id or 'unknown'))
+    safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(match_id or 'unknown'))
     return _cache_dir() / f'{kind}_{safe}.json'
 
 
 def _proxy_dict(proxies: Any = None) -> dict[str, str] | None:
-    import os
     if isinstance(proxies, dict):
         return {k: v for k, v in proxies.items() if isinstance(v, str) and v}
-    proxy = str(proxies or os.environ.get('OKOOO_PROXY') or os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY') or '').strip()
+    proxy = str(
+        proxies
+        or os.environ.get('OKOOO_PROXY')
+        or os.environ.get('HTTPS_PROXY')
+        or os.environ.get('HTTP_PROXY')
+        or ''
+    ).strip()
     return {'http': proxy, 'https': proxy} if proxy else None
 
 
 def _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:
-    import time
-    import requests
-    headers={'User-Agent':'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36','Accept-Language':'zh-CN,zh;q=0.9'}
-    last=''
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+    }
+    last = ''
     for attempt in range(max(1, retries)):
         try:
-            sess=session or requests
-            resp=sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)
+            sess = session or requests
+            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)
             if resp.status_code == 200 and resp.text:
                 resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'
                 return resp.text
-            last=f'HTTP {resp.status_code}'
-        except Exception as exc:  # noqa: BLE001 - network retry wrapper
-            last=str(exc)[:160]
-        time.sleep(min(4, 2 ** attempt))
+            last = f'HTTP {resp.status_code}'
+        except requests.RequestException as exc:
+            last = f'{type(exc).__name__}: {str(exc)[:120]}'
+        time.sleep(min(4, 2**attempt))
     raise RuntimeError(last or 'empty response')
 
 
+def _read_json_cache(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"   ⚠️ [澳客手机CS] 缓存读取跳过 {path.name}: {type(exc).__name__}")
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _parse_score_odds_from_text(text: str) -> dict[str, float]:
-    odds={}
+    odds = {}
     # Handles compact HTML/text containing score followed by decimal odds.
     for score, odd in re.findall(r'(?:>|\b)(\d+\s*[-:：]\s*\d+)(?:<|\b)[^\d]{0,80}([1-9]\d?(?:\.\d+)?)', text):
         try:
-            odds[score.replace('：','-').replace(':','-').replace(' ', '')]=float(odd)
+            odds[score.replace('：', '-').replace(':', '-').replace(' ', '')] = float(odd)
         except ValueError:
             continue
     return odds
@@ -106,22 +124,30 @@ def jingcai_board_row_finished(row: Any, today_md: str = '') -> bool:
 
 
 def build_score_market_heat_ranking(odds_map: Any) -> dict[str, Any]:
-    rows=[]
+    rows = []
     if isinstance(odds_map, dict):
         for score, raw in odds_map.items():
             try:
                 odd = raw.get('odds') if isinstance(raw, dict) else raw
+                if odd is None:
+                    continue
                 odd_f = float(odd)
             except (TypeError, ValueError):
                 continue
             if odd_f > 1:
-                rows.append({'score': str(score).replace(':','-'), 'odds': odd_f, 'heat': 1.0/odd_f})
+                rows.append({'score': str(score).replace(':', '-'), 'odds': odd_f, 'heat': 1.0 / odd_f})
     rows.sort(key=lambda r: r['heat'], reverse=True)
-    return {'available': bool(rows), 'source': 'okooo_mobile_cs_existing_odds', 'channel': 'mobile', 'ranking': rows, 'top_scores': [r['score'] for r in rows[:8]]}
+    return {
+        'available': bool(rows),
+        'source': 'okooo_mobile_cs_existing_odds',
+        'channel': 'mobile',
+        'ranking': rows,
+        'top_scores': [r['score'] for r in rows[:8]],
+    }
 
 
 def _unavailable(reason: str, **extra: Any) -> dict[str, Any]:
-    data={'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}
+    data = {'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}
     data.update(extra)
     return data
 
@@ -130,15 +156,14 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
     html = kwargs.get('html') or kwargs.get('text')
     cache = _cache_path('cs', match_id)
     if not html and cache.exists():
-        try:
-            return json.loads(cache.read_text(encoding='utf-8'))
-        except Exception:
-            pass
+        cached = _read_json_cache(cache)
+        if cached is not None:
+            return cached
     if not html and match_id:
         url = kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/cs/'
         try:
             html = _http_get(str(url), proxies=proxies, session=session)
-        except Exception as exc:
+        except RuntimeError as exc:
             return _unavailable('external_okooo_mobile_cs_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160])
     odds = _parse_score_odds_from_text(str(html or ''))
     heat = build_score_market_heat_ranking(odds)
@@ -149,20 +174,28 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
 
 
 def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:
-    cache=_cache_path('six', match_id)
+    cache = _cache_path('six', match_id)
     if cache.exists():
-        try: return json.loads(cache.read_text(encoding='utf-8'))
-        except Exception: pass
-    html=kwargs.get('html') or kwargs.get('text')
+        cached = _read_json_cache(cache)
+        if cached is not None:
+            return cached
+    html = kwargs.get('html') or kwargs.get('text')
     if not html and match_id:
         try:
-            html=_http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)
-        except Exception as exc:
+            html = _http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)
+        except RuntimeError as exc:
             return _unavailable('external_okooo_six_market_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160], boards_hit={})
-    text=str(html or '')
-    ou_match=re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\d+(?:\.\d+)?)', text, re.I)
-    ah_match=re.search(r'(?:让球|亚盘|Handicap)[^+\-0-9]{0,20}([+\-]?\d+(?:\.\d+)?)', text, re.I)
-    pack={'available': bool(ou_match or ah_match), 'channel': 'mobile', 'match_id': str(match_id or ''), 'ou_line': float(ou_match.group(1)) if ou_match else None, 'asian_handicap': float(ah_match.group(1)) if ah_match else None, 'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)}}
+    text = str(html or '')
+    ou_match = re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\d+(?:\.\d+)?)', text, re.IGNORECASE)
+    ah_match = re.search(r'(?:让球|亚盘|Handicap)[^+\-0-9]{0,20}([+\-]?\d+(?:\.\d+)?)', text, re.IGNORECASE)
+    pack = {
+        'available': bool(ou_match or ah_match),
+        'channel': 'mobile',
+        'match_id': str(match_id or ''),
+        'ou_line': float(ou_match.group(1)) if ou_match else None,
+        'asian_handicap': float(ah_match.group(1)) if ah_match else None,
+        'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)},
+    }
     if pack['available']:
         cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')
         return pack
@@ -191,7 +224,8 @@ def seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None 
 def apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(record, dict):
         return {}
-    b = books if isinstance(books, dict) else record.get('mobile_ah_ou_books') if isinstance(record.get('mobile_ah_ou_books'), dict) else {}
+    raw_books = record.get('mobile_ah_ou_books')
+    b = books if isinstance(books, dict) else raw_books if isinstance(raw_books, dict) else {}
     if b.get('ou_line') is not None:
         record['ou_line'] = b.get('ou_line')
     if b.get('asian_handicap') is not None:
@@ -202,7 +236,7 @@ def apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | Non
 def detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(record, dict):
         return []
-    contradictions=[]
+    contradictions = []
     if record.get('predicted_ou') and record.get('ou_line') is None:
         contradictions.append({'type': 'missing_ou_line', 'severity': 'low'})
     return contradictions
@@ -211,9 +245,10 @@ def detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, A
 def missing_six_market_waters(record: dict[str, Any]) -> list[str]:
     if not isinstance(record, dict):
         return ['invalid_record']
-    missing=[]
+    missing = []
     for key in ('asian_handicap', 'ou_line', 'odds_1x2'):
-        if not record.get(key): missing.append(key)
+        if not record.get(key):
+            missing.append(key)
     return missing
 
 
@@ -235,12 +270,15 @@ def save_six_market_contradictions(items: Any) -> bool:
         _STORE.parent.mkdir(parents=True, exist_ok=True)
         _STORE.write_text(json.dumps(items or [], ensure_ascii=False, indent=2), encoding='utf-8')
         return True
-    except Exception:
+    except OSError as exc:
+        print(f"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}")
         return False
 
 
 def load_six_market_contradictions() -> list[Any]:
     try:
-        return json.loads(_STORE.read_text(encoding='utf-8'))
-    except Exception:
+        data = json.loads(_STORE.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"   ⚠️ [澳客手机CS] 读取对账缺口失败: {type(exc).__name__}")
         return []
+    return data if isinstance(data, list) else []

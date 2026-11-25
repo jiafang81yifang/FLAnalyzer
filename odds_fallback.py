@@ -5,8 +5,9 @@ already-fetched data. This avoids missing-module failures without pretending tha
 external 500.com data exists.
 """
 from __future__ import annotations
-from typing import Any
+
 import os
+from typing import Any
 
 
 def odds_fallback_enabled() -> bool:
@@ -18,7 +19,10 @@ def build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map') -> di
     if isinstance(odds, dict):
         for score, odd in odds.items():
             try:
-                value = float(odd.get('odds') if isinstance(odd, dict) else odd)
+                raw_value = odd.get('odds') if isinstance(odd, dict) else odd
+                if raw_value is None:
+                    continue
+                value = float(raw_value)
             except (TypeError, ValueError):
                 continue
             if value > 1:
