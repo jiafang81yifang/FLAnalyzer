@@ -182,10 +182,11 @@ _CLI_OKOOO_ROUTE, _CLI_OKOOO_PROXY = _apply_okooo_boot_cli()
 # 该模式下跳过浏览器自动打开等仅适用于 Streamlit 大屏的副作用。
 _CLI_DAILY_LEARN_MODE = ('--daily-learn' in sys.argv)
 _CLI_OPEN_SCRAPE = ('--open-scrape' in sys.argv)
+_CLI_DIAGNOSE_MODE = ('--diagnose' in sys.argv)
 _CLI_INTEG_HEADLESS = str(os.environ.get('BLADE_HEADLESS', '') or '').strip().lower() in (
     '1', 'true', 'yes', 'on',
 )
-_CLI_HEADLESS = _CLI_DAILY_LEARN_MODE or _CLI_OPEN_SCRAPE or _CLI_INTEG_HEADLESS
+_CLI_HEADLESS = _CLI_DAILY_LEARN_MODE or _CLI_OPEN_SCRAPE or _CLI_DIAGNOSE_MODE or _CLI_INTEG_HEADLESS
 # =============================================================================================
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -4372,17 +4373,58 @@ FEATURE_DB_BASE_COLUMNS = {
     'actual_home_goals', 'actual_away_goals', 'v82_score', 'feature_json',
     'source_tag', 'created_at', 'updated_at'
 }
+FEATURE_STORE_SCHEMA_VERSION = "2"
+FEATURE_STORE_EMPTY_AUDIT_MESSAGE = "暂无对账数据：数据库已初始化，等待赛果写入"
 
 
-def get_feature_db_conn():
-    """获取特征库SQLite连接。"""
-    conn = sqlite3.connect(FEATURE_DB_FILE, check_same_thread=False)
+def _configured_models_dir():
+    raw = os.environ.get("MODELS_DIR") or os.environ.get("FLANALYZER_MODELS_DIR") or MODELS_DIR
+    return os.path.abspath(os.path.expanduser(str(raw or MODELS_DIR)))
+
+
+def resolve_feature_db_path(db_path=None):
+    """Resolve feature_store.db to the app data dir while honoring explicit paths."""
+    env_path = os.environ.get("FEATURE_DB_PATH") or os.environ.get("FEATURE_DB_FILE")
+    raw = str(db_path or env_path or FEATURE_DB_FILE).strip() or FEATURE_DB_FILE
+    raw = os.path.expanduser(raw)
+    if os.path.isabs(raw):
+        return os.path.abspath(raw)
+    # The built-in/default DB lives under MODELS_DIR/data so single-file deployments
+    # do not depend on sibling files and create their state in one app-owned folder.
+    if raw == FEATURE_DB_FILE or (not db_path and not env_path and os.path.dirname(raw) == ''):
+        return os.path.abspath(os.path.join(_configured_models_dir(), "data", os.path.basename(raw)))
+    return os.path.abspath(raw)
+
+
+def _ensure_feature_db_parent(db_path):
+    parent = os.path.dirname(os.path.abspath(db_path))
+    if not parent:
+        return
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"FeatureStore数据库目录不可写: {parent}") from exc
+
+
+def _feature_store_connect(db_path=None, read_only=False):
+    path = resolve_feature_db_path(db_path)
+    if read_only:
+        uri = 'file:' + os.path.abspath(path).replace('\\', '/') + '?mode=ro'
+        conn = sqlite3.connect(uri, uri=True)
+    else:
+        _ensure_feature_db_parent(path)
+        conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def get_feature_db_conn():
+    """获取特征库SQLite连接。"""
+    return _feature_store_connect()
+
+
 def ensure_feature_store_table(conn=None):
-    """确保特征库主表存在。"""
+    """确保特征库、赛后对账和schema元数据表存在。"""
     own_conn = False
     if conn is None:
         conn = get_feature_db_conn()
@@ -4407,10 +4449,132 @@ def ensure_feature_store_table(conn=None):
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS match_entropy_features (
+                match_id TEXT PRIMARY KEY,
+                match_name TEXT,
+                analysis_timestamp TEXT,
+                final_direction TEXT,
+                actual_score TEXT,
+                match_result TEXT,
+                is_correct INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reconciliation_audit (
+                audit_id TEXT PRIMARY KEY,
+                fixture_id TEXT,
+                match_name TEXT,
+                predicted_direction TEXT,
+                actual_result TEXT,
+                actual_score TEXT,
+                is_correct INTEGER,
+                source_tag TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feature_store_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO feature_store_meta (key, value, updated_at)
+            VALUES ('schema_version', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (FEATURE_STORE_SCHEMA_VERSION, datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+        )
         conn.commit()
     finally:
         if own_conn:
             conn.close()
+
+
+def feature_store_schema_status():
+    """Return DB path, schema version and row counts for diagnostics/status."""
+    path = resolve_feature_db_path()
+    ensure_feature_store_table()
+    with _feature_store_connect(path, read_only=True) as conn:
+        tables = [
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        ]
+        version_row = conn.execute(
+            "SELECT value FROM feature_store_meta WHERE key='schema_version'"
+        ).fetchone()
+        row_counts = {}
+        for table in tables:
+            safe_table = _assert_safe_sqlite_table_name(table)
+            # Table names come from sqlite_master and are identifier-validated above.
+            row_counts[safe_table] = int(conn.execute(f'SELECT COUNT(*) FROM "{safe_table}"').fetchone()[0])  # nosec B608
+    return {
+        'path': path,
+        'schema_version': str(version_row[0] if version_row else ''),
+        'tables': tables,
+        'row_counts': row_counts,
+    }
+
+
+def feature_store_reconciliation_round_trip():
+    """Insert/read/delete a fake reconciliation row to verify DB write/read health."""
+    ensure_feature_store_table()
+    path = resolve_feature_db_path()
+    fake_id = "__diag_reconciliation_roundtrip__"
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with get_feature_db_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO match_entropy_features (
+                match_id, match_name, analysis_timestamp, final_direction,
+                actual_score, match_result, is_correct, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(match_id) DO UPDATE SET
+                match_name=excluded.match_name,
+                analysis_timestamp=excluded.analysis_timestamp,
+                final_direction=excluded.final_direction,
+                actual_score=excluded.actual_score,
+                match_result=excluded.match_result,
+                is_correct=excluded.is_correct,
+                updated_at=excluded.updated_at
+            """,
+            (fake_id, "诊断假赛事", now_str, "胜", "2-1", "胜", 1, now_str, now_str),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT match_id, match_name, final_direction, actual_score, match_result, is_correct "
+            "FROM match_entropy_features WHERE match_id=?",
+            (fake_id,),
+        ).fetchone()
+        conn.execute("DELETE FROM match_entropy_features WHERE match_id=?", (fake_id,))
+        conn.commit()
+    return {
+        'path': path,
+        'inserted': row is not None,
+        'read_back': dict(row) if row is not None else {},
+        'deleted': True,
+    }
+
+
+try:
+    ensure_feature_store_table()
+except Exception as _feature_store_init_exc:  # noqa: BLE001 - startup should continue without audit DB
+    print(f"   ⚠️ [FeatureStore] 数据库初始化失败，赛后对账暂不可用: {_feature_store_init_exc}")
 
 
 def _get_existing_feature_columns(conn):
@@ -4453,6 +4617,13 @@ def _assert_safe_match_feature_columns(columns):
         if col_name in FEATURE_DB_BASE_COLUMNS:
             continue
         _assert_safe_feature_column_name(col_name)
+
+
+def _assert_safe_sqlite_table_name(table_name):
+    """Validate table names read from app-created sqlite_master rows before SQL composition."""
+    if not re.fullmatch(r'[0-9a-zA-Z_]+', str(table_name or '')):
+        raise ValueError(f"unsafe sqlite table name: {table_name!r}")
+    return str(table_name)
 
 
 def ensure_feature_columns(conn, feature_vector):
@@ -5331,6 +5502,128 @@ def _tg_fail_should_log():
     return True
 
 
+def _tg_api_url(method):
+    base = str(os.environ.get('TELEGRAM_API_BASE_URL') or 'https://api.telegram.org').strip().rstrip('/')
+    return f"{base}/bot{SNIPER_BOT_TOKEN}/{method}"
+
+
+def _tg_print_invalid_token_once():
+    if getattr(threading, "_blade_tg_invalid_token_logged", False):
+        return
+    setattr(threading, "_blade_tg_invalid_token_logged", True)  # noqa: B010
+    print("[TG] bot token 无效或已被撤销，请检查 TELEGRAM_BOT_TOKEN；已停止轮询", flush=True)
+
+
+def _tg_validate_bot_token_once(force=False):
+    """Validate Telegram bot token with getMe once; cache result for polling/diagnose."""
+    if not SNIPER_BOT_TOKEN:
+        result = {'ok': False, 'status': 'missing_token', 'message': 'token not configured'}
+        setattr(threading, "_blade_tg_getme_status", result)  # noqa: B010
+        return result
+    cached = getattr(threading, "_blade_tg_getme_status", None)
+    if isinstance(cached, dict) and not force:
+        return cached
+    _ensure_tg_proxy_session()
+    strategies = []
+    if TG_PROXIES and _TG_SESSION_PROXY is not None:
+        strategies.append((_TG_SESSION_PROXY, True, '代理'))
+    if TG_PROXIES and _TG_SESSION_PROXY_NOVERIFY is not None:
+        strategies.append((_TG_SESSION_PROXY_NOVERIFY, False, '代理'))
+    strategies.append((_TG_SESSION_DIRECT, True, '直连'))
+    result = {'ok': False, 'status': 'network_unchecked', 'message': 'not checked'}
+    for _sess, _vf, _label in strategies:
+        try:
+            if not _vf:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            resp = _sess.get(_tg_api_url('getMe'), timeout=(5, 8))
+            status = int(resp.status_code)
+            if status == 200:
+                payload = resp.json()
+                result = {
+                    'ok': bool(payload.get('ok')),
+                    'status': 'ok' if payload.get('ok') else 'api_not_ok',
+                    'route': _label,
+                    'username': ((payload.get('result') or {}).get('username') if isinstance(payload, dict) else None),
+                }
+                break
+            if status in (401, 404):
+                result = {'ok': False, 'status': 'invalid_token', 'http_status': status, 'route': _label}
+                _tg_print_invalid_token_once()
+                break
+            if status >= 500:
+                result = {'ok': False, 'status': 'telegram_server_error', 'http_status': status, 'route': _label}
+                continue
+            result = {'ok': False, 'status': 'api_error', 'http_status': status, 'route': _label}
+        except requests.exceptions.ProxyError:
+            result = {'ok': False, 'status': 'proxy_unreachable', 'route': _label}
+        except requests.exceptions.ConnectTimeout:
+            result = {'ok': False, 'status': 'connect_timeout', 'route': _label}
+        except requests.exceptions.Timeout:
+            result = {'ok': False, 'status': 'timeout', 'route': _label}
+        except requests.exceptions.ConnectionError:
+            result = {'ok': False, 'status': 'network_unreachable', 'route': _label}
+        except Exception:  # noqa: BLE001 - Telegram diagnose must never crash app startup
+            result = {'ok': False, 'status': 'unknown_error', 'route': _label}
+    setattr(threading, "_blade_tg_getme_status", result)  # noqa: B010
+    return result
+
+
+def build_system_diagnostics(force_tg_check=False):
+    """Collect one-command health diagnostics without exposing secrets."""
+    try:
+        db_status = feature_store_schema_status()
+    except Exception as exc:  # noqa: BLE001 - diagnostics should report, not crash
+        db_status = {'path': resolve_feature_db_path(), 'error': str(exc)}
+    token_present = bool(SNIPER_BOT_TOKEN)
+    getme = _tg_validate_bot_token_once(force=force_tg_check) if token_present else {
+        'ok': False,
+        'status': 'missing_token',
+    }
+    proxy_url = ''
+    proxy_reachable = None
+    proxies = _local_proxies()
+    if isinstance(proxies, dict):
+        proxy_url = str(proxies.get('https') or proxies.get('http') or '')
+        proxy_reachable = _blade_proxy_port_reachable(proxy_url) if proxy_url else None
+    return {
+        'db': db_status,
+        'deepseek_key_present': bool(os.environ.get('DEEPSEEK_API_KEY') or os.environ.get('DEEPSEEK_KEY')),
+        'telegram_token_present': token_present,
+        'telegram_getme': getme,
+        'proxy': {
+            'route': _blade_normalize_okooo_route(os.environ.get("OKOOO_ROUTE") or _CLI_OKOOO_ROUTE or "auto"),
+            'url_configured': bool(proxy_url),
+            'reachable': proxy_reachable,
+        },
+    }
+
+
+def format_system_diagnostics_text(force_tg_check=False):
+    diag = _as_dict(build_system_diagnostics(force_tg_check=force_tg_check))
+    db = _as_dict(diag.get('db'))
+    row_counts = _as_dict(db.get('row_counts'))
+    counts_text = ', '.join(f"{k}={v}" for k, v in sorted(row_counts.items())) or '无'
+    getme = _as_dict(diag.get('telegram_getme'))
+    proxy = _as_dict(diag.get('proxy'))
+    proxy_reachable = proxy.get('reachable')
+    lines = [
+        "🧪【系统诊断】",
+        f"DB路径: {db.get('path') or resolve_feature_db_path()}",
+        f"DB schema_version: {db.get('schema_version') or 'unknown'}",
+        f"DB row_counts: {counts_text}",
+        f"DeepSeek key: {'present' if diag.get('deepseek_key_present') else 'missing'}",
+        f"Telegram token: {'present' if diag.get('telegram_token_present') else 'missing'}",
+        f"Telegram getMe: {getme.get('status') or 'unknown'}"
+        + (f" @{getme.get('username')}" if getme.get('username') else ''),
+        f"Proxy route: {proxy.get('route') or 'auto'}",
+        f"Proxy reachable: {proxy_reachable if proxy_reachable is not None else 'not_configured'}",
+    ]
+    if db.get('error'):
+        lines.append(f"DB error: {db.get('error')}")
+    return "\n".join(lines)
+
+
 def _tg_post(url, payload):
     """TG发送统一入口：智能重试 + 代理探测；SSL绕过需显式环境开关。
     返回: True=成功, False=网络失败, 'PARSE_ERROR'=HTML解析失败(需回退纯文本)
@@ -5377,11 +5670,14 @@ def _tg_post(url, payload):
                     print(f"   ⏳ [TG] 频率限制，等待{_wait}秒...")
                     _t.sleep(_wait)
                     continue
+                elif r.status_code in (401, 404):
+                    _tg_print_invalid_token_once()
+                    return False
                 else:
                     print(f"   ⚠️ [TG] {label}返回非200: {r.status_code} {r.text[:100]}")
                     break  # 非网络错误，换策略
             except requests.exceptions.ConnectTimeout as e:
-                print(f"   ⚠️ [TG] {label}连接超时: {type(e).__name__}: {str(e)[:60]}")
+                print(f"   ⚠️ [TG] {label}连接超时: {type(e).__name__}")
                 if label != '代理':
                     print("   ❌ [TG] 直连连接超时，停止同路由重试")
                     return False
@@ -5392,7 +5688,7 @@ def _tg_post(url, payload):
                     print(f"   🔄 [TG] {label}第{attempt+1}次失败({type(e).__name__})，{_backoff}秒后重试...")
                     _t.sleep(_backoff)
                 else:
-                    print(f"   ⚠️ [TG] {label}达到最大重试次数: {type(e).__name__}: {str(e)[:60]}")
+                    print(f"   ⚠️ [TG] {label}达到最大重试次数: {type(e).__name__}")
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
                     print(f"   🔄 [TG] {label}超时，重试中...")
@@ -5400,7 +5696,7 @@ def _tg_post(url, payload):
                 else:
                     print(f"   ⚠️ [TG] {label}达到最大重试次数(超时)")
             except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                print(f"   ⚠️ [TG] {label}未知异常: {type(e).__name__}: {str(e)[:80]}")
+                print(f"   ⚠️ [TG] {label}未知异常: {type(e).__name__}")
                 break  # 未知异常换策略
     print("   ❌ [TG] 所有策略均失败（代理/直连/SSL绕过×3次重试）")
     return False
@@ -5464,7 +5760,7 @@ def send_tg(text, parse_mode=None):
     if not text or not str(text).strip():
         print("   ⏭️ TG发送跳过：剔除关闭段后正文为空")
         return
-    url = f"https://api.telegram.org/bot{SNIPER_BOT_TOKEN}/sendMessage"
+    url = _tg_api_url('sendMessage')
     max_len = 4000
 
     def _strip_html(t):
@@ -41048,7 +41344,8 @@ def handle_tg_command(msg_text):
                 f"自动分析: 每日11:08（仅未开赛；已取消每8小时）\n"
                 f"数据模型识别: 每日13:30\n"
                 f"自动复盘: 每日23:30\n"
-                f"【取分】开赛满150分钟后自动从澳客网拉取完场比分")
+                f"【取分】开赛满150分钟后自动从澳客网拉取完场比分\n\n"
+                f"{format_system_diagnostics_text(force_tg_check=False)}")
         send_tg(text)
         return
 
@@ -42099,6 +42396,14 @@ def listen():
     if not getattr(listen, '_started_logged', False):
         print("🎧 监控启动... (支持指令: 分析/复盘/熔炉/今日/详情/方向/冷门/比较/教训/状态/帮助)")
         listen.__dict__['_started_logged'] = True
+    _getme_status = _tg_validate_bot_token_once()
+    if _getme_status.get('status') == 'invalid_token':
+        return
+    if _getme_status.get('status') == 'missing_token':
+        if not getattr(threading, "_blade_tg_missing_token_logged", False):
+            setattr(threading, "_blade_tg_missing_token_logged", True)  # noqa: B010
+            print("[TG] bot token 未配置，请设置 TELEGRAM_BOT_TOKEN；已停止轮询", flush=True)
+        return
     _poll_lock_path = os.path.join(_tempfile_mod.gettempdir(), "blade_quant_tg_listen.lock")
     _poll_fh = None
     _wait_logged = False
@@ -42123,7 +42428,7 @@ def listen():
             schedule.run_pending()
             _ensure_tg_proxy_session()
             # timeout=0：立刻返回。挂 10 秒长轮询时，本机代理会把 TLS 连接掐掉。
-            url = f"https://api.telegram.org/bot{SNIPER_BOT_TOKEN}/getUpdates?timeout=0"
+            url = _tg_api_url('getUpdates') + "?timeout=0"
             if offset:
                 url += f"&offset={offset}"
             _tg_resp = None
@@ -42155,7 +42460,13 @@ def listen():
                         break
                     if _last_status == 409:
                         break
-                    _poll_err = f"{_label}: HTTP {_last_status}"
+                    if _last_status in (401, 404):
+                        _tg_print_invalid_token_once()
+                        return
+                    if _last_status >= 500:
+                        _poll_err = f"{_label}: Telegram服务暂不可用 HTTP {_last_status}"
+                    else:
+                        _poll_err = f"{_label}: Telegram API返回 HTTP {_last_status}"
                     _tg_resp = None
                 except requests.exceptions.ProxyError:
                     _tg_resp = None
@@ -42239,6 +42550,18 @@ def page_history():
 
 # ================= 11.9 CLI：--daily-learn → deepseek-flash 学习报告 =================
 # helpers（deepseek_flash_run_learning_report）已在 listen 前定义完毕。
+if _CLI_DIAGNOSE_MODE:
+    print(format_system_diagnostics_text(force_tg_check=True))
+    try:
+        _rt = feature_store_reconciliation_round_trip()
+        print(
+            "FeatureStore roundtrip: "
+            f"inserted={_rt.get('inserted')} read_back={_rt.get('read_back')} deleted={_rt.get('deleted')}"
+        )
+    except Exception as _diag_rt_exc:  # noqa: BLE001 - diagnostics should return a readable failure
+        print(f"FeatureStore roundtrip: failed ({type(_diag_rt_exc).__name__})")
+    sys.exit(0)
+
 if _CLI_DAILY_LEARN_MODE:
     try:
         print("=" * 50)
@@ -42980,13 +43303,11 @@ if not _CLI_HEADLESS:
             st.sidebar.info(gt_text)
 
     # ===== 主区域：历史记录查询（从侧边栏移入卡片展示顶部） =====
-    def load_backtest_audit_frame(db_path='feature_store.db', history=None):
+    def load_backtest_audit_frame(db_path=None, history=None):
         """只读赛果库，并用历史里的方向锁+预测比对账。不写库，不写 first_score。"""
-        path = str(db_path or FEATURE_DB_FILE)
-        if not os.path.exists(path):
-            return pd.DataFrame()
-        uri = 'file:' + os.path.abspath(path).replace('\\', '/') + '?mode=ro'
-        with sqlite3.connect(uri, uri=True) as conn:
+        path = resolve_feature_db_path(db_path)
+        ensure_feature_store_table()
+        with _feature_store_connect(path, read_only=True) as conn:
             tables = {
                 row[0] for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -43118,20 +43439,18 @@ if not _CLI_HEADLESS:
         return frame
 
 
-    def render_backtest_audit_dashboard(db_path='feature_store.db'):
+    def render_backtest_audit_dashboard(db_path=None):
         """赛后回测：方向锁对完场赛果。只读特征库。"""
         st.markdown('## 📊 赛后回测与对账战情室')
-        path = str(db_path or FEATURE_DB_FILE)
-        if not os.path.exists(path):
-            st.warning(f'数据库 `{path}` 未找到，暂无对账数据。')
-            return
+        path = resolve_feature_db_path(db_path)
         try:
+            ensure_feature_store_table()
             frame = load_backtest_audit_frame(path, page_history())
         except Exception as exc:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            st.error(f'读取特征库失败: {exc}')
+            st.error(f'读取特征库schema失败: {exc}')
             return
         if frame.empty:
-            st.info('特征库中暂无可分析的记录。')
+            st.info(FEATURE_STORE_EMPTY_AUDIT_MESSAGE)
             return
         audited = frame[frame['is_correct'].notnull()]
         total_audited = len(audited)
