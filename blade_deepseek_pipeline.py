@@ -529,6 +529,35 @@ class DeepSeekAnalyzer:
             row['in_31'] = True
             row['formed'] = theory is not None and market is not None
             full_rows.append(row)
+
+        # market 必须落在 100% 基准上再和 theory/jc 比。
+        # `100/odds` 是单家含水利概率（31 项加起来 145.95%），拿它跟归一化到 100
+        # 的 theory 比，pos_rows 会虚报「26/31 市场高于理论」，Δ 列也没有可比性。
+        # 这里按 app 端 build_pool31_option_rows 的口径去水归一。
+        _m_total = sum(float(r['market']) for r in full_rows if _f(r.get('market')) is not None)
+        if _m_total > 0:
+            for row in full_rows:
+                if _f(row.get('market')) is not None:
+                    row['market'] = round(float(row['market']) * 100.0 / _m_total, 4)
+        # 竞彩官方同口径：单独归一，供市短矩阵逐项比较。
+        _jc_total = sum(
+            (100.0 / float(r['jc_odds']))
+            for r in full_rows
+            if _f(r.get('jc_odds')) and float(r['jc_odds']) > 1
+        )
+        for row in full_rows:
+            jc_odd = _f(row.get('jc_odds'))
+            if jc_odd and jc_odd > 1 and _jc_total > 0:
+                row['jc_odds_pct'] = round((100.0 / jc_odd) * 100.0 / _jc_total, 4)
+            else:
+                row['jc_odds_pct'] = None
+        # theory 也归一化，保证三方同基准。
+        _t_total = sum(float(r['theory']) for r in full_rows if _f(r.get('theory')) is not None)
+        if _t_total > 0:
+            for row in full_rows:
+                if _f(row.get('theory')) is not None:
+                    row['theory'] = round(float(row['theory']) * 100.0 / _t_total, 4)
+
         pos = [
             r for r in full_rows
             if _f(r.get('market')) is not None and _f(r.get('theory')) is not None
@@ -537,6 +566,9 @@ class DeepSeekAnalyzer:
         for row in full_rows:
             theory, market = _f(row.get('theory')), _f(row.get('market'))
             row['delta'] = round(market - theory, 4) if theory is not None and market is not None else None
+        market_sum = round(sum(float(r['market']) for r in full_rows if _f(r.get('market')) is not None), 4)
+        theory_sum = round(sum(float(r['theory']) for r in full_rows if _f(r.get('theory')) is not None), 4)
+        jc_pct_sum = round(sum(float(r['jc_odds_pct']) for r in full_rows if _f(r.get('jc_odds_pct')) is not None), 4)
         return {
             'available': bool(full_rows),
             'rows': full_rows,
@@ -544,6 +576,10 @@ class DeepSeekAnalyzer:
             'formed_count': sum(1 for r in full_rows if r.get('formed')),
             'pos_rows': pos,
             'pos_count': len(pos),
+            # 三方基准和，供审计断言各自 ≈100（曾经 market 是 145.95 的含水利值）。
+            'market_sum': market_sum,
+            'theory_sum': theory_sum,
+            'jc_pct_sum': jc_pct_sum,
             'system_prejudge': {},
             'home': str(kwargs.get('home') or ''),
             'away': str(kwargs.get('away') or ''),
@@ -794,17 +830,26 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:
-        """组装 DeepSeek-only TG 报告的表格段。
+        """按读取顺序组装 DeepSeek-only TG 报告。
 
-        用户明确要求 TG 里必须有三块，全部来自同一份 31 全表：
-          1. 31项市均×竞彩对比表（31 行，含三个「其它」）
-          2. 市短矩阵（市均隐含% > 竞彩隐含%）
-          3. 市热矩阵（Δ=市均−理论>0，与 pos_rows 同口径）
-        缺输入时各段自己打印「未形成（原因）」，不静默留空。
+        顺序：31对比表 → 市短 → 市热 → 市热超理论 → heat → desc。
+
+        pack 的来源有三层，生产调用点只给 ds_payload（pack 藏在里面）：
+          1. 显式 theo_mkt_31_pack / pack kwarg
+          2. kwargs['ds_payload']['theo_mkt_31_pack'] / ['pack']
+          3. 都拿不到就用空表 -> 各段自己打印「未形成（原因）」
+
+        历史实现在这里只认第 1 层，生产传入的却是 ds_payload，于是三段全部塌成
+        「未形成」，即使包里明明有完整的 31 全表。
         """
+        payload = kwargs.get('ds_payload') if isinstance(kwargs.get('ds_payload'), dict) else {}
         pack = kwargs.get('theo_mkt_31_pack')
         if not isinstance(pack, dict):
-            pack = kwargs.get('pack') if isinstance(kwargs.get('pack'), dict) else {}
+            pack = kwargs.get('pack')
+        if not isinstance(pack, dict) and payload:
+            pack = payload.get('theo_mkt_31_pack') or payload.get('pack')
+        if not isinstance(pack, dict):
+            pack = {}
 
         def _as_lines(value: Any) -> list[str]:
             if isinstance(value, str):
@@ -818,13 +863,11 @@ class DeepSeekAnalyzer:
         if title:
             sections.append(title)
 
-        # 1) 31 项对比表
-        sections.append('\n'.join(_as_lines(
-            kwargs.get('theo_mkt_31_tg_lines') or
-            DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
-        )))
+        # 1) 31 项对比表：优先用调用方已渲染好的行，否则按 pack 现渲染。
+        _t31 = _as_lines(kwargs.get('theo_mkt_31_tg_lines'))
+        sections.append('\n'.join(_t31 or DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)))
 
-        # 2) 市短矩阵：市均 vs 竞彩
+        # 2) 市短矩阵：市均 vs 竞彩（需要 jc_odds_pct，用 pack 现算）
         short_matrix = kwargs.get('mkt_short_matrix')
         if not isinstance(short_matrix, dict):
             short_matrix = DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
@@ -834,11 +877,25 @@ class DeepSeekAnalyzer:
             away=str(kwargs.get('away') or ''),
         )))
 
-        # 3) 市热矩阵：市均 vs 理论（pos_rows 口径）
+        # 3) 市热矩阵：市均 vs 理论（pos_rows 同口径）
         sections.append('\n'.join(DeepSeekAnalyzer.format_mkt_hot_wdl_matrix_tg_lines(pack)))
 
-        for extra_key in ('deepseek_section_lines', 'jc_vs_hot_tg_lines', 'wdl_matrix_tg_lines'):
+        # 4) 市热超理论专表（生产传 mkt_over_theo_tg_lines；以前没读，整段消失）
+        _pos_lines = _as_lines(kwargs.get('mkt_over_theo_tg_lines'))
+        if not _pos_lines and isinstance(payload, dict):
+            _pos_lines = _as_lines(payload.get('mkt_over_theo_tg_lines'))
+        if _pos_lines:
+            sections.append('\n'.join(_pos_lines))
+
+        # 5) heat 段与 6) desc 段，按读取顺序放在最后。
+        for extra_key in (
+            'heat_tg_lines', 'jc_vs_hot_tg_lines', 'wdl_matrix_tg_lines',
+            'mkt_desc_lines', 'desc_lines',
+            'deepseek_section_lines',
+        ):
             extra = _as_lines(kwargs.get(extra_key))
+            if not extra and isinstance(payload, dict):
+                extra = _as_lines(payload.get(extra_key))
             if extra:
                 sections.append('\n'.join(extra))
         return [s for s in sections if s.strip()]

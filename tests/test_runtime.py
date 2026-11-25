@@ -1891,6 +1891,158 @@ def test_gate_sees_the_same_pack_the_fetch_produced(
     assert rec['dual_source_facts']['correct_score']['books_n'] == 25
 
 
+def _pack_with_market(mid: str = '1347776') -> Any:
+    """A 31 pack built the production way: real 竞彩 odds + real 市均 capture."""
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes())
+    jc = okooo.parse_jczq_score_odds(text, mid)['odds']
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(fh.read()))
+    return pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.45, lam_away=1.10, jc_score_odds=jc,
+        extra_market_odds=page['page_avg'],
+    )
+
+
+def test_pack_rows_carry_devigged_jc_odds_pct() -> None:
+    """D9: build_theo_mkt_31_pack never wrote jc_odds_pct, so 市短 was always empty.
+
+    Revert tested: removing the jc_odds_pct assignment block from
+    build_theo_mkt_31_pack -> 0/31 rows have the key and this test fails.
+    """
+    pack = _pack_with_market()
+    with_pct = [r for r in pack['rows'] if r.get('jc_odds_pct') is not None]
+    assert len(with_pct) == 31, f'{len(with_pct)}/31 rows carry jc_odds_pct'
+    assert abs(pack['jc_pct_sum'] - 100.0) < 0.5, pack['jc_pct_sum']
+
+
+def test_short_matrix_populates_from_the_pack() -> None:
+    """D9: with jc_odds_pct present the 市短 matrix must actually produce rows."""
+    pack = _pack_with_market()
+    matrix = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    assert matrix['available'] is True, matrix.get('reason')
+    assert len(matrix['rows']) > 0
+    total = sum(matrix['counts'].values())
+    assert total == len(matrix['rows'])
+    rendered = pipe_mod.DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(matrix)
+    assert '未形成' not in '\n'.join(rendered)
+    assert '胜平负' in '\n'.join(rendered)
+
+
+def test_pack_bases_are_all_one_hundred() -> None:
+    """D10: market was raw 100/odds (sum 145.95) vs theory at 100, so pos_rows lied.
+
+    Revert tested: dropping the market/theory/jc renormalisation blocks ->
+    market_sum 145.95, pos_count 26-28, this test fails on the 100±0.5 assertion.
+    """
+    pack = _pack_with_market()
+    for key in ('market_sum', 'theory_sum', 'jc_pct_sum'):
+        assert abs(float(pack[key]) - 100.0) < 0.5, (key, pack[key])
+    # and the same numbers must be visible on the rows themselves
+    m_sum = sum(float(r['market']) for r in pack['rows'] if r.get('market') is not None)
+    t_sum = sum(float(r['theory']) for r in pack['rows'] if r.get('theory') is not None)
+    assert abs(m_sum - 100.0) < 0.5 and abs(t_sum - 100.0) < 0.5
+
+
+def test_pos_rows_uses_the_same_base_as_the_table() -> None:
+    """D10: pos_rows must be counted on the de-vigged 100% market base.
+
+    Independent expectation (NOT recomputed from the same rows): 1347778 on the
+    raw `100/odds` base yields pos=28, while on the correct 100% base it is 20.
+    Asserting a bound below the raw-base answer is what makes this test able to
+    fail if the renormalisation is removed.
+    """
+    pack = _pack_with_market('1347778')
+    assert abs(float(pack['market_sum']) - 100.0) < 0.5, pack['market_sum']
+    # raw-base answer for this input is 28; correct-base answer is 20
+    assert pack['pos_count'] < 26, f"pos_count={pack['pos_count']} looks like the raw 145.95% base"
+    assert pack['pos_count'] == len(pack['pos_rows'])
+    # every pos row must be > its theory on the normalised numbers
+    for row in pack['pos_rows']:
+        assert float(row['market']) > float(row['theory'])
+
+
+def test_tg_sections_find_the_pack_inside_ds_payload() -> None:
+    """D11: production passes ds_payload, not a pack kwarg.
+
+    Revert tested: removing the `payload.get('theo_mkt_31_pack')` fallback ->
+    all three sections print 未形成 despite a complete pack in ds_payload.
+    """
+    pack = _pack_with_market()
+    t31 = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+    text = '\n'.join(pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        title_line='📌 t',
+        theo_mkt_31_tg_lines=t31,
+        ds_payload={'theo_mkt_31_pack': pack},
+    ))
+    assert '未形成' not in text
+    assert '市短矩阵' in text and '市热矩阵' in text
+    assert '胜平负' in text
+
+
+def test_tg_sections_emit_pos_over_heat_in_reading_order() -> None:
+    """D12: mkt_over_theo_tg_lines / heat_tg_lines were never read.
+
+    Revert tested: restoring the short extra_key tuple
+    ('deepseek_section_lines','jc_vs_hot_tg_lines','wdl_matrix_tg_lines') ->
+    neither sentinel appears.
+    """
+    pack = _pack_with_market()
+    text = '\n'.join(pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        title_line='📌 t',
+        theo_mkt_31_tg_lines=pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack),
+        ds_payload={'theo_mkt_31_pack': pack},
+        mkt_over_theo_tg_lines=['📉【市热超理论专表】', '  条数: 22'],
+        heat_tg_lines=['HEATMARK'],
+        desc_lines=['DESCMARK'],
+    ))
+    assert '📉【市热超理论专表】' in text
+    assert 'HEATMARK' in text
+    assert 'DESCMARK' in text
+    # reading order: 31表 → 市短 → 市热 → 市热超理论 → heat
+    order = [text.find(m) for m in (
+        '31项市均×竞彩对比表', '市短矩阵', '市热矩阵', '市热超理论专表', 'HEATMARK',
+    )]
+    assert order == sorted(order), order
+
+
+def test_production_shaped_tg_has_every_option_exactly_once() -> None:
+    """The user's proof requirement, on the exact production call shape."""
+    for mid in ('1347776', '1347778', '1347775', '1347780'):
+        pack = _pack_with_market(mid)
+        t31 = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+        text = '\n'.join(pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+            title_line='📌 t',
+            theo_mkt_31_tg_lines=t31,
+            ds_payload={'theo_mkt_31_pack': pack},
+            mkt_over_theo_tg_lines=['📉【市热超理论专表】', '  条数: n'],
+            heat_tg_lines=['HEATMARK'],
+        ))
+        for header in ('31项市均×竞彩对比表', '市短矩阵', '市热矩阵', '市热超理论专表'):
+            assert header in text, (mid, header)
+        # isolate the 31-row table (everything before 汇总) for the uniqueness check
+        cut = t31.index('  汇总') if '  汇总' in t31 else len(t31)
+        table = '\n'.join(t31[:cut])
+        assert len([ln for ln in table.splitlines() if re.match(r'^  \d{2} ', ln)]) == 31
+        for option in (
+            '1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2',
+            '5-0', '5-1', '5-2', '胜其它',
+            '0-0', '1-1', '2-2', '3-3', '平其它',
+            '0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4',
+            '0-5', '1-5', '2-5', '负其它',
+        ):
+            hits = len(re.findall(r'(?<!\d)' + re.escape(option) + r'(?![\d\-])', table))
+            assert hits == 1, f'{mid}: {option} appears {hits} times in the 31-row table'
+
+
+def test_pack_row_counts_match_the_matrix_row_counts() -> None:
+    """pos_count and 市短 rows must both be derivable from the same rows."""
+    pack = _pack_with_market()
+    short = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    assert pack['pos_count'] == len(pack['pos_rows'])
+    assert short['available'] is True
+    assert sum(short['counts'].values()) == len(short['rows'])
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}

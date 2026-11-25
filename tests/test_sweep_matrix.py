@@ -411,6 +411,39 @@ def _check_case(pool_size, water, channel, source, stub_shape, gap_state) -> lis
     ) != 'cache_missing_jc31':
         fails.append('(xiv) 25-key cache not rejected')
 
+    # ---- (xv) the 31 pack's three bases must each be ~100 and consistent ----
+    _pk15 = pipe.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.45, lam_away=1.10, jc_score_odds=_jc31,
+    )
+    for _k15 in ('market_sum', 'theory_sum', 'jc_pct_sum'):
+        _v15 = _pk15.get(_k15)
+        if _v15 is None or abs(float(_v15) - 100.0) > 0.5:
+            fails.append(f'(xv) {_k15}={_v15} not ~100')
+    if sum(1 for r in _pk15['rows'] if r.get('jc_odds_pct') is None) != 0:
+        fails.append('(xv) some rows lack jc_odds_pct (市短 would be empty)')
+    _short15 = pipe.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(_pk15)
+    if _pk15['pos_count'] != len(_pk15['pos_rows']):
+        fails.append('(xv) pos_count disagrees with pos_rows')
+    if _short15.get('available') and sum(_short15['counts'].values()) != len(_short15['rows']):
+        fails.append('(xv) 市短 counts disagree with its rows')
+
+    # ---- (xvi) TG assembly must find the pack inside ds_payload ----
+    _tg16 = '\n'.join(pipe.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        title_line='t',
+        theo_mkt_31_tg_lines=pipe.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(_pk15),
+        ds_payload={'theo_mkt_31_pack': _pk15},
+        mkt_over_theo_tg_lines=['📉MKT_OVER'],
+        heat_tg_lines=['HEATM'],
+    ))
+    for _h16 in ('31项市均×竞彩对比表', '市短矩阵', '市热矩阵', 'MKT_OVER', 'HEATM'):
+        if _h16 not in _tg16:
+            fails.append(f'(xvi) TG assembly missing {_h16}')
+    # Section headers must all be present. An individual matrix may honestly say
+    # 未形成 on this synthetic flat-odds input (no qualifying row), which is fine —
+    # what must never happen is the whole assembly collapsing to 未形成-only.
+    if _tg16.count('未形成') >= 3:
+        fails.append('(xvi) TG assembly degraded all three sections despite a pack')
+
     return fails
 
 
