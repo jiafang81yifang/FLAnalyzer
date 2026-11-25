@@ -309,3 +309,256 @@ def test_mobile_schedule_finished_and_pending_rows_classify() -> None:
     assert okooo.jingcai_board_row_finished(inside_end_hide=True) is True
     assert okooo.jingcai_board_row_finished(FakeScheduleRow('2-1')) is True
     assert okooo.jingcai_board_row_finished(FakeScheduleRow('22:00')) is False
+
+
+# ---------------------------------------------------------------------------
+# Regressions for the 2026-11-25 Windows run log (eight matches, nothing formed).
+# Each test pins one defect from that log so it cannot come back silently.
+# ---------------------------------------------------------------------------
+
+def _reload_skill_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Force a fresh knowledge_base load against an empty directory."""
+    monkeypatch.setenv('BLADE_KB_DIR', str(tmp_path / 'kb_probe'))
+    engine = app.SkillMatchingEngine
+    monkeypatch.setattr(engine, '_loaded', False)
+    monkeypatch.setattr(engine, '_seeded', False)
+    monkeypatch.setattr(engine, '_stat_skills', None)
+    monkeypatch.setattr(engine, '_strat_skills', None)
+    monkeypatch.setattr(engine, '_load_error', None)
+    return engine
+
+
+def test_missing_knowledge_base_is_one_line_never_a_hang(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Defect 1/7: no 系统已挂起 block, no empty exception, exactly one line."""
+    engine = _reload_skill_engine(tmp_path, monkeypatch)
+    # No seed available and nowhere to write it: the honest "unavailable" path.
+    monkeypatch.setattr(engine, '_SEED_SKILLS', {}, raising=False)
+    monkeypatch.setattr(engine, '_kb_base_dirs', classmethod(lambda cls: [str(tmp_path / 'nope')]))
+    monkeypatch.setattr(engine, '_seed_knowledge_base', classmethod(lambda cls, d: False))
+    result = engine().match_skills({})
+    printed = capsys.readouterr().out
+    assert result['available'] is False
+    assert '系统已挂起' not in printed
+    assert '知识库文件缺失' not in printed
+    assert '异常(已降级跳过)' not in printed
+    # The reason is real, not an empty string.
+    assert result['error'] and 'statistical_skills.json' in result['error']
+    # And the caller prints exactly one line for it.
+    engine().match_skills({})
+    assert capsys.readouterr().out == ''
+
+
+def test_knowledge_base_seeds_itself_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defect 1/7: the normal path is "loaded", because the app seeds the files."""
+    engine = _reload_skill_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine, '_kb_base_dirs', classmethod(lambda cls: [str(tmp_path / 'install')]))
+    monkeypatch.setattr(engine, '_seeded', False)
+    result = engine().match_skills({
+        'pool15_enriched': [{'score': '1-0', 'theory': 18.0, 'market': 15.0, 'ibi': 0.8, 'delta': 3.0}],
+        'asian_handicap': 0.5,
+        'ou_line': 2.5,
+    })
+    assert result['available'] is True, result
+    assert result['error'] is None
+    seeded = tmp_path / 'install' / 'knowledge_base'
+    for name in ('statistical_skills.json', 'strategy_skills.json'):
+        assert (seeded / name).exists()
+        payload = __import__('json').loads((seeded / name).read_text(encoding='utf-8'))
+        assert payload['skills'], f'{name} seeded empty'
+
+
+def test_every_deepseek_analyzer_method_has_a_real_implementation() -> None:
+    """Defect 2/8: the 阶段2 call path must not depend on a missing attribute."""
+    analyzer = app._ensure_deepseek_analyzer()
+    assert analyzer is not None
+    audit = analyzer.audit_theo_mkt_31_rows([{'score': '1-0', 'theory': 10.0, 'market': 9.0}])
+    assert isinstance(audit, dict) and 'complete' in audit and 'missing' in audit
+    assert audit['complete'] is False
+    # A full 31-row table must审计 as complete.
+    full = [
+        {'score': score, 'theory': 3.0, 'market': 2.9}
+        for score in importlib.import_module('blade_deepseek_pipeline').JCZQ_ALL_OPTIONS
+    ]
+    assert analyzer.audit_theo_mkt_31_rows(full)['complete'] is True
+    # The judgment entry point itself must exist and return the documented shape.
+    judgment = analyzer.analyze_match_judgment({'home': 'A', 'away': 'B'})
+    assert set(judgment) >= {'available', 'content', 'error', 'model'}
+
+
+def test_missing_analyzer_methods_are_all_defined() -> None:
+    """Guards the whole DeepSeekAnalyzer surface the app calls."""
+    required = [
+        'audit_theo_mkt_31_rows', 'build_theo_mkt_31_pack', 'build_mkt_short_wdl_matrix',
+        'analyze_match_judgment', 'analyze_cross_pairs', 'extract_physical_anchor',
+        'explain_match_ou_bounds', 'extract_dual_scores_from_judgment_text',
+    ]
+    analyzer = app._ensure_deepseek_analyzer()
+    missing = [name for name in required if not hasattr(analyzer, name)]
+    assert missing == [], missing
+
+
+def test_cs_unavailable_reason_names_url_status_and_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defect 3: reason must carry URL + status/exception + parse stage."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', os.environ.get('OKOOO_CACHE_DIR', '/tmp/okooo-cache-test'))
+    blocked = {
+        'ok': False, 'url': 'https://www.okooo.com/soccer/match/1/cs/',
+        'status': 405, 'bytes': 4681, 'title': '405', 'blocked': True,
+        'error': 'HTTP 405', 'html': '',
+    }
+    monkeypatch.setattr(okooo, '_fetch_detail', lambda *a, **k: blocked)
+    pack = okooo.scrape_okooo_mobile_cs_zuizhi('999001')
+    assert pack['available'] is False
+    assert pack['reason'] == 'external_okooo_mobile_cs_fetch_failed'
+    detail = pack['error']
+    assert 'okooo.com' in detail and '/cs/' in detail
+    assert 'HTTP 405' in detail
+    assert 'stage=' in detail
+
+
+def test_cs_parser_reads_the_real_datatable_shape() -> None:
+    """Defect 3: the shipped parser must read okooo's actual 波胆 table."""
+    html = '''
+    <table id="datatable">
+      <tr class="titlebg"><td>公司名</td><td><b>1:0</b></td><td><b>2:0</b></td>
+        <td><b>2:1</b></td></tr>
+      <tr><td>1</td><td>竞**方</td><td>主胜</td><td>10.00</td><td>20.00</td><td>9.00</td></tr>
+      <tr class="trBgBlue"><td>客胜</td><td>-</td></tr>
+      <tr><td>2</td><td>威***尔</td><td>主胜</td><td>12.00</td><td>22.00</td><td>10.00</td></tr>
+      <tr class="trBgBlue"><td>客胜</td><td>-</td></tr>
+      <tr class="avgobjH"><td>&nbsp;</td><td>平均值</td><td>主胜</td>
+        <td>11.00</td><td>21.00</td><td>9.50</td></tr>
+      <tr class="avgobjA"><td>客胜</td><td>-</td></tr>
+    </table>
+    '''
+    parsed = okooo._parse_cs_datatable(html)
+    assert parsed['stage'] == 'ok'
+    assert parsed['header_count'] == 3
+    assert parsed['books_n'] == 2
+    assert abs(parsed['page_avg']['1:0'] - 11.0) < 1e-9
+    assert abs(parsed['books_avg']['2:1'] - 9.5) < 1e-9
+
+
+def test_cs_parser_keeps_away_and_average_halves_separate() -> None:
+    """The 客胜 row has no 「平均值」 text; its half must still join the average.
+
+    Regression for a real mis-parse: the away half of the 平均值 block was being
+    counted as company data, which corrupted both the average and the book count.
+    """
+    html = '''
+    <table id="datatable">
+      <tr class="titlebg"><td>公司名</td><td><b>1:0</b></td><td><b>2:0</b></td>
+        <td><b>0:0</b></td></tr>
+      <tr><td>1</td><td>竞**方</td><td>主胜</td><td>10.00</td><td>20.00</td><td>8.00</td></tr>
+      <tr class="trBgBlue"><td>客胜</td><td>9.00</td></tr>
+      <tr class="avgobjH"><td>&nbsp;</td><td>平均值</td><td>主胜</td>
+        <td>11.00</td><td>21.00</td><td>7.50</td></tr>
+      <tr class="avgobjA"><td>客胜</td><td>6.50</td></tr>
+    </table>
+    '''
+    parsed = okooo._parse_cs_datatable(html)
+    assert parsed['books_n'] == 1, 'the 平均值 客胜 row must not count as a company'
+    assert parsed['row_count'] == 1
+    assert abs(parsed['page_avg']['1:0'] - 11.0) < 1e-9
+    # 客胜行第一个格子对应表头第一列反过来的比分（1:0 → 0:1）。
+    assert abs(parsed['page_avg']['0:1'] - 6.5) < 1e-9
+    assert abs(parsed['books_avg']['0:1'] - 9.0) < 1e-9
+    assert parsed['stage'] == 'ok'
+
+
+def test_water_retry_is_single_shot_per_match(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Defect 5/9: one re-fetch and one line per match, never three."""
+    calls: list[str] = []
+
+    def fake_detail(match_id, *a: Any, **k: Any) -> dict[str, Any]:
+        calls.append(str(match_id))
+        return {
+            'okooo_match_id': str(match_id),
+            'six_market_mobile': {
+                'available': False, 'channel': 'mobile',
+                'block_reason': 'external_okooo_six_market_fetch_failed',
+                'source_report': {
+                    'ah': {'stage': 'fetch_failed', 'status': 405, 'blocked': True},
+                },
+            },
+        }
+
+    monkeypatch.setattr(app, 'scrape_okooo_detail', fake_detail)
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+    rec = {
+        'okooo_match_id': '555001',
+        'correct_score_available': False,
+        'six_market_mobile': {'available': False, 'channel': 'mobile'},
+    }
+    for _ in range(3):
+        app._ensure_mobile_six(rec, '555001')
+    app._ensure_mobile_six(rec, '555001', force=True)
+    app._ensure_mobile_six(rec, '555001')
+    printed = capsys.readouterr().out
+    assert len(calls) == 1, calls
+    assert printed.count('[水位] mid=555001') == 1
+    assert printed.count('[水位重抓]') == 1
+    # The line must say WHY, field by field, from the real source report.
+    assert 'asian_handicap:fetch_failed/HTTP405' in printed
+    assert 'ou_line=无抓取记录' in printed
+    assert '重复抓取后仍无' not in printed
+
+
+def test_dual_source_gate_never_returns_none_fields() -> None:
+    """Defect 6: no ready=None / reason=None on the judgment gate."""
+    fallback = importlib.import_module('odds_fallback')
+    gate = fallback.ensure_dual_source_before_judgment({'okooo_match_id': '1'})
+    for key in ('ready', 'mobile_cs_entered', 'cs_books_n', 'filled_from_500', 'kept_mobile', 'reason'):
+        assert key in gate, gate
+        assert gate[key] is not None, (key, gate)
+    assert gate['ready'] is False
+    assert gate['reason'], 'an unready gate must explain itself'
+    # And a ready gate reports an empty reason, not None.
+    ready = fallback.ensure_dual_source_before_judgment({
+        'correct_score_page_avg': {'1-0': 8.0},
+        'correct_score_channel': 'mobile',
+        'asian_handicap': 0.5, 'ou_line': 2.5, 'odds_1x2': {'home': 2.0},
+    })
+    assert ready['ready'] is True
+    assert ready['reason'] == ''
+
+
+def test_rank_tracking_failure_reports_a_real_reason() -> None:
+    """Defect 10: an empty pool must produce a cause, not 未知."""
+    result = app.RankTrackingMatrix.run([])
+    assert result['ok'] is False
+    assert result.get('error'), result
+
+
+def test_chart31_verdict_does_not_claim_success_on_empty_input() -> None:
+    """Defect 11: no '已生成' claim when nothing was rendered."""
+    text = app.generate_31pool_theory_vs_market_chart({'prob_dict': None})
+    verdict = app.chart31_pool_verdict(text)
+    assert verdict['status'] == 'degraded'
+    assert verdict['rows'] == 0
+
+
+def test_low_dti_blames_missing_inputs_not_the_market() -> None:
+    """Defect 12: low DTI from an empty match is an input problem."""
+    note = app.explain_low_dti(0.02, ['亚指盘口', 'λ'])
+    assert '输入不足' in note['warning']
+    assert '亚盘异动' not in note['warning']
+    assert note['missing_inputs'] == ['亚指盘口', 'λ']
+    complete = app.explain_low_dti(0.02, [])
+    assert '人工复核' in complete['warning']
+
+
+def test_replay_of_the_live_log_has_no_banned_lines() -> None:
+    """End-to-end: eight matches, no network, the log contract holds."""
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / 'scripts' / 'replay_live_log.py')],
+        cwd=ROOT, text=True, capture_output=True, timeout=300, check=False,
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-2000:]
+    assert 'REPLAY PASS' in proc.stdout

@@ -6,12 +6,19 @@ External DeepSeek calls remain in the main app where credentials/config live.
 """
 from __future__ import annotations
 
+import math
 import re
 from html import escape
 from typing import Any, ClassVar
 
 JCZQ_MACRO_BAIT_SCORES = {"1-0", "0-1", "1-1", "2-1", "1-2"}
 _RUNTIME: dict[str, Any] = {}
+
+# 竞彩比分31个投注选项（主胜13 + 平局5 + 客胜13）。审计与全表补建共用这一份。
+JCZQ_HOME_WIN_SCORES = ['1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2']
+JCZQ_DRAW_SCORES = ['0-0', '1-1', '2-2', '3-3']
+JCZQ_AWAY_WIN_SCORES = ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5']
+JCZQ_ALL_OPTIONS = JCZQ_HOME_WIN_SCORES + JCZQ_DRAW_SCORES + JCZQ_AWAY_WIN_SCORES + ['胜其它', '平其它', '负其它']
 
 
 def bind_hermes_runtime(**kwargs: Any) -> None:
@@ -186,6 +193,37 @@ class DeepSeekAnalyzer:
         }
 
     @staticmethod
+    def analyze_cross_pairs(odds: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """异化侦测：用已给的赔率集合算方向概率与最热/最冷比分，缺输入就回报缺什么。"""
+        clean: dict[str, float] = {}
+        if isinstance(odds, dict):
+            for score, odd in odds.items():
+                try:
+                    value = float(odd.get('odds') if isinstance(odd, dict) else odd)
+                except (TypeError, ValueError):
+                    continue
+                if value > 1:
+                    clean[_norm_score(score)] = value
+        if not clean:
+            return {'available': False, 'reason': 'empty_odds', 'wdl_share_pct': {}, 'hot_scores': []}
+        inverse = {score: 1.0 / odd for score, odd in clean.items()}
+        total = sum(inverse.values()) or 1.0
+        share = {score: value * 100.0 / total for score, value in inverse.items()}
+        wdl = {'胜': 0.0, '平': 0.0, '负': 0.0}
+        for score, pct in share.items():
+            label = _score_wdl(score)
+            if label in wdl:
+                wdl[label] += pct
+        hottest = sorted(share.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        return {
+            'available': True,
+            'wdl_share_pct': {k: round(v, 2) for k, v in wdl.items()},
+            'hot_scores': [score for score, _ in hottest],
+            'hot_share_pct': {score: round(pct, 2) for score, pct in hottest},
+            'sample': len(clean),
+        }
+
+    @staticmethod
     def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:
         m = matrix if isinstance(matrix, dict) else {}
         return ['📊【市短胜平负矩阵】', f"  状态: {'可用' if m.get('available') else '未形成'} {home} {away}".rstrip()]
@@ -216,17 +254,216 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:
-        clean = [r for r in (rows or []) if isinstance(r, dict)]
+        """把 direction_full_rows/jc_cross_rows 折成竞彩31项理论×市场全表。
+
+        `extra_market_odds` 是市均（page_avg/books_avg/site_avg）反推出的比分赔率，
+        用来补 rows 里 market 为空或为 0 的项——这正是「31全表未齐」要折入的东西。
+        行的 market 缺失时先看 extra_market_odds，再看 system_prejudge 的市热。
+        理论概率缺失则留 None（不编造），行本身仍然进表。
+        """
+        clean = [dict(r) for r in (rows or []) if isinstance(r, dict)]
+        extra = kwargs.get('extra_market_odds')
+        extra_odds = extra if isinstance(extra, dict) else {}
+
+        def _f(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if math.isfinite(number) else None
+
+        by_score: dict[str, dict[str, Any]] = {}
+        for row in clean:
+            score = _norm_score(row.get('score') or row.get('name') or row.get('cs') or '')
+            if not score:
+                continue
+            merged = by_score.setdefault(score, {'score': score})
+            for key in ('theory', 'theory_prob', 'market', 'mkt', 'ibi', 'delta', 'diff',
+                        'market_prob', 'implied_prob', 'jc_odds', 'mkt_minus_jc'):
+                if key in row and row.get(key) not in (None, ''):
+                    merged.setdefault(key, row.get(key))
+        # 市均补 market
+        for score, odd in extra_odds.items():
+            key = _norm_score(score)
+            odd_f = _f(odd)
+            if not key or odd_f is None or odd_f <= 1:
+                continue
+            row = by_score.setdefault(key, {'score': key})
+            if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
+                row['market'] = round(100.0 / odd_f, 4)
+                row['market_source'] = kwargs.get('extra_market_source') or 'market_avg_odds'
+        full_rows: list[dict[str, Any]] = []
+        for option in JCZQ_ALL_OPTIONS:
+            row = by_score.get(option) or {'score': option}
+            theory = _f(row.get('theory') if row.get('theory') is not None else row.get('theory_prob'))
+            market = _f(row.get('market') if row.get('market') is not None else row.get('mkt'))
+            row['score'] = option
+            row['theory'] = theory
+            row['market'] = market
+            row['in_31'] = True
+            row['formed'] = theory is not None and market is not None
+            full_rows.append(row)
         pos = [
-            r for r in clean
-            if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)
+            r for r in full_rows
+            if _f(r.get('market')) is not None and _f(r.get('theory')) is not None
+            and float(r['market']) > float(r['theory'])
         ]
-        return {'available': bool(clean), 'rows': clean, 'pos_rows': pos, 'pos_count': len(pos), 'system_prejudge': {}}
+        for row in full_rows:
+            theory, market = _f(row.get('theory')), _f(row.get('market'))
+            row['delta'] = round(market - theory, 4) if theory is not None and market is not None else None
+        return {
+            'available': bool(full_rows),
+            'rows': full_rows,
+            'row_count': len(full_rows),
+            'formed_count': sum(1 for r in full_rows if r.get('formed')),
+            'pos_rows': pos,
+            'pos_count': len(pos),
+            'system_prejudge': {},
+            'home': str(kwargs.get('home') or ''),
+            'away': str(kwargs.get('away') or ''),
+            'match_name': str(kwargs.get('match_name') or ''),
+        }
+
+    @staticmethod
+    def audit_theo_mkt_31_rows(rows: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """审计竞彩31项理论×市场全表是否齐。
+
+        返回 {'complete': bool, 'missing': [str], 'rows': n, 'formed': n,
+              'missing_theory': [...], 'missing_market': [...]}。
+        `missing` 是给日志用的短名单（只写前若干项 + 计数），不含换行。
+        缺表/缺字段只回报不缺数据，绝不抛异常——阶段2靠它决定是折入补齐还是照常分析。
+        """
+        clean = [r for r in (rows or []) if isinstance(r, dict)]
+        present = {_norm_score(r.get('score') or r.get('name') or r.get('cs') or '') for r in clean}
+        missing_rows = [option for option in JCZQ_ALL_OPTIONS if option not in present]
+
+        def _num(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number
+
+        missing_theory: list[str] = []
+        missing_market: list[str] = []
+        for row in clean:
+            score = _norm_score(row.get('score') or row.get('name') or row.get('cs') or '')
+            if not score:
+                continue
+            theory = _num(row.get('theory') if row.get('theory') is not None else row.get('theory_prob'))
+            market = _num(row.get('market') if row.get('market') is not None else row.get('mkt'))
+            if theory is None:
+                missing_theory.append(score)
+            if market is None or market <= 0:
+                missing_market.append(score)
+        missing: list[str] = []
+        if missing_rows:
+            missing.append('比分选项缺' + str(len(missing_rows)) + '项(' + '/'.join(missing_rows[:5]) + ')')
+        if missing_theory:
+            missing.append('理论概率缺' + str(len(missing_theory)) + '项(' + '/'.join(missing_theory[:5]) + ')')
+        if missing_market:
+            missing.append('市场概率缺' + str(len(missing_market)) + '项(' + '/'.join(missing_market[:5]) + ')')
+        complete = not missing
+        return {
+            'complete': complete,
+            'missing': missing,
+            'rows': len(clean),
+            'formed': len(clean) - len({*missing_theory} | {*missing_market}),
+            'missing_rows': missing_rows,
+            'missing_theory': missing_theory,
+            'missing_market': missing_market,
+        }
+
+    @staticmethod
+    def build_mkt_short_wdl_matrix(rows: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """把市短（市均低于竞彩）行按胜平负聚合成矩阵，供方向锁使用。"""
+        counts = {'胜': 0, '平': 0, '负': 0}
+        discrete: dict[str, float] = {}
+        for row in (rows or []):
+            if not isinstance(row, dict):
+                continue
+            score = _norm_score(row.get('score') or '')
+            label = _score_wdl(score)
+            if label not in counts:
+                continue
+            counts[label] += 1
+            try:
+                gap = float(row.get('mkt_minus_jc') or row.get('delta') or 0.0)
+            except (TypeError, ValueError):
+                gap = 0.0
+            discrete[score] = round(gap, 4)
+        total = sum(counts.values())
+        return {
+            'available': total > 0,
+            'counts': counts,
+            'total': total,
+            'share_pct': {k: round(v * 100.0 / total, 2) if total else 0.0 for k, v in counts.items()},
+            'discrete_vector': discrete,
+            'rows': [r for r in (rows or []) if isinstance(r, dict)],
+        }
+
+    @staticmethod
+    def extract_physical_anchor(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """从记录里取已落盘的物理锚点；没有就返回空表，不推断、不编造。"""
+        src = source if isinstance(source, dict) else {}
+        anchor = src.get('physical_anchor')
+        if isinstance(anchor, dict) and anchor:
+            return dict(anchor)
+        dual = src.get('dual_source_facts')
+        if isinstance(dual, dict):
+            inner = dual.get('physical_anchor')
+            if isinstance(inner, dict) and inner:
+                return dict(inner)
+        return {}
+
+    @staticmethod
+    def explain_match_ou_bounds(source: Any, actual: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """大小球区间说明：只用已落盘的 ou_line / 实际比分，缺一项就说缺哪一项。"""
+        src = source if isinstance(source, dict) else {}
+        line = src.get('ou_line')
+        goals: int | None = None
+        text = _norm_score(actual)
+        if text and re.fullmatch(r'\d+-\d+', text):
+            left, right = text.split('-', 1)
+            goals = int(left) + int(right)
+        if line is None:
+            return {'available': False, 'line': '大小球区间: 未形成（缺 ou_line）'}
+        try:
+            line_f = float(line)
+        except (TypeError, ValueError):
+            return {'available': False, 'line': f'大小球区间: 未形成（ou_line 非数值: {line!r}）'}
+        if goals is None:
+            return {
+                'available': False,
+                'line': f'大小球区间: 盘口{line_f:g}，无完场比分可对账',
+                'ou_line': line_f,
+            }
+        verdict = '大' if goals > line_f else ('小' if goals < line_f else '走')
+        return {
+            'available': True,
+            'line': f'大小球区间: 盘口{line_f:g} vs 实际{goals}球 → {verdict}',
+            'ou_line': line_f,
+            'actual_goals': goals,
+            'verdict': verdict,
+        }
+
+    @staticmethod
+    def build_theo_mkt_31_tg_lines(pack: Any = None, **kwargs: Any) -> list[str]:
+        p = pack if isinstance(pack, dict) else {}
+        return DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(p)
 
     @staticmethod
     def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:
         p = pack if isinstance(pack, dict) else {}
-        return ['📈【31项理论×市场】', f"  市场超理论项: {int(p.get('pos_count') or 0)}"]
+        formed = int(p.get('formed_count') or 0)
+        total = int(p.get('row_count') or len(p.get('rows') or []) or 0)
+        head = '📈【31项理论×市场】'
+        if not total:
+            return [head, '  未形成：本场没有可用的31项比分行（缺市均或理论概率）']
+        return [
+            head,
+            f"  已形成 {formed}/{total} 项 | 市场超理论项: {int(p.get('pos_count') or 0)}",
+        ]
 
     @staticmethod
     def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:
@@ -299,9 +536,65 @@ class DeepSeekAnalyzer:
         return {'available': False, 'in_hot8': False}
 
     @staticmethod
-    def extract_dual_scores_from_judgment_text(text: Any) -> tuple[str, str]:
-        scores = re.findall(r'\d+\s*[-:]\s*\d+', str(text or ''))
-        return (_norm_score(scores[0]) if scores else '', _norm_score(scores[1]) if len(scores) > 1 else '')
+    def extract_dual_scores_from_judgment_text(text: Any) -> dict[str, Any]:
+        """从研判正文抽①②两个比分。调用方按 dict 取值，所以这里固定返回 dict。"""
+        found = re.findall(r'\d+\s*[-:]\s*\d+', str(text or ''))
+        first = _norm_score(found[0]) if found else ''
+        second = _norm_score(found[1]) if len(found) > 1 else ''
+        return {
+            'available': bool(first),
+            'first': first,
+            'second': second,
+            'scores': [_norm_score(s) for s in found[:4]],
+        }
+
+    @staticmethod
+    def analyze_match_judgment(payload: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """阶段2 研判入口：把已落盘事实整理成提示词并调用 DeepSeek。
+
+        没有 DEEPSEEK_API_KEY 时 deepseek_chat_completion 返回本地确定性摘要，
+        这里把它包装成统一结构，保证阶段2 永远有 available/content/model 三个键，
+        不再出现「type object ... has no attribute」这种整段降级。
+        """
+        facts = payload if isinstance(payload, dict) else {}
+        timeout = kwargs.get('timeout')
+        model = str(kwargs.get('model') or kwargs.get('model_name') or '') or None
+        home = str(facts.get('home') or '')
+        away = str(facts.get('away') or '')
+        match_name = str(facts.get('match') or f'{home} vs {away}'.strip())
+        key_facts = {
+            'match': match_name,
+            'kickoff': facts.get('kickoff') or '',
+            'direction_lock': facts.get('direction_lock') or {},
+            'pool15_enriched': list(facts.get('pool15_enriched') or [])[:15],
+            'theo_mkt_31_pack': (facts.get('theo_mkt_31_pack') or {}).get('rows') or [],
+            'six_market_mobile': facts.get('six_market_mobile') or {},
+            'betfair_data': facts.get('betfair_data') or {},
+            'water_gaps': facts.get('water_gaps') or [],
+        }
+        messages = assemble_prompt(
+            facts=key_facts,
+            task='给出本场竞彩研判：方向锁依据、①②比分、数据缺口。不得编造外部数据。',
+        )
+        try:
+            text = deepseek_chat_completion(
+                messages, model=model, max_retries=1, timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 - network/API failure must degrade to a reportable error
+            return {
+                'available': False,
+                'content': '',
+                'error': f'{type(exc).__name__}: {exc}',
+                'model': model or deepseek_config()['chat_model'],
+            }
+        body = str(text or '').strip()
+        return {
+            'available': bool(body),
+            'content': body,
+            'error': '' if body else 'empty_completion',
+            'model': model or deepseek_config()['chat_model'],
+            'provider': 'deepseek' if deepseek_config()['api_key'] else 'local',
+        }
 
     @staticmethod
     def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:

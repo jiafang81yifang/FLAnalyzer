@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "kind": "strategy_skills",
+  "note": "博弈策略技能库。每条技能的 trigger_conditions 与本场特征比对，命中越多得分越高；risk_level 供报告标注风险等级。",
+  "skills": [
+    {
+      "id": "STRAT-001",
+      "name": "信息不对称·庄家深盘",
+      "category": "信息不对称",
+      "trigger_conditions": [
+        "让球>=0.75",
+        "IBI偏离度>0.2"
+      ],
+      "strategy_logic": "深盘且 IBI 明显偏离，说明庄家对某一比分有明确防备，而市场资金尚未跟上。",
+      "execution_rule": "只把庄家防备最弱的方向写进首选，不追高防备比分。",
+      "risk_level": "中",
+      "confidence_weight": 0.6
+    },
+    {
+      "id": "STRAT-002",
+      "name": "信号博弈·浅盘诱多",
+      "category": "信号博弈",
+      "trigger_conditions": [
+        "让球<=0.25",
+        "理论概率与市场隐含概率偏离>=4%"
+      ],
+      "strategy_logic": "浅盘下市场把大额资金压在热门方向，理论概率却不支持，属于典型诱多结构。",
+      "execution_rule": "热门方向降级为观察，首选转向理论概率前排的冷门比分。",
+      "risk_level": "中",
+      "confidence_weight": 0.58
+    },
+    {
+      "id": "STRAT-003",
+      "name": "必发死亡敞口铁锚",
+      "category": "资金面",
+      "trigger_conditions": [
+        "必发主胜亏损",
+        "必发客队亏损"
+      ],
+      "strategy_logic": "两个方向同时亏损意味着庄家无论哪边打出都要赔，真实恐惧方向由极差亏损决定。",
+      "execution_rule": "极差亏损方向作为铁锚方向，方向锁不得反向。",
+      "risk_level": "高",
+      "confidence_weight": 0.68
+    },
+    {
+      "id": "STRAT-004",
+      "name": "六盘口矛盾降级",
+      "category": "盘口一致性",
+      "trigger_conditions": [
+        "返还率",
+        "样本充足"
+      ],
+      "strategy_logic": "亚指、大小球、胜平负三块水位互相矛盾时，单一盘口的结论不可信。",
+      "execution_rule": "出现矛盾时只用三块一致的结论，其余记为未形成。",
+      "risk_level": "中",
+      "confidence_weight": 0.55
+    },
+    {
+      "id": "STRAT-005",
+      "name": "水位缺失时的诚实降级",
+      "category": "数据完整性",
+      "trigger_conditions": [
+        "返还率"
+      ],
+      "strategy_logic": "盘口线缺失时任何方向判断都缺依据。",
+      "execution_rule": "缺水位只报告缺口与原因，不写待定、不用 500 或桌面页冒充手机水位。",
+      "risk_level": "低",
+      "confidence_weight": 0.72
+    },
+    {
+      "id": "STRAT-006",
+      "name": "λ 冻结不补默认",
+      "category": "数据完整性",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "strategy_logic": "上游未形成进球期望时，任何补默认 λ 都会伪造概率矩阵。",
+      "execution_rule": "λ 保持冻结，按数据不足回报，不计算比分。",
+      "risk_level": "高",
+      "confidence_weight": 0.75
+    },
+    {
+      "id": "STRAT-007",
+      "name": "方向锁优先于模型首选",
+      "category": "决策顺序",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "strategy_logic": "方向锁由市均×竞彩算出，属于可复算证据；模型首选是概率排序结果。",
+      "execution_rule": "方向锁成立时，模型首选必须落在锁内，否则改判为未形成。",
+      "risk_level": "中",
+      "confidence_weight": 0.62
+    },
+    {
+      "id": "STRAT-008",
+      "name": "双源互补闸门",
+      "category": "数据完整性",
+      "trigger_conditions": [
+        "返还率"
+      ],
+      "strategy_logic": "手机市均未进入整合包时，下游矩阵全部是空壳。",
+      "execution_rule": "闸门未就绪只记录原因，不用空整合包冒充手机市均。",
+      "risk_level": "高",
+      "confidence_weight": 0.7
+    },
+    {
+      "id": "STRAT-009",
+      "name": "冷门搏杀·低 IBI 反向",
+      "category": "冷门结构",
+      "trigger_conditions": [
+        "IBI<1.0",
+        "大小球>=2.75"
+      ],
+      "strategy_logic": "高盘口下庄家对某个大比分防备最低，通常是冷门真正的落点。",
+      "execution_rule": "低 IBI + 高盘口时，该比分进入次选，不进首选。",
+      "risk_level": "高",
+      "confidence_weight": 0.5
+    },
+    {
+      "id": "STRAT-010",
+      "name": "同质化首选惩罚",
+      "category": "组合结构",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "strategy_logic": "多场首选比分完全相同（如全 1-0）说明模型退化，不是真实判断。",
+      "execution_rule": "同质化时只标注惩罚，不强行改比分。",
+      "risk_level": "低",
+      "confidence_weight": 0.45
+    },
+    {
+      "id": "STRAT-011",
+      "name": "数据缺口优先于结论",
+      "category": "报告规范",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "strategy_logic": "报告的第一责任是把缺什么说清楚，而不是先给结论。",
+      "execution_rule": "任一关键输入缺失时，报告首段写缺口，结论段标未形成。",
+      "risk_level": "低",
+      "confidence_weight": 0.66
+    },
+    {
+      "id": "STRAT-012",
+      "name": "熔炉多场共振",
+      "category": "跨场结构",
+      "trigger_conditions": [
+        "样本充足",
+        "理论概率>12%"
+      ],
+      "strategy_logic": "多场同方向同时出现理论概率头部，比单场信号更可靠。",
+      "execution_rule": "共振方向只提升观察优先级，不改单场方向锁。",
+      "risk_level": "中",
+      "confidence_weight": 0.5
+    },
+    {
+      "id": "STRAT-013",
+      "name": "盘口反向验证",
+      "category": "盘口一致性",
+      "trigger_conditions": [
+        "让球>=0.5",
+        "大小球<=2.5"
+      ],
+      "strategy_logic": "让球深但大小球低，说明市场认为让球方小胜，比分应集中在 1-0/2-0/2-1。",
+      "execution_rule": "该组合下首选只在让球方净胜 1-2 球的比分内选。",
+      "risk_level": "中",
+      "confidence_weight": 0.56
+    },
+    {
+      "id": "STRAT-014",
+      "name": "时间衰减·临近开赛",
+      "category": "时序结构",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "strategy_logic": "临场盘口变化比初盘更能反映真实资金。",
+      "execution_rule": "有最新水位时以最新为准，初盘只作对照。",
+      "risk_level": "低",
+      "confidence_weight": 0.48
+    },
+    {
+      "id": "STRAT-015",
+      "name": "未开赛才补发研判",
+      "category": "流程约束",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "strategy_logic": "已开赛或完场的比赛不能再出赛前研判。",
+      "execution_rule": "阶段2 只对未开赛场次发报，已开赛直接跳过并记录原因。",
+      "risk_level": "低",
+      "confidence_weight": 0.7
+    }
+  ]
+}
