@@ -4,6 +4,15 @@ from __future__ import annotations
 from typing import Any
 
 
+def _to_float(value: Any, default: float = 2.5) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse(score: Any) -> tuple[int, int] | None:
     parts = str(score or '').replace(':', '-').split('-', 1)
     if len(parts) != 2:
@@ -14,19 +23,42 @@ def _parse(score: Any) -> tuple[int, int] | None:
         return None
 
 
-def ou_from_scores(scores: Any, line: Any = None) -> str:
+def ou_from_scores(scores: Any, *extra_scores: Any, line: Any = None) -> str:
+    if len(extra_scores) >= 2 and line is None:
+        try:
+            vals = [int(scores) + int(extra_scores[0])]
+            line = extra_scores[1]
+        except (TypeError, ValueError):
+            vals = []
+        if vals:
+            ln = _to_float(line)
+            avg = sum(vals) / len(vals)
+            return '大' if avg > ln else ('小' if avg < ln else '走')
+    if extra_scores:
+        if len(extra_scores) == 1 and line is None:
+            line = extra_scores[0]
+            score_values = scores
+        else:
+            score_values = (scores, *extra_scores[:-1])
+            if line is None:
+                line = extra_scores[-1]
+    else:
+        score_values = scores
+    if isinstance(score_values, str):
+        iterable = [score_values]
+    elif isinstance(score_values, (list, tuple, set)):
+        iterable = list(score_values)
+    else:
+        iterable = [score_values]
     vals = []
-    for s in scores or []:
+    for s in iterable:
         parsed = _parse(s)
         if parsed:
             vals.append(sum(parsed))
     if not vals:
         return ''
     avg = sum(vals) / len(vals)
-    try:
-        ln = float(line)
-    except (TypeError, ValueError):
-        ln = 2.5
+    ln = _to_float(line)
     return '大' if avg > ln else ('小' if avg < ln else '走')
 
 

@@ -21,6 +21,9 @@ var fixFloat = exports.fixFloat = function (number){
 }
 
 exports.profit = function (raw){
+  if(!Array.isArray(raw) || raw.length < 3){
+    return [0,0,0];
+  }
   var result = [0,0,0];
   //必发盈亏位数对
   var digi = [0,0.025,0.05,0.1,0.2,0.3,0.4,0.45,0.5];
@@ -34,6 +37,9 @@ exports.profit = function (raw){
 }
 
 exports.score = function (score){
+  if(!score){
+    return [];
+  }
   var dict = {
     '0': 0,
     '1': 0.25,
@@ -93,6 +99,9 @@ var guess = function (raw){
 }
 
 var diff = exports.diff = function (a, b){
+  if(!Array.isArray(a) || !Array.isArray(b)){
+    return [];
+  }
   var result = [];
   for(var i = 0;i<a.length;i++){
     result.push((b[i]-a[i])/a[i]);
@@ -101,7 +110,13 @@ var diff = exports.diff = function (a, b){
 }
 
 exports.percent = function (raw){
+  if(!Array.isArray(raw) || raw.length < 3){
+    return [0,0,0];
+  }
   var total = raw[0]+raw[1]+raw[2];
+  if(!total){
+    return [0,0,0];
+  }
   return [raw[0]/total, raw[1]/total, raw[2]/total];
 }
 

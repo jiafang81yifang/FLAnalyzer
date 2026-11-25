@@ -17,16 +17,23 @@ PYTHON_FILES = [
     'convergence_arbitrator.py',
     'ProductionRunnerBridge.py',
     'blade_monitor_panel.py',
+    'scripts/audit_module_api.py',
     'scripts/build_single_file.py',
+    'scripts/full_audit.py',
     'scripts/runtime_module_self_check.py',
 ]
 
 GATES: list[tuple[str, list[str]]] = [
     ('ruff', [sys.executable, '-m', 'ruff', 'check', '.']),
-    ('bandit', [sys.executable, '-m', 'bandit', '-q', '-r', '.']),
+    # Pytest tests intentionally use assert; security scan covers runtime/tooling code.
+    ('bandit', [sys.executable, '-m', 'bandit', '-q', '-r', '.', '-x', './tests']),
     ('pylint-errors-only', [sys.executable, '-m', 'pylint', '--errors-only', *PYTHON_FILES]),
     ('pyright', [sys.executable, '-m', 'pyright', *PYTHON_FILES]),
+    ('module-api', [sys.executable, 'scripts/audit_module_api.py']),
+    ('full-audit', [sys.executable, 'scripts/full_audit.py']),
     ('runtime-self-check', [sys.executable, 'scripts/runtime_module_self_check.py']),
+    ('pytest', [sys.executable, '-m', 'pytest', '-q']),
+    ('npm-test', ['npm', 'test']),
 ]
 
 

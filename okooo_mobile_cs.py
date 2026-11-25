@@ -25,9 +25,12 @@ def _cache_dir() -> Path:
     return d
 
 
+def _safe_id(value: Any) -> str:
+    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or 'unknown'))
+
+
 def _cache_path(kind: str, match_id: Any) -> Path:
-    safe = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(match_id or 'unknown'))
-    return _cache_dir() / f'{kind}_{safe}.json'
+    return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'
 
 
 def _proxy_dict(proxies: Any = None) -> dict[str, str] | None:
@@ -94,13 +97,21 @@ def _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:
         return False
 
 
-def _okooo_apply_jc_score_fill(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:
+def _okooo_apply_jc_score_fill(
+    record: dict[str, Any],
+    pack: dict[str, Any] | None = None,
+    source_note: str = '',
+    overwrite: bool = False,
+) -> dict[str, Any]:
     if not isinstance(record, dict):
         return {}
     src = pack if isinstance(pack, dict) else record
     jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}
     if isinstance(jc, dict) and jc:
-        record.setdefault('correct_score_jc_official', jc)
+        if overwrite or not record.get('correct_score_jc_official'):
+            record['correct_score_jc_official'] = jc
+        if source_note:
+            record['correct_score_jc_source_note'] = source_note
     return record
 
 
@@ -118,29 +129,98 @@ def mobile_vs_full_time_score(nav_score: Any, actual_score: Any) -> bool:
     return str(nav_score or '').replace(':', '-').strip() == str(actual_score or '').replace(':', '-').replace(' (进行中)', '').strip()
 
 
-def jingcai_board_row_finished(row: Any, today_md: str = '') -> bool:
+def _looks_like_final_score(text: Any) -> bool:
+    match = re.fullmatch(r'\s*(\d{1,2})\s*[-:：]\s*(\d{1,2})\s*', str(text or ''))
+    if not match:
+        return False
+    left, right = int(match.group(1)), int(match.group(2))
+    return 0 <= left <= 15 and 0 <= right <= 15
+
+
+def jingcai_board_row_finished(
+    row: Any = None,
+    today_md: str = '',
+    *,
+    day_closed: bool = False,
+    end: Any = None,
+    inside_end_hide: bool = False,
+) -> bool:
+    if day_closed or inside_end_hide:
+        return True
+    end_text = str(end or '').strip().lower()
+    if end_text in {'1', 'true', 'yes', 'y', 'end', 'ended', 'closed', 'finish', 'finished', 'done', '完', '已完', '全场'}:
+        return True
+    if end_text and _looks_like_final_score(end_text):
+        return True
+    try:
+        zvs = row.select_one('.zVS') if row is not None and hasattr(row, 'select_one') else None
+        zvs_text = zvs.get_text(strip=True) if zvs is not None else ''
+        if _looks_like_final_score(zvs_text):
+            return True
+    except (AttributeError, TypeError):
+        pass
     text = ' '.join(str(x) for x in row) if isinstance(row, (list, tuple)) else str(row or '')
-    return any(k in text for k in ('完', '全场', '已完', 'FT')) or bool(re.search(r'\d+\s*[-:：]\s*\d+', text))
+    return any(k in text for k in ('完', '全场', '已完', 'FT')) or _looks_like_final_score(text)
 
 
-def build_score_market_heat_ranking(odds_map: Any) -> dict[str, Any]:
+def build_score_market_heat_ranking(
+    odds_map: Any = None,
+    correct_score_rows: Any = None,
+    pool_enriched: Any = None,
+    page_avg_odds: Any = None,
+    heat_source: str = 'okooo_mobile_cs_existing_odds',
+    channel: str = 'mobile',
+) -> dict[str, Any]:
     rows = []
+    odds_sources: list[tuple[str, Any]] = []
     if isinstance(odds_map, dict):
-        for score, raw in odds_map.items():
-            try:
-                odd = raw.get('odds') if isinstance(raw, dict) else raw
-                if odd is None:
-                    continue
-                odd_f = float(odd)
-            except (TypeError, ValueError):
-                continue
-            if odd_f > 1:
-                rows.append({'score': str(score).replace(':', '-'), 'odds': odd_f, 'heat': 1.0 / odd_f})
+        odds_sources.extend((str(score), raw) for score, raw in odds_map.items())
+    if isinstance(page_avg_odds, dict):
+        odds_sources.extend((str(score), raw) for score, raw in page_avg_odds.items())
+    if isinstance(correct_score_rows, dict):
+        odds_sources.extend((str(score), raw) for score, raw in correct_score_rows.items())
+    elif isinstance(correct_score_rows, (list, tuple)):
+        for item in correct_score_rows:
+            if isinstance(item, dict):
+                score = item.get('score') or item.get('name') or item.get('cs')
+                odds_sources.append((str(score or ''), item))
+            elif isinstance(item, (list, tuple)) and item:
+                odds_sources.append((str(item[0]), item[1] if len(item) > 1 else None))
+            else:
+                odds_sources.append((str(item), None))
+    enriched_by_score: dict[str, Any] = {}
+    if isinstance(pool_enriched, dict):
+        enriched_by_score = {str(k).replace(':', '-'): v for k, v in pool_enriched.items()}
+    elif isinstance(pool_enriched, (list, tuple)):
+        for item in pool_enriched:
+            if isinstance(item, dict):
+                score = str(item.get('score') or item.get('name') or item.get('cs') or '').replace(':', '-')
+                if score:
+                    enriched_by_score[score] = item
+    seen: set[str] = set()
+    for score, raw in odds_sources:
+        score_key = str(score or '').replace(':', '-').strip()
+        if not score_key or score_key.lower() == 'none' or score_key in seen:
+            continue
+        seen.add(score_key)
+        try:
+            odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw
+            if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):
+                odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')
+            odd_f = float(odd) if odd is not None else 0.0
+        except (TypeError, ValueError):
+            odd_f = 0.0
+        enriched = enriched_by_score.get(score_key)
+        row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}
+        if isinstance(enriched, dict):
+            row.update({k: v for k, v in enriched.items() if k not in row})
+        rows.append(row)
     rows.sort(key=lambda r: r['heat'], reverse=True)
     return {
         'available': bool(rows),
-        'source': 'okooo_mobile_cs_existing_odds',
-        'channel': 'mobile',
+        'source': heat_source,
+        'heat_source': heat_source,
+        'channel': channel,
         'ranking': rows,
         'top_scores': [r['score'] for r in rows[:8]],
     }
@@ -265,19 +345,29 @@ def six_market_fetch_blocked(record: dict[str, Any]) -> bool:
     return isinstance(block, dict) and bool(block.get('block_reason'))
 
 
-def save_six_market_contradictions(items: Any) -> bool:
+def _contradiction_store(match_id: Any = None) -> Path:
+    if match_id in (None, ''):
+        return _STORE
+    return _STORE.with_name(f'six_market_contradictions_{_safe_id(match_id)}.json')
+
+
+def save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:
+    match_id = None if items is None else match_id_or_items
+    payload = match_id_or_items if items is None else items
+    path = _contradiction_store(match_id)
     try:
-        _STORE.parent.mkdir(parents=True, exist_ok=True)
-        _STORE.write_text(json.dumps(items or [], ensure_ascii=False, indent=2), encoding='utf-8')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload or [], ensure_ascii=False, indent=2), encoding='utf-8')
         return True
     except OSError as exc:
         print(f"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}")
         return False
 
 
-def load_six_market_contradictions() -> list[Any]:
+def load_six_market_contradictions(match_id: Any = None) -> list[Any]:
+    path = _contradiction_store(match_id)
     try:
-        data = json.loads(_STORE.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"   ⚠️ [澳客手机CS] 读取对账缺口失败: {type(exc).__name__}")
         return []

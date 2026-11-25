@@ -14,7 +14,7 @@ def odds_fallback_enabled() -> bool:
     return os.environ.get('ODDS_FALLBACK_DISABLED', '').lower() not in {'1','true','yes'}
 
 
-def build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map') -> dict[str, Any]:
+def build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map', channel: str = 'fallback') -> dict[str, Any]:
     rows=[]
     if isinstance(odds, dict):
         for score, odd in odds.items():
@@ -28,7 +28,14 @@ def build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map') -> di
             if value > 1:
                 rows.append({'score': str(score).replace(':','-'), 'odds': value, 'heat': 1.0/value})
     rows.sort(key=lambda r: r['heat'], reverse=True)
-    return {'available': bool(rows), 'source': source, 'ranking': rows, 'top_scores': [r['score'] for r in rows[:8]]}
+    return {
+        'available': bool(rows),
+        'source': source,
+        'heat_source': source,
+        'channel': channel,
+        'ranking': rows,
+        'top_scores': [r['score'] for r in rows[:8]],
+    }
 
 
 def scrape_500_detail(fixture_id_500: Any, proxies: Any = None) -> dict[str, Any]:
@@ -49,7 +56,7 @@ def attach_500_shuju_to_rec(rec: dict[str, Any], force: bool = False) -> dict[st
     return pack
 
 
-def ensure_dual_source_before_judgment(rec: dict[str, Any]) -> dict[str, Any]:
+def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any = None) -> dict[str, Any]:
     if not isinstance(rec, dict):
         return {'available': False, 'judgment_ready': False}
     facts = rec.setdefault('dual_source_facts', {})
@@ -57,4 +64,7 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any]) -> dict[str, Any]:
         facts = {}; rec['dual_source_facts']=facts
     facts.setdefault('judgment_ready', bool(rec.get('prob_dict') or rec.get('odds_correct_score') or rec.get('correct_score_page_avg')))
     facts.setdefault('correct_score', {'mobile_entered': bool(rec.get('correct_score_page_avg') or rec.get('odds_correct_score'))})
+    if isinstance(extra_sources, dict):
+        for key, value in extra_sources.items():
+            facts[key] = value
     return facts

@@ -12,6 +12,12 @@ var int = exports.int = function (str){
 }
 
 exports.number = function (str){
+  if(str === undefined){
+    return null;
+  }
+  if(str === null){
+    return 0;
+  }
   str = validator.trim(String(str || ''));
   str = str.replace(/,/g,'');
   var num;
@@ -20,6 +26,9 @@ exports.number = function (str){
     num = parseFloat(str.substring(0,str.indexOf("%")))/100;
   }else{
     num = parseFloat(str);
+  }
+  if(Number.isNaN(num)){
+    return null;
   }
   return fixFloat(num);
 }
@@ -43,10 +52,17 @@ exports.sid = function (el){
 }
 
 exports.trtd = function (el,tr,td){
+  if(!el || typeof el.find !== 'function'){
+    return '';
+  }
   return exports.trim(el.find('tr').eq(tr).find('td').eq(td).text());
 }
 
 exports.date = function (str){
+  str = String(str || '');
+  if(!str){
+    return 0;
+  }
   return Date.parse(str.replace(/-/g,'/'));
 }
 
@@ -63,9 +79,11 @@ exports.handicap = function (str){
 }
 
 exports.price = function (str){
+  str = String(str || '');
   //如果有球队身价
   if(str.indexOf('球队身价')!=-1&&str.indexOf('--')==-1&&str.indexOf('€')!==-1){
-    return parseInt(str.substring(str.indexOf('€')+2,str.indexOf('万')));
+    var match = str.match(/€\s*([0-9]+)/);
+    return match ? parseInt(match[1]) : 0;
   }
   return 0;
 }

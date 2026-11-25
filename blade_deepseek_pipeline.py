@@ -111,8 +111,14 @@ def split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return {'available': True, 'both_wrong': False}
 
 
-def strip_match_features_from_method(text: Any) -> str:
-    return str(text or '')
+def strip_match_features_from_method(text: Any, identity_names: Any = None) -> str:
+    cleaned = str(text or '')
+    names = identity_names if isinstance(identity_names, (list, tuple, set)) else []
+    for name in names:
+        token = str(name or '').strip()
+        if token:
+            cleaned = cleaned.replace(token, '')
+    return cleaned
 
 
 def compare_short_abs_hot(info: Any) -> dict[str, Any]:

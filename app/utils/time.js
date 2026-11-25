@@ -7,10 +7,16 @@ var fixedInt = function (num){
 }
 
 var dateToString = exports.dateToString = function (d){
+  if(!(d instanceof Date) || Number.isNaN(d.getTime())){
+    return '';
+  }
   return d.getFullYear()+'-'+fixedInt((d.getMonth()+1))+'-'+fixedInt(d.getDate());
 }
 
 exports.timeToString = function (d){
+  if(!(d instanceof Date) || Number.isNaN(d.getTime())){
+    return '';
+  }
   return fixedInt(d.getHours())+':'+fixedInt(d.getMinutes());
 }
 
