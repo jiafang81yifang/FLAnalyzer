@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 672a2fb = 竞彩31比分真源 + 31全表λ/竞彩补全 + 仲裁二元组 + 清算v2拒空 + books同源 + 500兜底条件 + 11520例sweep
-$PinCommit = '672a2fbdbc59176017d2357f8467cb97734e823e'
+# 1327c12 = jc31落盘 + 平手盘0.0(8处) + 31池三视图与审计同集 + 图表jc兜底 + jczq页缓存 + AH明细保留
+$PinCommit = '1327c12522ac18d2ecada01e51a07d175c2175f9'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
