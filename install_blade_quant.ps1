@@ -8,17 +8,22 @@ FLAnalyzer · blade-quant 一键安装（Windows PowerShell）
   4. 写入启动脚本，并跑一次 --diagnose 自检
 
 用法（复制整行到 PowerShell，回车即可）：
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/e4c8701b33806bd73e01baf1362cc5b4a47aa7ad/install_blade_quant.ps1 | iex"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/cursor/fix-runtime-issues-84a8/install_blade_quant.ps1 | iex"
 
-可传参数指定安装目录（默认 $HOME\blade-quant）：
-  & { $env:BLADE_INSTALL_DIR='C:\DevProjects\blade-quant'; irm <上面的URL> | iex }
+可传参数指定安装目录（默认 C:\DevProjects\blade-quant，没有 C:\DevProjects 则用 用户目录\blade-quant）：
+  & { $env:BLADE_INSTALL_DIR='D:\blade-quant'; irm <上面的URL> | iex }
 #>
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+# 老版本 Windows PowerShell 默认不启用 TLS 1.2，会导致下载和 pip 失败。
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11
+} catch { }
 
 $AppCommit = 'e4c8701b33806bd73e01baf1362cc5b4a47aa7ad'
 $AppUrl = "https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/$AppCommit/app_v84_hermes.py"
-$AppSha256 = ''
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg) { Write-Host "    OK  $msg" -ForegroundColor Green }
@@ -31,7 +36,15 @@ function Fail($msg) {
 }
 
 # ---------- 1. 目标目录 ----------
-$InstallDir = if ($env:BLADE_INSTALL_DIR) { $env:BLADE_INSTALL_DIR } else { Join-Path $HOME 'blade-quant' }
+# 优先沿用已存在的 C:\DevProjects，避免程序散落在不同位置。
+$InstallDir = $env:BLADE_INSTALL_DIR
+if (-not $InstallDir) {
+    if (Test-Path 'C:\DevProjects') {
+        $InstallDir = 'C:\DevProjects\blade-quant'
+    } else {
+        $InstallDir = Join-Path $HOME 'blade-quant'
+    }
+}
 Write-Step "安装目录：$InstallDir"
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
@@ -135,22 +148,49 @@ Write-Ok "语法校验通过"
 
 # ---------- 7. 自检 ----------
 Write-Step "运行自检"
-& $VenvPython $AppFile --diagnose
+# Python 输出中文时按 UTF-8 解码，避免 PowerShell 用 OEM 代码页读成乱码。
+$env:PYTHONIOENCODING = 'utf-8'
+$diagnoseOutput = & $VenvPython $AppFile --diagnose 2>&1
+$diagnoseOutput | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) {
     Fail "自检未通过，请把上面的输出发给我。"
 }
+$dbLine = $diagnoseOutput | Where-Object { $_ -match 'DB|数据库' } | Select-Object -First 1
+if ($dbLine) { Write-Ok "数据库已初始化：$dbLine" }
 
 # ---------- 8. 启动脚本 ----------
+# 只有检测到本机代理端口真的在监听时才写代理变量，避免 Clash 没开时拖慢抓取。
+$proxyLine = ''
+$proxyPorts = @(7890, 7897, 10809, 1080)
+foreach ($port in $proxyPorts) {
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $connect = $client.BeginConnect('127.0.0.1', $port, $null, $null)
+        $ok = $connect.AsyncWaitHandle.WaitOne(300, $false)
+        if ($ok -and $client.Connected) {
+            $proxyLine = "set OKOOO_PROXY=http://127.0.0.1:$port"
+            Write-Ok "检测到本机代理 127.0.0.1:$port，已写入启动脚本"
+            $client.Close()
+            break
+        }
+        $client.Close()
+    } catch { }
+}
+if (-not $proxyLine) {
+    Write-Warn "未检测到本机代理，启动脚本走直连"
+}
+
+# .cmd 用 ASCII 写，避免 cmd.exe 被 UTF-8 BOM 干扰。
 $StartBat = Join-Path $InstallDir 'start.cmd'
-$batContent = @"
-@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-set OKOOO_PROXY=http://127.0.0.1:7890
-".venv\Scripts\python.exe" -m streamlit run app_v84_hermes.py
-pause
-"@
-Set-Content -Path $StartBat -Value $batContent -Encoding UTF8
+$batLines = @(
+    '@echo off',
+    'chcp 65001 >nul',
+    'cd /d "%~dp0"',
+    $proxyLine,
+    '".venv\Scripts\python.exe" -m streamlit run app_v84_hermes.py',
+    'pause'
+) | Where-Object { $_ -ne '' }
+[System.IO.File]::WriteAllLines($StartBat, $batLines, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host ""
 Write-Host "安装完成。" -ForegroundColor Green
