@@ -1482,6 +1482,121 @@ def test_jc31_is_fetched_before_the_500_fallback_decision(
     assert len(rec.get('jc_score_odds') or {}) == 31
 
 
+def test_merge_copies_ah_detail_into_the_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Item 12 (second half): the merge allow-list must not drop ah_detail.
+
+    scrape_okooo_detail produced ah_detail correctly, but _OKOOO_DETAIL_KEYS did
+    not list it, so _merge_okooo_detail_into_rec silently dropped it and the
+    record ended with 0 companies even though the pack had 8.
+    """
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache'))
+    books = {
+        'available': True,
+        'asian_handicap': {
+            'rows': [{'name': '平均', 'latest': {'line': -0.75}}],
+            'companies': [
+                {'name': '澳**票', 'pid': '84', 'latest': {'line': -0.75},
+                 'changes': [{'line': -0.75}, {'line': -0.5}]},
+                {'name': '立*', 'pid': '82', 'latest': {'line': -0.5}, 'changes': [{'line': -0.5}]},
+            ],
+        },
+        'over_under': {'companies': [{'name': 'P'}]},
+    }
+    six = {
+        'available': True, 'channel': 'mobile', 'match_id': '1347776',
+        'asian_handicap': -0.75, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+        'boards_hit': {'亚盘让球': True, '大小球': True, '胜平负': True},
+        'missing': [], 'source_report': {},
+    }
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books', lambda *a, **k: dict(books))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    pack = app.scrape_okooo_detail('1347776')
+    assert pack.get('ah_detail'), 'the producer must emit ah_detail'
+    assert len(pack['ah_detail']['companies']) == 2
+
+    rec: dict[str, Any] = {'okooo_match_id': '1347776'}
+    app._merge_okooo_detail_into_rec(rec, pack)
+    assert rec.get('ah_detail'), '_merge_okooo_detail_into_rec dropped ah_detail'
+    assert [c['name'] for c in rec['ah_detail']['companies']] == ['澳**票', '立*']
+    assert rec['ah_detail']['companies'][0]['changes'] == [{'line': -0.75}, {'line': -0.5}]
+    assert isinstance(rec.get('asian_handicap'), float)
+
+
+def test_detail_allow_list_covers_every_producer_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A merge allow-list that silently drops new producer keys is the same shape
+    as the old books_in_pack bug. Every key scrape_okooo_detail emits must be
+    either allow-listed or handled explicitly (markets -> okooo_markets)."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache2'))
+    books = {'available': True,
+             'asian_handicap': {'companies': [{'name': 'X', 'changes': []}]},
+             'over_under': {'companies': []}}
+    six = {'available': True, 'channel': 'mobile', 'asian_handicap': -0.75,
+           'ou_line': 2.5, 'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+           'boards_hit': {}, 'missing': [], 'source_report': {}}
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books', lambda *a, **k: dict(books))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    pack = app.scrape_okooo_detail('1347776')
+    # 'markets' is deliberately mapped onto rec['okooo_markets'] instead.
+    handled_elsewhere = {'markets'}
+    unlisted = sorted(set(pack) - set(app._OKOOO_DETAIL_KEYS) - handled_elsewhere)
+    assert unlisted == [], f'producer keys missing from the merge allow-list: {unlisted}'
+
+    # and every allow-listed producer key actually lands on the record
+    rec: dict[str, Any] = {'okooo_match_id': '1347776'}
+    app._merge_okooo_detail_into_rec(rec, pack)
+    for key in set(pack) & set(app._OKOOO_DETAIL_KEYS):
+        if pack.get(key) in (None, '', [], {}):
+            continue
+        assert key in rec, f'allow-listed key {key!r} did not reach the record'
+
+
+def test_enrich_path_keeps_ah_detail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """enrich_history_okooo_cs_facts copies via the same tuple, so one edit must
+    cover both paths. Drives the REAL scrape_okooo_detail through underlying
+    stubs, so ah_detail is produced by apply_mobile_books_lines as in production."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache3'))
+    books = {'available': True,
+             'asian_handicap': {'rows': [{'latest': {'line': -0.5}}],
+                                'companies': [{'name': '澳**票', 'changes': [{'line': -0.5}]}]},
+             'over_under': {'companies': []}}
+    six = {'available': True, 'channel': 'mobile', 'asian_handicap': -0.5,
+           'ou_line': 2.5, 'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+           'jc_score_odds': {o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS},
+           'boards_hit': {'亚盘让球': True, '大小球': True, '胜平负': True},
+           'missing': [], 'source_report': {}}
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: dict(six))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_ah_ou_books', lambda *a, **k: dict(books))
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'attach_okooo_ids_to_matches', lambda rows: rows)
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    rec: dict[str, Any] = {'okooo_match_id': '1347776', 'match': 'H vs A'}
+    app.enrich_history_okooo_cs_facts(rec, cn_name='H vs A', force_rescrape=True)
+    assert rec.get('ah_detail'), 'enrich path dropped ah_detail'
+    assert rec['ah_detail']['companies'][0]['name'] == '澳**票'
+    assert isinstance(rec.get('asian_handicap'), float), rec.get('asian_handicap')
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}

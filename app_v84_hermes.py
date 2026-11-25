@@ -27551,6 +27551,12 @@ _OKOOO_DETAIL_KEYS = (
     'odds_1x2', 'odds_1x2_channel', 'jc_handicap',
     'jc_lottery_no', 'jc_morder', 'water_gaps',
     'jc_score_odds', 'jc_score_source', 'jc_score_orderid',
+    # 明细与派生块：白名单曾经只收「水位标量」，于是 scrape_okooo_detail 新产出的
+    # ah_detail（含 change.php 公司时间线）在这里被静默丢掉，seed 拿不到明细，
+    # 记录里永远 0 家公司。新增生产者输出必须同步加进来（有测试盯着）。
+    'ah_detail', 'ou_detail',
+    'mobile_water_provenance', 'six_cs_settlement_v2', 'dual_source_facts',
+    'water_scrape_finished',
 )
 
 
