@@ -352,9 +352,42 @@ class DeepSeekAnalyzer:
         return str(text or '')
 
     @staticmethod
-    def match_identity_fields(info: Any) -> dict[str, str]:
-        d = info if isinstance(info, dict) else {}
-        return {'match': str(d.get('match') or d.get('cn_name') or ''), 'time': str(d.get('time') or '')}
+    def match_identity_fields(
+        info: Any,
+        kickoff: Any = '',
+        match_no: Any = '',
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, str]:
+        """Parse 赛号 / 星期 / 开赛时间 / 对阵 from whatever the caller has.
+
+        Callers in app_v84_hermes pass either a dict record or a raw match name
+        plus `kickoff=` / `match_no=` keywords, so both shapes must work here.
+        """
+        if isinstance(info, dict):
+            d = info
+        else:
+            d = {}
+        name = str(d.get('match') or d.get('cn_name') or ('' if d else (info or '')))
+        kickoff_text = str(kickoff or d.get('kickoff') or d.get('match_time') or d.get('time') or '')
+        number_text = str(match_no or d.get('no') or d.get('local_id') or d.get('match_no') or '')
+        code = ''
+        weekday = ''
+        found = re.search(r'周[一二三四五六日]\s*\d{1,3}', f'{number_text} {name}')
+        if found:
+            code = found.group(0).replace(' ', '')
+            weekday = code[:2]
+        if not number_text and code:
+            number_text = code
+        return {
+            'match': name,
+            'teams': name,
+            'time': kickoff_text,
+            'kickoff': kickoff_text,
+            'code': code or number_text,
+            'weekday': weekday,
+            'match_no': number_text,
+        }
 
     @staticmethod
     def pin_match_title_first(text: Any) -> str:

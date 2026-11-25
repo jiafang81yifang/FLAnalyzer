@@ -2,3 +2,14 @@ test.js
 trash/
 node_modules/
 app/public/src/vendor/
+__pycache__/
+*.pyc
+/dist/
+/models/
+/europa_topology.db
+/feature_store.db
+/match_history.json
+/brain_rules.txt
+/hit_history.json
+/game_theory_report.txt
+/reports/

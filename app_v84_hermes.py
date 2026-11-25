@@ -17,7 +17,7 @@ def _flanalyzer_install_embedded_runtime_modules():
     import types as _fl_embed_types
 
     _sources = {
-  "blade_deepseek_pipeline": "\"\"\"Lightweight DeepSeek analysis pipeline helpers for FLAnalyzer.\n\nThis module is intentionally dependency-light.  It provides deterministic\nformatting, payload-building and degraded-mode helpers used by app_v84_hermes.\nExternal DeepSeek calls remain in the main app where credentials/config live.\n\"\"\"\nfrom __future__ import annotations\n\nimport re\nfrom html import escape\nfrom typing import Any, ClassVar\n\nJCZQ_MACRO_BAIT_SCORES = {\"1-0\", \"0-1\", \"1-1\", \"2-1\", \"1-2\"}\n_RUNTIME: dict[str, Any] = {}\n\n\ndef bind_hermes_runtime(**kwargs: Any) -> None:\n    _RUNTIME.update(kwargs)\n\n\ndef strip_tg_color_marks(text: Any) -> str:\n    return str(text or '').replace('🟨', '').replace('🟥', '').replace('🟩', '')\n\n\ndef split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:\n    s = str(text or '')\n    limit = max(100, int(max_len or 3900))\n    return [s[i:i + limit] for i in range(0, len(s), limit)] or ['']\n\n\ndef compute_score_occ(scores: Any) -> dict[str, int]:\n    out: dict[str, int] = {}\n    for item in scores or []:\n        key = str(item[0] if isinstance(item, (list, tuple)) and item else item or '').replace(':', '-').strip()\n        if key:\n            out[key] = out.get(key, 0) + 1\n    return out\n\n\ndef _norm_score(score: Any) -> str:\n    return str(score or '').replace('：', '-').replace(':', '-').strip()\n\n\ndef _score_wdl(score: Any) -> str:\n    s = _norm_score(score)\n    if '胜' in s and '其它' in s:\n        return '胜'\n    if '负' in s and '其它' in s:\n        return '负'\n    if '平' in s and '其它' in s:\n        return '平'\n    m = re.match(r'^\\s*(\\d+)\\s*-\\s*(\\d+)\\s*$', s)\n    if not m:\n        return ''\n    h, a = int(m.group(1)), int(m.group(2))\n    return '胜' if h > a else ('平' if h == a else '负')\n\n\ndef audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]:\n    ctx = match_context if isinstance(match_context, dict) else {}\n    raw_payload = ctx.get('direction_lock_payload')\n    payload = raw_payload if isinstance(raw_payload, dict) else {}\n    ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0\n    try:\n        ratio_f = float(ratio or 0)\n    except (TypeError, ValueError):\n        ratio_f = 0.0\n    return {'available': ratio_f > 0, 'mean_gap_ratio': ratio_f, 'tier': 'high' if ratio_f >= 5 else ('mid' if ratio_f >= 1.35 else 'low')}\n\n\ndef check_rtm_collapse_guard(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'collapse': False, 'reason': 'deterministic_guard'}\n\n\ndef apply_game_surface_policy(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    data = dict(payload) if isinstance(payload, dict) else {}\n    data.setdefault('surface_policy_applied', True)\n    return data\n\n\ndef batch_ledger_integrity_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'ok': True, 'issues': []}\n\n\ndef build_v1631_clearing_view(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'rows': []}\n\n\ndef count_log_mismatches(*args: Any, **kwargs: Any) -> int:\n    return 0\n\n\ndef detect_sparse_game_signals(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'signals': []}\n\n\ndef per_match_review_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'gaps': []}\n\n\ndef review_direction_lock_recognition(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = source if isinstance(source, dict) else {}\n    return {'available': True, 'line': '方向锁复盘: 已按本地规则形成。', 'lock_side': info.get('lock_side')}\n\n\ndef settle_display_score_pair(first: Any, second: Any = None, *args: Any, **kwargs: Any) -> tuple[str, str]:\n    return _norm_score(first), _norm_score(second)\n\n\ndef split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'both_wrong': False}\n\n\ndef strip_match_features_from_method(text: Any, identity_names: Any = None) -> str:\n    cleaned = str(text or '')\n    names = identity_names if isinstance(identity_names, (list, tuple, set)) else []\n    for name in names:\n        token = str(name or '').strip()\n        if token:\n            cleaned = cleaned.replace(token, '')\n    return cleaned\n\n\ndef compare_short_abs_hot(info: Any) -> dict[str, Any]:\n    return {'available': False, 'line': '市短市热对照: 本地轻量模块未形成外部热度差。'}\n\n\nclass V1631StandardUnifiedEngine:\n    _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}\n    _TEMPLATE_FALLBACK = '未形成'\n\n\nclass DeepSeekAnalyzer:\n    \"\"\"Deterministic analyzer/formatter surface used by app_v84_hermes.\"\"\"\n\n    @staticmethod\n    def _classify_score_wdl(score: Any) -> str:\n        return _score_wdl(score)\n\n    @staticmethod\n    def _is_tg_match_title_line(line: Any) -> bool:\n        s = str(line or '')\n        return bool(s.startswith('📌') or ' vs ' in s or 'VS' in s)\n\n    @staticmethod\n    def _is_tg_section_suppressed(line: Any) -> bool:\n        return False\n\n    @staticmethod\n    def format_tg_match_header(match: Any, kickoff: Any = '', match_no: Any = '') -> str:\n        bits = ['📌']\n        if match_no:\n            bits.append(f'[{match_no}]')\n        bits.append(str(match or '未知比赛'))\n        if kickoff:\n            bits.append(str(kickoff))\n        return ' '.join(bits)\n\n    @staticmethod\n    def build_jc_cross_only_payload(data: Any, **kwargs: Any) -> dict[str, Any]:\n        payload = dict(data) if isinstance(data, dict) else {}\n        payload.update({k: v for k, v in kwargs.items() if v is not None})\n        rows = payload.get('jc_cross_rows') or payload.get('rows') or []\n        payload.setdefault('jc_cross_rows', rows if isinstance(rows, list) else [])\n        payload.setdefault('mkt_short_wdl_matrix', {'available': False, 'counts': {}})\n        payload.setdefault('allowed_scores', [])\n        payload.setdefault('judgment_universe', 'mkt_short_wdl_matrix')\n        return payload\n\n    @staticmethod\n    def attach_score_odds_cold_hedge(payload: dict[str, Any], arbitration: Any = None) -> dict[str, Any]:\n        payload['score_odds_cold_hedge'] = {'available': False, 'scores': [], 'writes_first_score': False, 'changes_direction': False}\n        return payload\n\n    @staticmethod\n    def build_cross_market_board(data: Any, first_score: Any = '', second_score: Any = '') -> dict[str, Any]:\n        d = data if isinstance(data, dict) else {}\n        return {\n            'available': True,\n            'first_score': _norm_score(first_score),\n            'second_score': _norm_score(second_score),\n            'asian_handicap': d.get('asian_handicap') or d.get('ah_line'),\n            'ou_line': d.get('ou_line'),\n            'jc_handicap': d.get('jc_handicap'),\n            'odds_1x2': d.get('odds_1x2') or {},\n        }\n\n    @staticmethod\n    def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:\n        m = matrix if isinstance(matrix, dict) else {}\n        return ['📊【市短胜平负矩阵】', f\"  状态: {'可用' if m.get('available') else '未形成'} {home} {away}\".rstrip()]\n\n    @staticmethod\n    def format_mkt_hot_wdl_matrix_tg_lines(payload: Any) -> list[str]:\n        return ['🔥【市热胜平负矩阵】', '  本地轻量模块按已落盘数据展示。']\n\n    @staticmethod\n    def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:\n        src = source if isinstance(source, dict) else {}\n        odds: dict[str, float] = {}\n        for key in ('correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg', 'odds_correct_score'):\n            val = src.get(key)\n            if isinstance(val, dict):\n                for score, odd in val.items():\n                    try:\n                        if isinstance(odd, dict):\n                            odd = odd.get('odds') or odd.get('avg') or odd.get('value')\n                        if odd is None:\n                            continue\n                        f = float(odd)\n                    except (TypeError, ValueError):\n                        continue\n                    if f > 1:\n                        odds[_norm_score(score)] = f\n        return odds\n\n    @staticmethod\n    def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:\n        clean = [r for r in (rows or []) if isinstance(r, dict)]\n        pos = [\n            r for r in clean\n            if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)\n        ]\n        return {'available': bool(clean), 'rows': clean, 'pos_rows': pos, 'pos_count': len(pos), 'system_prejudge': {}}\n\n    @staticmethod\n    def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📈【31项理论×市场】', f\"  市场超理论项: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📉【市热超理论专表】', f\"  条数: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_matrix_learning_tg_lines(info: Any, score: Any) -> list[str]:\n        return ['📌【学习改进意见】', f'  完场比分 {score or \"未形成\"}，本地模块记录样本，不改首选/次选/方向锁。']\n\n    @staticmethod\n    def build_matrix_learning_report(info: Any, score: Any) -> dict[str, Any]:\n        return {'available': True, 'actual_score': _norm_score(score), 'changes_first_score': False, 'changes_direction': False}\n\n    @staticmethod\n    def learning_match_teams_line(info: Any) -> str:\n        d = info if isinstance(info, dict) else {}\n        return f\"开赛球队：{d.get('home_team') or ''} vs {d.get('away_team') or ''}\".strip()\n\n    @staticmethod\n    def build_system_ml_dual_matrix_pack(info: Any) -> dict[str, Any]:\n        return {\n            'top8_dominant': '未形成', 'top8_share_pct': {'胜': 0.0, '平': 0.0, '负': 0.0},\n            'top15_ou_dominant': '未形成', 'top15_ou_share_pct': {'少球': 0.0, '多球': 0.0},\n            'short_vs_hot': '未形成', 'abs_vs_short_hot': '未形成',\n        }\n\n    @staticmethod\n    def build_direction_lock_judgment_report(info: Any) -> dict[str, Any]:\n        return {'verdict': '', 'available': False}\n\n    @staticmethod\n    def classify_result_score_origin(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '比分出处: 本地轻量模块未形成外部出处。'}\n\n    @staticmethod\n    def explain_score_hot_short_reason(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '冷热理由: 本地轻量模块未形成。'}\n\n    @staticmethod\n    def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_direction_lock_score_close(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False}\n\n    @staticmethod\n    def build_batch_anti_homogen_pack(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': True, 'homogenized': False, 'items': []}\n\n    @staticmethod\n    def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        return dict(payload) if isinstance(payload, dict) else {}\n\n    @staticmethod\n    def ensure_judgment_standard_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:\n        return {'available': False, 'in_hot8': False}\n\n    @staticmethod\n    def extract_dual_scores_from_judgment_text(text: Any) -> tuple[str, str]:\n        scores = re.findall(r'\\d+\\s*[-:]\\s*\\d+', str(text or ''))\n        return (_norm_score(scores[0]) if scores else '', _norm_score(scores[1]) if len(scores) > 1 else '')\n\n    @staticmethod\n    def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_matrix_dual_prejudge_html(*args: Any, **kwargs: Any) -> str:\n        return ''\n\n    @staticmethod\n    def format_structural_model_tg(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_structural_review_lines(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def align_displayed_landings(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def apply_operator_direction(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def bold_tg_match_title_html(text: Any) -> str:\n        return f'<b>{escape(str(text or \"\"))}</b>'\n\n    @staticmethod\n    def collapse_repeated_judgment_blocks(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_locked_direction_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_prob_ou_wdl_red(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_selected_scores_deep_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def match_identity_fields(info: Any) -> dict[str, str]:\n        d = info if isinstance(info, dict) else {}\n        return {'match': str(d.get('match') or d.get('cn_name') or ''), 'time': str(d.get('time') or '')}\n\n    @staticmethod\n    def pin_match_title_first(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def restrict_tg_text_to_direction_lock(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def sanitize_bot_output(text: Any) -> str:\n        return str(text or '').strip()\n\n    @staticmethod\n    def sanitize_six_market_tg_text(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:\n        return _norm_score(first), _norm_score(second)\n\n    @staticmethod\n    def strip_judgment_tg_suppressed_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def strip_tg_english(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def summarize_hot_top8_hit_rate(items: Any) -> dict[str, Any]:\n        rows = list(items or []) if not isinstance(items, dict) else list(items.values())\n        total = len(rows)\n        hits = sum(1 for r in rows if isinstance(r, dict) and r.get('in_hot8'))\n        return {'total': total, 'hits': hits, 'hit_rate': (hits / total if total else 0.0)}\n\n\n\n# ---- Real DeepSeek/OpenAI-compatible client helpers ----\ndef _env(name: str, default: str = '') -> str:\n    import os\n    return os.environ.get(name, default).strip()\n\n\ndef deepseek_config() -> dict[str, Any]:\n    return {\n        'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),\n        'base_url': (_env('DEEPSEEK_BASE_URL') or _env('OPENAI_BASE_URL') or 'https://api.deepseek.com').rstrip('/'),\n        'chat_model': _env('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),\n        'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),\n        'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),\n    }\n\n\ndef assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:\n    \"\"\"Build OpenAI-compatible messages for review/learning style calls.\"\"\"\n    messages: list[dict[str, str]] = []\n    sys_text = str(system or '你是足球量化分析助手，输出必须简洁、可审计、不得编造外部数据。')\n    messages.append({'role': 'system', 'content': sys_text})\n    body_parts = []\n    if task:\n        body_parts.append(f'任务: {task}')\n    if facts is not None:\n        import json\n        body_parts.append('事实数据:\\n' + json.dumps(facts, ensure_ascii=False, default=str))\n    if user:\n        body_parts.append(str(user))\n    messages.append({'role': 'user', 'content': '\\n\\n'.join(body_parts) or '请基于已有事实给出本地分析。'})\n    return messages\n\n\ndef _local_analysis(messages: Any, json_mode: bool = False) -> Any:\n    joined = '\\n'.join(str(m.get('content', '')) for m in (messages or []) if isinstance(m, dict))\n    if json_mode:\n        return {'available': False, 'provider': 'local', 'summary': '未配置 DEEPSEEK_API_KEY，已使用本地确定性分析。', 'input_chars': len(joined)}\n    return f'本地确定性分析：未配置 DEEPSEEK_API_KEY，已基于现有事实生成降级摘要（输入{len(joined)}字）。'\n\n\ndef deepseek_chat_completion(messages: Any, model: str | None = None, stream: bool = False,\n                             json_mode: bool = False, max_retries: int = 3,\n                             temperature: float = 0.2, timeout: float | None = None) -> Any:\n    \"\"\"Call DeepSeek/OpenAI-compatible chat completions when a key is configured.\n\n    Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import\n    and tests never require paid credentials.\n    \"\"\"\n    cfg = deepseek_config()\n    if not cfg['api_key']:\n        return _local_analysis(messages, json_mode=json_mode)\n    import json\n    import time\n\n    import requests\n    url = f\"{cfg['base_url']}/v1/chat/completions\"\n    payload: dict[str, Any] = {\n        'model': model or cfg['chat_model'],\n        'messages': list(messages or []),\n        'temperature': temperature,\n        'stream': bool(stream),\n    }\n    if json_mode:\n        payload['response_format'] = {'type': 'json_object'}\n    headers = {'Authorization': f\"Bearer {cfg['api_key']}\", 'Content-Type': 'application/json'}\n    last_err: Exception | None = None\n    request_timeout = float(timeout or cfg['timeout'] or 60)\n    for attempt in range(max(1, int(max_retries or 1))):\n        try:\n            resp = requests.post(\n                url,\n                headers=headers,\n                json=payload,\n                timeout=request_timeout,\n                stream=stream,\n            )\n            if resp.status_code == 429 and attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt)); continue\n            resp.raise_for_status()\n            if stream:\n                chunks=[]\n                for raw in resp.iter_lines(decode_unicode=True):\n                    if not raw or not str(raw).startswith('data:'):\n                        continue\n                    data=str(raw)[5:].strip()\n                    if data == '[DONE]':\n                        break\n                    try:\n                        obj=json.loads(data)\n                        chunks.append(obj.get('choices', [{}])[0].get('delta', {}).get('content', ''))\n                    except json.JSONDecodeError:\n                        continue\n                text=''.join(chunks)\n            else:\n                obj=resp.json()\n                text=obj.get('choices', [{}])[0].get('message', {}).get('content', '')\n            if json_mode:\n                try:\n                    return json.loads(text)\n                except json.JSONDecodeError:\n                    return {'available': True, 'provider': 'deepseek', 'raw': text}\n            return text\n        except Exception as exc:  # noqa: BLE001 - network/API retry wrapper\n            last_err = exc\n            if attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt))\n    if json_mode:\n        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}\n    return f'DeepSeek调用失败，已降级：{str(last_err or \"unknown\")[:160]}'\n\n\ndef deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:\n    result = deepseek_chat_completion(messages, json_mode=True, **kwargs)\n    return result if isinstance(result, dict) else {'available': False, 'raw': str(result)}\n\n\ndef run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:\n    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))\n\n\ndef get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:\n    return DeepSeekAnalyzer()\n",
+  "blade_deepseek_pipeline": "\"\"\"Lightweight DeepSeek analysis pipeline helpers for FLAnalyzer.\n\nThis module is intentionally dependency-light.  It provides deterministic\nformatting, payload-building and degraded-mode helpers used by app_v84_hermes.\nExternal DeepSeek calls remain in the main app where credentials/config live.\n\"\"\"\nfrom __future__ import annotations\n\nimport re\nfrom html import escape\nfrom typing import Any, ClassVar\n\nJCZQ_MACRO_BAIT_SCORES = {\"1-0\", \"0-1\", \"1-1\", \"2-1\", \"1-2\"}\n_RUNTIME: dict[str, Any] = {}\n\n\ndef bind_hermes_runtime(**kwargs: Any) -> None:\n    _RUNTIME.update(kwargs)\n\n\ndef strip_tg_color_marks(text: Any) -> str:\n    return str(text or '').replace('🟨', '').replace('🟥', '').replace('🟩', '')\n\n\ndef split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:\n    s = str(text or '')\n    limit = max(100, int(max_len or 3900))\n    return [s[i:i + limit] for i in range(0, len(s), limit)] or ['']\n\n\ndef compute_score_occ(scores: Any) -> dict[str, int]:\n    out: dict[str, int] = {}\n    for item in scores or []:\n        key = str(item[0] if isinstance(item, (list, tuple)) and item else item or '').replace(':', '-').strip()\n        if key:\n            out[key] = out.get(key, 0) + 1\n    return out\n\n\ndef _norm_score(score: Any) -> str:\n    return str(score or '').replace('：', '-').replace(':', '-').strip()\n\n\ndef _score_wdl(score: Any) -> str:\n    s = _norm_score(score)\n    if '胜' in s and '其它' in s:\n        return '胜'\n    if '负' in s and '其它' in s:\n        return '负'\n    if '平' in s and '其它' in s:\n        return '平'\n    m = re.match(r'^\\s*(\\d+)\\s*-\\s*(\\d+)\\s*$', s)\n    if not m:\n        return ''\n    h, a = int(m.group(1)), int(m.group(2))\n    return '胜' if h > a else ('平' if h == a else '负')\n\n\ndef audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]:\n    ctx = match_context if isinstance(match_context, dict) else {}\n    raw_payload = ctx.get('direction_lock_payload')\n    payload = raw_payload if isinstance(raw_payload, dict) else {}\n    ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0\n    try:\n        ratio_f = float(ratio or 0)\n    except (TypeError, ValueError):\n        ratio_f = 0.0\n    return {'available': ratio_f > 0, 'mean_gap_ratio': ratio_f, 'tier': 'high' if ratio_f >= 5 else ('mid' if ratio_f >= 1.35 else 'low')}\n\n\ndef check_rtm_collapse_guard(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'collapse': False, 'reason': 'deterministic_guard'}\n\n\ndef apply_game_surface_policy(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    data = dict(payload) if isinstance(payload, dict) else {}\n    data.setdefault('surface_policy_applied', True)\n    return data\n\n\ndef batch_ledger_integrity_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'ok': True, 'issues': []}\n\n\ndef build_v1631_clearing_view(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'rows': []}\n\n\ndef count_log_mismatches(*args: Any, **kwargs: Any) -> int:\n    return 0\n\n\ndef detect_sparse_game_signals(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'signals': []}\n\n\ndef per_match_review_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'gaps': []}\n\n\ndef review_direction_lock_recognition(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = source if isinstance(source, dict) else {}\n    return {'available': True, 'line': '方向锁复盘: 已按本地规则形成。', 'lock_side': info.get('lock_side')}\n\n\ndef settle_display_score_pair(first: Any, second: Any = None, *args: Any, **kwargs: Any) -> tuple[str, str]:\n    return _norm_score(first), _norm_score(second)\n\n\ndef split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'both_wrong': False}\n\n\ndef strip_match_features_from_method(text: Any, identity_names: Any = None) -> str:\n    cleaned = str(text or '')\n    names = identity_names if isinstance(identity_names, (list, tuple, set)) else []\n    for name in names:\n        token = str(name or '').strip()\n        if token:\n            cleaned = cleaned.replace(token, '')\n    return cleaned\n\n\ndef compare_short_abs_hot(info: Any) -> dict[str, Any]:\n    return {'available': False, 'line': '市短市热对照: 本地轻量模块未形成外部热度差。'}\n\n\nclass V1631StandardUnifiedEngine:\n    _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}\n    _TEMPLATE_FALLBACK = '未形成'\n\n\nclass DeepSeekAnalyzer:\n    \"\"\"Deterministic analyzer/formatter surface used by app_v84_hermes.\"\"\"\n\n    @staticmethod\n    def _classify_score_wdl(score: Any) -> str:\n        return _score_wdl(score)\n\n    @staticmethod\n    def _is_tg_match_title_line(line: Any) -> bool:\n        s = str(line or '')\n        return bool(s.startswith('📌') or ' vs ' in s or 'VS' in s)\n\n    @staticmethod\n    def _is_tg_section_suppressed(line: Any) -> bool:\n        return False\n\n    @staticmethod\n    def format_tg_match_header(match: Any, kickoff: Any = '', match_no: Any = '') -> str:\n        bits = ['📌']\n        if match_no:\n            bits.append(f'[{match_no}]')\n        bits.append(str(match or '未知比赛'))\n        if kickoff:\n            bits.append(str(kickoff))\n        return ' '.join(bits)\n\n    @staticmethod\n    def build_jc_cross_only_payload(data: Any, **kwargs: Any) -> dict[str, Any]:\n        payload = dict(data) if isinstance(data, dict) else {}\n        payload.update({k: v for k, v in kwargs.items() if v is not None})\n        rows = payload.get('jc_cross_rows') or payload.get('rows') or []\n        payload.setdefault('jc_cross_rows', rows if isinstance(rows, list) else [])\n        payload.setdefault('mkt_short_wdl_matrix', {'available': False, 'counts': {}})\n        payload.setdefault('allowed_scores', [])\n        payload.setdefault('judgment_universe', 'mkt_short_wdl_matrix')\n        return payload\n\n    @staticmethod\n    def attach_score_odds_cold_hedge(payload: dict[str, Any], arbitration: Any = None) -> dict[str, Any]:\n        payload['score_odds_cold_hedge'] = {'available': False, 'scores': [], 'writes_first_score': False, 'changes_direction': False}\n        return payload\n\n    @staticmethod\n    def build_cross_market_board(data: Any, first_score: Any = '', second_score: Any = '') -> dict[str, Any]:\n        d = data if isinstance(data, dict) else {}\n        return {\n            'available': True,\n            'first_score': _norm_score(first_score),\n            'second_score': _norm_score(second_score),\n            'asian_handicap': d.get('asian_handicap') or d.get('ah_line'),\n            'ou_line': d.get('ou_line'),\n            'jc_handicap': d.get('jc_handicap'),\n            'odds_1x2': d.get('odds_1x2') or {},\n        }\n\n    @staticmethod\n    def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:\n        m = matrix if isinstance(matrix, dict) else {}\n        return ['📊【市短胜平负矩阵】', f\"  状态: {'可用' if m.get('available') else '未形成'} {home} {away}\".rstrip()]\n\n    @staticmethod\n    def format_mkt_hot_wdl_matrix_tg_lines(payload: Any) -> list[str]:\n        return ['🔥【市热胜平负矩阵】', '  本地轻量模块按已落盘数据展示。']\n\n    @staticmethod\n    def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:\n        src = source if isinstance(source, dict) else {}\n        odds: dict[str, float] = {}\n        for key in ('correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg', 'odds_correct_score'):\n            val = src.get(key)\n            if isinstance(val, dict):\n                for score, odd in val.items():\n                    try:\n                        if isinstance(odd, dict):\n                            odd = odd.get('odds') or odd.get('avg') or odd.get('value')\n                        if odd is None:\n                            continue\n                        f = float(odd)\n                    except (TypeError, ValueError):\n                        continue\n                    if f > 1:\n                        odds[_norm_score(score)] = f\n        return odds\n\n    @staticmethod\n    def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:\n        clean = [r for r in (rows or []) if isinstance(r, dict)]\n        pos = [\n            r for r in clean\n            if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)\n        ]\n        return {'available': bool(clean), 'rows': clean, 'pos_rows': pos, 'pos_count': len(pos), 'system_prejudge': {}}\n\n    @staticmethod\n    def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📈【31项理论×市场】', f\"  市场超理论项: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📉【市热超理论专表】', f\"  条数: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_matrix_learning_tg_lines(info: Any, score: Any) -> list[str]:\n        return ['📌【学习改进意见】', f'  完场比分 {score or \"未形成\"}，本地模块记录样本，不改首选/次选/方向锁。']\n\n    @staticmethod\n    def build_matrix_learning_report(info: Any, score: Any) -> dict[str, Any]:\n        return {'available': True, 'actual_score': _norm_score(score), 'changes_first_score': False, 'changes_direction': False}\n\n    @staticmethod\n    def learning_match_teams_line(info: Any) -> str:\n        d = info if isinstance(info, dict) else {}\n        return f\"开赛球队：{d.get('home_team') or ''} vs {d.get('away_team') or ''}\".strip()\n\n    @staticmethod\n    def build_system_ml_dual_matrix_pack(info: Any) -> dict[str, Any]:\n        return {\n            'top8_dominant': '未形成', 'top8_share_pct': {'胜': 0.0, '平': 0.0, '负': 0.0},\n            'top15_ou_dominant': '未形成', 'top15_ou_share_pct': {'少球': 0.0, '多球': 0.0},\n            'short_vs_hot': '未形成', 'abs_vs_short_hot': '未形成',\n        }\n\n    @staticmethod\n    def build_direction_lock_judgment_report(info: Any) -> dict[str, Any]:\n        return {'verdict': '', 'available': False}\n\n    @staticmethod\n    def classify_result_score_origin(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '比分出处: 本地轻量模块未形成外部出处。'}\n\n    @staticmethod\n    def explain_score_hot_short_reason(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '冷热理由: 本地轻量模块未形成。'}\n\n    @staticmethod\n    def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_direction_lock_score_close(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False}\n\n    @staticmethod\n    def build_batch_anti_homogen_pack(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': True, 'homogenized': False, 'items': []}\n\n    @staticmethod\n    def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        return dict(payload) if isinstance(payload, dict) else {}\n\n    @staticmethod\n    def ensure_judgment_standard_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:\n        return {'available': False, 'in_hot8': False}\n\n    @staticmethod\n    def extract_dual_scores_from_judgment_text(text: Any) -> tuple[str, str]:\n        scores = re.findall(r'\\d+\\s*[-:]\\s*\\d+', str(text or ''))\n        return (_norm_score(scores[0]) if scores else '', _norm_score(scores[1]) if len(scores) > 1 else '')\n\n    @staticmethod\n    def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_matrix_dual_prejudge_html(*args: Any, **kwargs: Any) -> str:\n        return ''\n\n    @staticmethod\n    def format_structural_model_tg(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_structural_review_lines(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def align_displayed_landings(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def apply_operator_direction(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def bold_tg_match_title_html(text: Any) -> str:\n        return f'<b>{escape(str(text or \"\"))}</b>'\n\n    @staticmethod\n    def collapse_repeated_judgment_blocks(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_locked_direction_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_prob_ou_wdl_red(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_selected_scores_deep_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def match_identity_fields(\n        info: Any,\n        kickoff: Any = '',\n        match_no: Any = '',\n        *args: Any,\n        **kwargs: Any,\n    ) -> dict[str, str]:\n        \"\"\"Parse 赛号 / 星期 / 开赛时间 / 对阵 from whatever the caller has.\n\n        Callers in app_v84_hermes pass either a dict record or a raw match name\n        plus `kickoff=` / `match_no=` keywords, so both shapes must work here.\n        \"\"\"\n        if isinstance(info, dict):\n            d = info\n        else:\n            d = {}\n        name = str(d.get('match') or d.get('cn_name') or ('' if d else (info or '')))\n        kickoff_text = str(kickoff or d.get('kickoff') or d.get('match_time') or d.get('time') or '')\n        number_text = str(match_no or d.get('no') or d.get('local_id') or d.get('match_no') or '')\n        code = ''\n        weekday = ''\n        found = re.search(r'周[一二三四五六日]\\s*\\d{1,3}', f'{number_text} {name}')\n        if found:\n            code = found.group(0).replace(' ', '')\n            weekday = code[:2]\n        if not number_text and code:\n            number_text = code\n        return {\n            'match': name,\n            'teams': name,\n            'time': kickoff_text,\n            'kickoff': kickoff_text,\n            'code': code or number_text,\n            'weekday': weekday,\n            'match_no': number_text,\n        }\n\n    @staticmethod\n    def pin_match_title_first(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def restrict_tg_text_to_direction_lock(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def sanitize_bot_output(text: Any) -> str:\n        return str(text or '').strip()\n\n    @staticmethod\n    def sanitize_six_market_tg_text(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:\n        return _norm_score(first), _norm_score(second)\n\n    @staticmethod\n    def strip_judgment_tg_suppressed_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def strip_tg_english(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def summarize_hot_top8_hit_rate(items: Any) -> dict[str, Any]:\n        rows = list(items or []) if not isinstance(items, dict) else list(items.values())\n        total = len(rows)\n        hits = sum(1 for r in rows if isinstance(r, dict) and r.get('in_hot8'))\n        return {'total': total, 'hits': hits, 'hit_rate': (hits / total if total else 0.0)}\n\n\n\n# ---- Real DeepSeek/OpenAI-compatible client helpers ----\ndef _env(name: str, default: str = '') -> str:\n    import os\n    return os.environ.get(name, default).strip()\n\n\ndef deepseek_config() -> dict[str, Any]:\n    return {\n        'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),\n        'base_url': (_env('DEEPSEEK_BASE_URL') or _env('OPENAI_BASE_URL') or 'https://api.deepseek.com').rstrip('/'),\n        'chat_model': _env('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),\n        'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),\n        'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),\n    }\n\n\ndef assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:\n    \"\"\"Build OpenAI-compatible messages for review/learning style calls.\"\"\"\n    messages: list[dict[str, str]] = []\n    sys_text = str(system or '你是足球量化分析助手，输出必须简洁、可审计、不得编造外部数据。')\n    messages.append({'role': 'system', 'content': sys_text})\n    body_parts = []\n    if task:\n        body_parts.append(f'任务: {task}')\n    if facts is not None:\n        import json\n        body_parts.append('事实数据:\\n' + json.dumps(facts, ensure_ascii=False, default=str))\n    if user:\n        body_parts.append(str(user))\n    messages.append({'role': 'user', 'content': '\\n\\n'.join(body_parts) or '请基于已有事实给出本地分析。'})\n    return messages\n\n\ndef _local_analysis(messages: Any, json_mode: bool = False) -> Any:\n    joined = '\\n'.join(str(m.get('content', '')) for m in (messages or []) if isinstance(m, dict))\n    if json_mode:\n        return {'available': False, 'provider': 'local', 'summary': '未配置 DEEPSEEK_API_KEY，已使用本地确定性分析。', 'input_chars': len(joined)}\n    return f'本地确定性分析：未配置 DEEPSEEK_API_KEY，已基于现有事实生成降级摘要（输入{len(joined)}字）。'\n\n\ndef deepseek_chat_completion(messages: Any, model: str | None = None, stream: bool = False,\n                             json_mode: bool = False, max_retries: int = 3,\n                             temperature: float = 0.2, timeout: float | None = None) -> Any:\n    \"\"\"Call DeepSeek/OpenAI-compatible chat completions when a key is configured.\n\n    Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import\n    and tests never require paid credentials.\n    \"\"\"\n    cfg = deepseek_config()\n    if not cfg['api_key']:\n        return _local_analysis(messages, json_mode=json_mode)\n    import json\n    import time\n\n    import requests\n    url = f\"{cfg['base_url']}/v1/chat/completions\"\n    payload: dict[str, Any] = {\n        'model': model or cfg['chat_model'],\n        'messages': list(messages or []),\n        'temperature': temperature,\n        'stream': bool(stream),\n    }\n    if json_mode:\n        payload['response_format'] = {'type': 'json_object'}\n    headers = {'Authorization': f\"Bearer {cfg['api_key']}\", 'Content-Type': 'application/json'}\n    last_err: Exception | None = None\n    request_timeout = float(timeout or cfg['timeout'] or 60)\n    for attempt in range(max(1, int(max_retries or 1))):\n        try:\n            resp = requests.post(\n                url,\n                headers=headers,\n                json=payload,\n                timeout=request_timeout,\n                stream=stream,\n            )\n            if resp.status_code == 429 and attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt)); continue\n            resp.raise_for_status()\n            if stream:\n                chunks=[]\n                for raw in resp.iter_lines(decode_unicode=True):\n                    if not raw or not str(raw).startswith('data:'):\n                        continue\n                    data=str(raw)[5:].strip()\n                    if data == '[DONE]':\n                        break\n                    try:\n                        obj=json.loads(data)\n                        chunks.append(obj.get('choices', [{}])[0].get('delta', {}).get('content', ''))\n                    except json.JSONDecodeError:\n                        continue\n                text=''.join(chunks)\n            else:\n                obj=resp.json()\n                text=obj.get('choices', [{}])[0].get('message', {}).get('content', '')\n            if json_mode:\n                try:\n                    return json.loads(text)\n                except json.JSONDecodeError:\n                    return {'available': True, 'provider': 'deepseek', 'raw': text}\n            return text\n        except Exception as exc:  # noqa: BLE001 - network/API retry wrapper\n            last_err = exc\n            if attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt))\n    if json_mode:\n        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}\n    return f'DeepSeek调用失败，已降级：{str(last_err or \"unknown\")[:160]}'\n\n\ndef deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:\n    result = deepseek_chat_completion(messages, json_mode=True, **kwargs)\n    return result if isinstance(result, dict) else {'available': False, 'raw': str(result)}\n\n\ndef run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:\n    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))\n\n\ndef get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:\n    return DeepSeekAnalyzer()\n",
   "blade_ml_engine": "\"\"\"Local deterministic ML helpers for FLAnalyzer.\n\nThe real app can use sklearn when present, but this module is importable without\noptional ML dependencies and provides stable Poisson-based fallbacks.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport math\nimport os\n\n# Trusted local model-cache compatibility; load paths are constrained before use.\nimport pickle  # nosec B403\nfrom pathlib import Path\nfrom typing import Any\n\ntry:\n    import sklearn  # type: ignore  # noqa: F401\n\n    SKLEARN_OK = True\nexcept ImportError:\n    SKLEARN_OK = False\n\nML_SKLEARN_OK = SKLEARN_OK\n\n\ndef ml_predict_enabled() -> bool:\n    return True\n\n\ndef _safe_float(value: Any, default: float = 0.0) -> float:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef calc_bivariate_poisson_matrix(\n    lam_h: Any,\n    lam_a: Any,\n    lambda_shared: Any = 0.0,\n    max_goals: int = 10,\n) -> dict[str, float]:\n    lh = max(0.01, _safe_float(lam_h, 1.2))\n    la = max(0.01, _safe_float(lam_a, 0.9))\n    limit = max(1, int(max_goals or 10))\n    out: dict[str, float] = {}\n    total = 0.0\n    for h in range(limit + 1):\n        ph = math.exp(-lh) * (lh**h) / math.factorial(h)\n        for a in range(limit + 1):\n            pa = math.exp(-la) * (la**a) / math.factorial(a)\n            p = ph * pa\n            out[f'{h}-{a}'] = p\n            total += p\n    if total > 0:\n        out = {k: v / total for k, v in out.items()}\n    return out\n\n\n# ---- Persistent training bundle ----\ndef _models_dir() -> str:\n    return os.environ.get('MODELS_DIR') or os.environ.get('FLANALYZER_MODELS_DIR') or 'models'\n\n\ndef _models_root() -> Path:\n    return Path(_models_dir()).expanduser().resolve()\n\n\ndef _bundle_path() -> str:\n    return str(_models_root() / 'blade_ml_bundle.pkl')\n\n\ndef _constrained_bundle_path() -> Path:\n    root = _models_root()\n    path = Path(_bundle_path()).expanduser().resolve()\n    if root not in path.parents and path != root:\n        raise ValueError(f'model bundle path escapes MODELS_DIR: {path}')\n    return path\n\n\ndef _extract_training_rows(history: Any) -> list[dict[str, Any]]:\n    rows = []\n    source = history.values() if isinstance(history, dict) else (history or [])\n    for rec in source:\n        if not isinstance(rec, dict):\n            continue\n        score = str(rec.get('actual_score') or '').replace(' (进行中)', '').replace(':', '-')\n        if '-' not in score:\n            continue\n        left, right = [part.strip() for part in score.split('-', 1)]\n        if not (left.isdigit() and right.isdigit()):\n            continue\n        h, a = int(left), int(right)\n        rows.append({\n            'lam_h': _safe_float(rec.get('lam_h') or rec.get('lambda_home'), 1.2),\n            'lam_a': _safe_float(rec.get('lam_a') or rec.get('lambda_away'), 0.9),\n            'ou_line': _safe_float(rec.get('ou_line'), 2.5),\n            'ah_line': _safe_float(rec.get('asian_handicap') or rec.get('ah_line'), 0.0),\n            'home_goals': h,\n            'away_goals': a,\n        })\n    return rows\n\n\ndef train_from_history(history: Any, save: bool = True) -> dict[str, Any]:\n    rows = _extract_training_rows(history)\n    bundle = {\n        'trained': False,\n        'rows': len(rows),\n        'sklearn_ok': SKLEARN_OK,\n        'model_type': 'poisson_mean',\n        'created_from': 'history',\n    }\n    if not rows:\n        bundle.update({'home_mean': 1.2, 'away_mean': 0.9, 'reason': 'no_completed_scores'})\n    else:\n        bundle['home_mean'] = sum(r['home_goals'] for r in rows) / len(rows)\n        bundle['away_mean'] = sum(r['away_goals'] for r in rows) / len(rows)\n        bundle['trained'] = True\n        if SKLEARN_OK and len(rows) >= 5:\n            try:\n                from sklearn.ensemble import GradientBoostingRegressor  # type: ignore\n\n                x_rows = [[r['lam_h'], r['lam_a'], r['ou_line'], r['ah_line']] for r in rows]\n                yh = [r['home_goals'] for r in rows]\n                ya = [r['away_goals'] for r in rows]\n                mh = GradientBoostingRegressor(random_state=42).fit(x_rows, yh)\n                ma = GradientBoostingRegressor(random_state=43).fit(x_rows, ya)\n                bundle.update({'model_type': 'gradient_boosting', 'home_model': mh, 'away_model': ma})\n            except (ImportError, AttributeError, TypeError, ValueError) as exc:\n                bundle['train_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    if save:\n        save_bundle(bundle)\n    return bundle\n\n\ndef save_bundle(bundle: dict[str, Any]) -> bool:\n    path = _constrained_bundle_path()\n    path.parent.mkdir(parents=True, exist_ok=True)\n    with path.open('wb') as fh:\n        pickle.dump(bundle, fh)\n    return True\n\n\ndef load_bundle() -> dict[str, Any] | None:\n    path = _constrained_bundle_path()\n    if not path.exists():\n        return None\n    # Trusted local model cache constrained to MODELS_DIR.\n    with path.open('rb') as fh:\n        bundle = pickle.load(fh)  # nosec B301\n    return bundle if isinstance(bundle, dict) else None\n\n\ndef _predict_lambdas_from_bundle(bundle: dict[str, Any], info: dict[str, Any]) -> tuple[float, float]:\n    base = [\n        _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2)),\n        _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)),\n        _safe_float(info.get('ou_line'), 2.5),\n        _safe_float(info.get('asian_handicap') or info.get('ah_line'), 0.0),\n    ]\n    if bundle.get('model_type') == 'gradient_boosting' and bundle.get('home_model') and bundle.get('away_model'):\n        try:\n            return (\n                max(0.05, float(bundle['home_model'].predict([base])[0])),\n                max(0.05, float(bundle['away_model'].predict([base])[0])),\n            )\n        except (AttributeError, TypeError, ValueError) as exc:\n            bundle['predict_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    return (\n        max(0.05, _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2))),\n        max(0.05, _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9))),\n    )\n\n\ndef ensure_ml_bundle(force_train: bool = False) -> dict[str, Any]:\n    bundle = None if force_train else load_bundle()\n    if bundle is None:\n        return {\n            'enabled': True,\n            'reason': 'no_trained_bundle',\n            'poisson': None,\n            'sample_count': 0,\n            'sklearn_ok': SKLEARN_OK,\n            'bundle_path': _bundle_path(),\n        }\n    return {\n        'enabled': True,\n        'reason': 'trained_bundle_loaded',\n        'poisson': bundle,\n        'sample_count': int(bundle.get('rows') or 0),\n        'sklearn_ok': SKLEARN_OK,\n        'bundle_path': _bundle_path(),\n    }\n\n\ndef predict_match_ml(match_info: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = match_info if isinstance(match_info, dict) else {}\n    bundle = load_bundle()\n    if bundle:\n        lam_h, lam_a = _predict_lambdas_from_bundle(bundle, info)\n    else:\n        lam_h = _safe_float(info.get('lam_h') or info.get('lambda_home'), 1.2)\n        lam_a = _safe_float(info.get('lam_a') or info.get('lambda_away'), 0.9)\n    matrix = calc_bivariate_poisson_matrix(lam_h, lam_a, max_goals=7)\n    preferred = max(matrix, key=lambda score: matrix[score]) if matrix else ''\n    sorted_scores = sorted(matrix.items(), key=lambda kv: kv[1], reverse=True)[:8]\n    return {\n        'enabled': True,\n        'used': True,\n        'reason': 'trained_bundle' if bundle else 'local_poisson_fallback',\n        'preferred_score': preferred,\n        'top_scores': sorted_scores,\n        'poisson_lambda': {'home': lam_h, 'away': lam_a},\n        'expected_total_goals': round(lam_h + lam_a, 4),\n    }\n\n\ndef learn_match_after_result(info: Any) -> dict[str, Any]:\n    return {\n        'ok': True,\n        'sample_count': 1 if isinstance(info, dict) else 0,\n        'feature_count': 0,\n        'actual_score': (info or {}).get('actual_score') if isinstance(info, dict) else None,\n    }\n\n\ndef train_daily_poisson(force: bool = True) -> tuple[bool, str, int, int]:\n    hist_path = os.environ.get('HISTORY_FILE', 'match_history.json')\n    history = {}\n    if os.path.exists(hist_path):\n        try:\n            with open(hist_path, encoding='utf-8') as fh:\n                history = json.load(fh)\n        except (OSError, json.JSONDecodeError) as exc:\n            print(f\"   ⚠️ [ML引擎] 历史样本读取失败，使用空样本: {type(exc).__name__}\")\n            history = {}\n    bundle = train_from_history(history, save=True)\n    return bool(bundle.get('trained')), str(bundle.get('model_type') or 'poisson_mean'), int(bundle.get('rows') or 0), 4\n\n\ndef deepseek_flash_ml_brief(*args: Any, **kwargs: Any) -> str:\n    return 'deepseek-flash ML 摘要需用户配置 DeepSeek 服务；本地泊松兜底已可用。'\n",
   "okooo_mobile_cs": "\"\"\"Mobile Okooo correct-score/market helpers.\n\nThe functions here are real deterministic parsers/normalizers. Network scraping\nreturns structured unavailable payloads when caller has not provided a session or\nreachable service data, so app_v84_hermes can run without optional private code.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport os\nimport re\nimport time\nfrom pathlib import Path\nfrom typing import Any\n\nimport requests\n\n_STORE = Path('reports/six_market_contradictions.json')\n\n\n# ---- HTTP/cache helpers ----\ndef _cache_dir() -> Path:\n    d = Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))\n    d.mkdir(parents=True, exist_ok=True)\n    return d\n\n\ndef _safe_id(value: Any) -> str:\n    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or 'unknown'))\n\n\ndef _cache_path(kind: str, match_id: Any) -> Path:\n    return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'\n\n\ndef _proxy_dict(proxies: Any = None) -> dict[str, str] | None:\n    if isinstance(proxies, dict):\n        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}\n    proxy = str(\n        proxies\n        or os.environ.get('OKOOO_PROXY')\n        or os.environ.get('HTTPS_PROXY')\n        or os.environ.get('HTTP_PROXY')\n        or ''\n    ).strip()\n    return {'http': proxy, 'https': proxy} if proxy else None\n\n\ndef _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:\n    headers = {\n        'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36',\n        'Accept-Language': 'zh-CN,zh;q=0.9',\n    }\n    last = ''\n    for attempt in range(max(1, retries)):\n        try:\n            sess = session or requests\n            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)\n            if resp.status_code == 200 and resp.text:\n                resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'\n                return resp.text\n            last = f'HTTP {resp.status_code}'\n        except requests.RequestException as exc:\n            last = f'{type(exc).__name__}: {str(exc)[:120]}'\n        time.sleep(min(4, 2**attempt))\n    raise RuntimeError(last or 'empty response')\n\n\ndef _read_json_cache(path: Path) -> dict[str, Any] | None:\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [澳客手机CS] 缓存读取跳过 {path.name}: {type(exc).__name__}\")\n        return None\n    return data if isinstance(data, dict) else None\n\n\ndef _parse_score_odds_from_text(text: str) -> dict[str, float]:\n    odds = {}\n    # Handles compact HTML/text containing score followed by decimal odds.\n    for score, odd in re.findall(r'(?:>|\\b)(\\d+\\s*[-:：]\\s*\\d+)(?:<|\\b)[^\\d]{0,80}([1-9]\\d?(?:\\.\\d+)?)', text):\n        try:\n            odds[score.replace('：', '-').replace(':', '-').replace(' ', '')] = float(odd)\n        except ValueError:\n            continue\n    return odds\n\n\ndef _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:\n    return bool(kwargs.get('data_only', False))\n\n\ndef _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:\n    try:\n        return float(od) >= float(floor)\n    except (TypeError, ValueError):\n        return False\n\n\ndef _okooo_apply_jc_score_fill(\n    record: dict[str, Any],\n    pack: dict[str, Any] | None = None,\n    source_note: str = '',\n    overwrite: bool = False,\n) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    src = pack if isinstance(pack, dict) else record\n    jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}\n    if isinstance(jc, dict) and jc:\n        if overwrite or not record.get('correct_score_jc_official'):\n            record['correct_score_jc_official'] = jc\n        if source_note:\n            record['correct_score_jc_source_note'] = source_note\n    return record\n\n\ndef parse_mobile_nav_ft_score(html: Any, match_id: Any = None) -> str:\n    text = str(html or '')\n    patterns = [r'(\\d+)\\s*[-:：]\\s*(\\d+)\\s*(?:完|全场|FT)?', r'全场[^0-9]*(\\d+)\\s*[-:：]\\s*(\\d+)']\n    for pat in patterns:\n        m = re.search(pat, text)\n        if m:\n            return f'{int(m.group(1))}-{int(m.group(2))}'\n    return ''\n\n\ndef mobile_vs_full_time_score(nav_score: Any, actual_score: Any) -> bool:\n    return str(nav_score or '').replace(':', '-').strip() == str(actual_score or '').replace(':', '-').replace(' (进行中)', '').strip()\n\n\ndef _looks_like_final_score(text: Any) -> bool:\n    match = re.fullmatch(r'\\s*(\\d{1,2})\\s*[-:：]\\s*(\\d{1,2})\\s*', str(text or ''))\n    if not match:\n        return False\n    left, right = int(match.group(1)), int(match.group(2))\n    return 0 <= left <= 15 and 0 <= right <= 15\n\n\ndef jingcai_board_row_finished(\n    row: Any = None,\n    today_md: str = '',\n    *,\n    day_closed: bool = False,\n    end: Any = None,\n    inside_end_hide: bool = False,\n) -> bool:\n    if day_closed or inside_end_hide:\n        return True\n    end_text = str(end or '').strip().lower()\n    if end_text in {'1', 'true', 'yes', 'y', 'end', 'ended', 'closed', 'finish', 'finished', 'done', '完', '已完', '全场'}:\n        return True\n    if end_text and _looks_like_final_score(end_text):\n        return True\n    try:\n        zvs = row.select_one('.zVS') if row is not None and hasattr(row, 'select_one') else None\n        zvs_text = zvs.get_text(strip=True) if zvs is not None else ''\n        if _looks_like_final_score(zvs_text):\n            return True\n    except (AttributeError, TypeError):\n        pass\n    text = ' '.join(str(x) for x in row) if isinstance(row, (list, tuple)) else str(row or '')\n    return any(k in text for k in ('完', '全场', '已完', 'FT')) or _looks_like_final_score(text)\n\n\ndef build_score_market_heat_ranking(\n    odds_map: Any = None,\n    correct_score_rows: Any = None,\n    pool_enriched: Any = None,\n    page_avg_odds: Any = None,\n    heat_source: str = 'okooo_mobile_cs_existing_odds',\n    channel: str = 'mobile',\n) -> dict[str, Any]:\n    rows = []\n    odds_sources: list[tuple[str, Any]] = []\n    if isinstance(odds_map, dict):\n        odds_sources.extend((str(score), raw) for score, raw in odds_map.items())\n    if isinstance(page_avg_odds, dict):\n        odds_sources.extend((str(score), raw) for score, raw in page_avg_odds.items())\n    if isinstance(correct_score_rows, dict):\n        odds_sources.extend((str(score), raw) for score, raw in correct_score_rows.items())\n    elif isinstance(correct_score_rows, (list, tuple)):\n        for item in correct_score_rows:\n            if isinstance(item, dict):\n                score = item.get('score') or item.get('name') or item.get('cs')\n                odds_sources.append((str(score or ''), item))\n            elif isinstance(item, (list, tuple)) and item:\n                odds_sources.append((str(item[0]), item[1] if len(item) > 1 else None))\n            else:\n                odds_sources.append((str(item), None))\n    enriched_by_score: dict[str, Any] = {}\n    if isinstance(pool_enriched, dict):\n        enriched_by_score = {str(k).replace(':', '-'): v for k, v in pool_enriched.items()}\n    elif isinstance(pool_enriched, (list, tuple)):\n        for item in pool_enriched:\n            if isinstance(item, dict):\n                score = str(item.get('score') or item.get('name') or item.get('cs') or '').replace(':', '-')\n                if score:\n                    enriched_by_score[score] = item\n    seen: set[str] = set()\n    for score, raw in odds_sources:\n        score_key = str(score or '').replace(':', '-').strip()\n        if not score_key or score_key.lower() == 'none' or score_key in seen:\n            continue\n        seen.add(score_key)\n        try:\n            odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw\n            if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):\n                odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')\n            odd_f = float(odd) if odd is not None else 0.0\n        except (TypeError, ValueError):\n            odd_f = 0.0\n        enriched = enriched_by_score.get(score_key)\n        row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}\n        if isinstance(enriched, dict):\n            row.update({k: v for k, v in enriched.items() if k not in row})\n        rows.append(row)\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': heat_source,\n        'heat_source': heat_source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef _unavailable(reason: str, **extra: Any) -> dict[str, Any]:\n    data = {'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}\n    data.update(extra)\n    return data\n\n\ndef scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    html = kwargs.get('html') or kwargs.get('text')\n    cache = _cache_path('cs', match_id)\n    if not html and cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    if not html and match_id:\n        url = kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/cs/'\n        try:\n            html = _http_get(str(url), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_mobile_cs_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160])\n    odds = _parse_score_odds_from_text(str(html or ''))\n    heat = build_score_market_heat_ranking(odds)\n    heat.update({'correct_score_available': bool(odds), 'match_id': str(match_id or ''), 'raw_count': len(odds)})\n    if odds:\n        cache.write_text(json.dumps(heat, ensure_ascii=False, indent=2), encoding='utf-8')\n    return heat if odds else _unavailable('okooo_mobile_cs_no_score_odds_found', match_id=str(match_id or ''))\n\n\ndef scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    cache = _cache_path('six', match_id)\n    if cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    html = kwargs.get('html') or kwargs.get('text')\n    if not html and match_id:\n        try:\n            html = _http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_six_market_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160], boards_hit={})\n    text = str(html or '')\n    ou_match = re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    ah_match = re.search(r'(?:让球|亚盘|Handicap)[^+\\-0-9]{0,20}([+\\-]?\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    pack = {\n        'available': bool(ou_match or ah_match),\n        'channel': 'mobile',\n        'match_id': str(match_id or ''),\n        'ou_line': float(ou_match.group(1)) if ou_match else None,\n        'asian_handicap': float(ah_match.group(1)) if ah_match else None,\n        'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)},\n    }\n    if pack['available']:\n        cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')\n        return pack\n    return _unavailable('okooo_six_market_no_lines_found', match_id=str(match_id or ''), boards_hit={})\n\n\ndef scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'ah_books': [], 'ou_books': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'home': [], 'away': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record.setdefault('mobile_ah_ou_books', pack or {'available': False})\n        return record['mobile_ah_ou_books']\n    return {'available': False}\n\n\ndef apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    raw_books = record.get('mobile_ah_ou_books')\n    b = books if isinstance(books, dict) else raw_books if isinstance(raw_books, dict) else {}\n    if b.get('ou_line') is not None:\n        record['ou_line'] = b.get('ou_line')\n    if b.get('asian_handicap') is not None:\n        record['asian_handicap'] = b.get('asian_handicap')\n    return record\n\n\ndef detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, Any]]:\n    if not isinstance(record, dict):\n        return []\n    contradictions = []\n    if record.get('predicted_ou') and record.get('ou_line') is None:\n        contradictions.append({'type': 'missing_ou_line', 'severity': 'low'})\n    return contradictions\n\n\ndef missing_six_market_waters(record: dict[str, Any]) -> list[str]:\n    if not isinstance(record, dict):\n        return ['invalid_record']\n    missing = []\n    for key in ('asian_handicap', 'ou_line', 'odds_1x2'):\n        if not record.get(key):\n            missing.append(key)\n    return missing\n\n\ndef finish_match_water_scrape(record: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record['water_scrape_finished'] = True\n    return {'ok': True, 'missing': missing_six_market_waters(record)}\n\n\ndef six_market_fetch_blocked(record: dict[str, Any]) -> bool:\n    if not isinstance(record, dict):\n        return True\n    block = record.get('six_market_mobile')\n    return isinstance(block, dict) and bool(block.get('block_reason'))\n\n\ndef _contradiction_store(match_id: Any = None) -> Path:\n    if match_id in (None, ''):\n        return _STORE\n    return _STORE.with_name(f'six_market_contradictions_{_safe_id(match_id)}.json')\n\n\ndef save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:\n    match_id = None if items is None else match_id_or_items\n    payload = match_id_or_items if items is None else items\n    path = _contradiction_store(match_id)\n    try:\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(json.dumps(payload or [], ensure_ascii=False, indent=2), encoding='utf-8')\n        return True\n    except OSError as exc:\n        print(f\"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}\")\n        return False\n\n\ndef load_six_market_contradictions(match_id: Any = None) -> list[Any]:\n    path = _contradiction_store(match_id)\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [澳客手机CS] 读取对账缺口失败: {type(exc).__name__}\")\n        return []\n    return data if isinstance(data, list) else []\n",
   "odds_index_math": "\"\"\"Odds/index math helpers used by app_v84_hermes.\"\"\"\nfrom __future__ import annotations\n\nimport math\nfrom typing import Any\n\n\ndef _f(value: Any, default: float | None = None) -> float | None:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef normalize_return_rate(value: Any) -> float | None:\n    n = _f(value)\n    if n is None:\n        return None\n    return n / 100.0 if n > 1.5 else n\n\n\ndef return_rate_pct(value: Any) -> float | None:\n    n = normalize_return_rate(value)\n    return None if n is None else n * 100.0\n\n\ndef calc_return_rate(*odds: Any) -> float | None:\n    vals = []\n    for odd in odds:\n        value = _f(odd)\n        if value is not None and value > 1:\n            vals.append(value)\n    if not vals:\n        return None\n    inv = sum(1.0 / v for v in vals)\n    return (1.0 / inv) if inv > 0 else None\n\n\ndef calc_instant_probs(win: Any, draw: Any, lose: Any) -> dict[str, Any]:\n    win_f = _f(win)\n    draw_f = _f(draw)\n    lose_f = _f(lose)\n    if win_f is None or draw_f is None or lose_f is None or win_f <= 1 or draw_f <= 1 or lose_f <= 1:\n        return {'valid': False, 'home': None, 'draw': None, 'away': None, 'return_rate': None}\n    inv_sum = (1.0 / win_f) + (1.0 / draw_f) + (1.0 / lose_f)\n    rr = 1.0 / inv_sum if inv_sum > 0 else None\n    return {\n        'valid': rr is not None,\n        'home': (rr / win_f) if rr else None,\n        'draw': (rr / draw_f) if rr else None,\n        'away': (rr / lose_f) if rr else None,\n        'return_rate': rr,\n        'return_rate_pct': rr * 100.0 if rr else None,\n    }\n\n\ndef calc_kelly_index(prob: Any, odds: Any) -> float | None:\n    p = _f(prob)\n    o = _f(odds)\n    if p is None or o is None or o <= 1:\n        return None\n    return p * o\n\n\ndef apply_six_cs_settlement_v2_to_rec(rec: dict[str, Any]) -> dict[str, Any]:\n    if not isinstance(rec, dict):\n        return {'available': False, 'reason': 'invalid_rec'}\n    board = {\n        'available': True,\n        'ou_line': rec.get('ou_line'),\n        'asian_handicap': rec.get('asian_handicap') or rec.get('ah_line'),\n        'correct_score_available': bool(rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg') or rec.get('odds_correct_score')),\n    }\n    rec['six_cs_settlement_v2'] = board\n    return board\n",
@@ -183,10 +183,14 @@ _CLI_OKOOO_ROUTE, _CLI_OKOOO_PROXY = _apply_okooo_boot_cli()
 _CLI_DAILY_LEARN_MODE = ('--daily-learn' in sys.argv)
 _CLI_OPEN_SCRAPE = ('--open-scrape' in sys.argv)
 _CLI_DIAGNOSE_MODE = ('--diagnose' in sys.argv)
+_CLI_REPORT_MODE = ('--report' in sys.argv)
 _CLI_INTEG_HEADLESS = str(os.environ.get('BLADE_HEADLESS', '') or '').strip().lower() in (
     '1', 'true', 'yes', 'on',
 )
-_CLI_HEADLESS = _CLI_DAILY_LEARN_MODE or _CLI_OPEN_SCRAPE or _CLI_DIAGNOSE_MODE or _CLI_INTEG_HEADLESS
+_CLI_HEADLESS = (
+    _CLI_DAILY_LEARN_MODE or _CLI_OPEN_SCRAPE or _CLI_DIAGNOSE_MODE
+    or _CLI_REPORT_MODE or _CLI_INTEG_HEADLESS
+)
 # =============================================================================================
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -8825,6 +8829,729 @@ class TelegramReportFormatter:
             lines.append(f"{diff_label}: {scores_str}")
 
         return "\n".join(lines)
+
+
+# ============================================================================
+# 【统一研判报告骨架 · Unified Analysis Report Skeleton】
+# 一个 formatter，三个渲染器：CLI 指令输出 / Telegram 文本 / Streamlit 页面。
+# 所有分析输出共用同一骨架，顺序固定，不随入口改变：
+#   结论 → 关键数据 → 分歧点 → 风险与陷阱 → 证据链 → 教训匹配
+# ============================================================================
+UNIFIED_REPORT_SCHEMA = 'blade.unified_report.v1'
+UNIFIED_REPORT_SECTIONS: tuple[tuple[str, str], ...] = (
+    ('verdict', '结论'),
+    ('key_data', '关键数据'),
+    ('divergence', '分歧点'),
+    ('risk', '风险与陷阱'),
+    ('evidence', '证据链'),
+    ('lessons', '教训匹配'),
+)
+UNIFIED_REPORT_SECTION_KEYS: tuple[str, ...] = tuple(key for key, _title in UNIFIED_REPORT_SECTIONS)
+UNIFIED_REPORT_SECTION_ICONS = {
+    'verdict': '🎯',
+    'key_data': '📊',
+    'divergence': '⚖️',
+    'risk': '⚠️',
+    'evidence': '🧾',
+    'lessons': '📖',
+}
+UNIFIED_REPORT_TELEGRAM_LIMIT = 4096
+# 留出安全余量：send_tg 自身按 4000 字分片，这里先压到 3900 以内。
+UNIFIED_REPORT_TELEGRAM_BUDGET = 3900
+_CONFIDENCE_RANK = {'高': 5, '中偏高': 4, '中': 3, '中偏低': 2, '低': 1}
+_CONFIDENCE_MID_SCORE = {'高': 82.0, '中偏高': 70.0, '中': 55.0, '中偏低': 40.0, '低': 25.0}
+
+
+def _ur_float(value: Any, default: float = 0.0) -> float:
+    """把任意输入压成有限浮点，NaN/inf/垃圾值统一回退 default。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _ur_mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _ui_dict(value: Any) -> dict[str, Any]:
+    """Pyright 友好版本：显式标注返回 dict，避免 Optional 窄化丢失。"""
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _ur_confidence_label(info: dict[str, Any]) -> str:
+    label = str(info.get('confidence') or '').strip()
+    return label if label in _CONFIDENCE_RANK else '低'
+
+
+def _ur_confidence_score(info: dict[str, Any]) -> float:
+    """融合强度优先；缺失时按置信度档位给出中位分，保证骨架永远有数可看。"""
+    strength = get_prediction_strength(info) if callable(globals().get('get_prediction_strength')) else 0.0
+    if strength and strength > 0:
+        return round(_ur_float(strength), 1)
+    return _CONFIDENCE_MID_SCORE.get(_ur_confidence_label(info), 25.0)
+
+
+def _ur_match_label(info: dict[str, Any]) -> str:
+    name = str(info.get('match') or info.get('cn_name') or '').strip()
+    return name or '未命名赛事'
+
+
+def _ur_title_line(info: dict[str, Any]) -> str:
+    """赛号/星期/开赛时间/对阵 的统一标题行，缺字段就降级，不抛异常。"""
+    name = _ur_match_label(info)
+    kickoff = str(info.get('time') or info.get('match_time') or info.get('kickoff') or '').strip()
+    analyzer = globals().get('DeepSeekAnalyzer')
+    if analyzer is not None:
+        try:
+            header = analyzer.format_tg_match_header(
+                str(info.get('match') or ''),
+                kickoff=kickoff,
+                match_no=str(info.get('no') or info.get('local_id') or ''),
+            )
+            if header:
+                return str(header)
+        except Exception as exc:  # noqa: BLE001 - 标题美化失败不能影响主报告
+            print(f"   ⚠️ [统一报告] 标题格式化降级: {type(exc).__name__}")
+    return f"{kickoff} | {name}" if kickoff else name
+
+
+def _ur_market_implied_1x2(info: dict[str, Any]) -> dict[str, float]:
+    """把 1X2 欧赔换成去水后的市场隐含概率；数据不全就返回空 dict。"""
+    odds = _ur_mapping(info.get('odds_1x2'))
+    if not odds:
+        return {}
+    home = _ur_float(odds.get('Home', odds.get('home')), 0.0)
+    draw = _ur_float(odds.get('Draw', odds.get('draw')), 0.0)
+    away = _ur_float(odds.get('Away', odds.get('away')), 0.0)
+    if min(home, draw, away) <= 1.0:
+        return {}
+    inverse = (1.0 / home) + (1.0 / draw) + (1.0 / away)
+    if inverse <= 0:
+        return {}
+    return {
+        'home': (1.0 / home) / inverse,
+        'draw': (1.0 / draw) / inverse,
+        'away': (1.0 / away) / inverse,
+        'return_rate': 1.0 / inverse,
+    }
+
+
+def _ur_market_over_prob(info: dict[str, Any], line: float | None) -> float | None:
+    """用总进球隐含分布反推大球概率，行数缺失时返回 None。"""
+    if line is None:
+        return None
+    implied = _ur_mapping(info.get('tg_implied_probs'))
+    if not implied:
+        return None
+    scale = 1.0
+    sample = next((v for v in implied.values() if isinstance(v, (int, float))), None)
+    if sample is not None and _ur_float(sample) > 1.5:
+        scale = 100.0
+    over = 0.0
+    seen = False
+    for goals in range(7):
+        raw = implied.get(f'prob_{goals}')
+        if raw is None:
+            continue
+        seen = True
+        if goals > line:
+            over += _ur_float(raw) / scale
+    seven_plus = implied.get('prob_7plus')
+    if seven_plus is not None:
+        seen = True
+        if 7 > line:
+            over += _ur_float(seven_plus) / scale
+    return over if seen else None
+
+
+def _ur_divergence_items(info: dict[str, Any]) -> list[dict[str, Any]]:
+    """模型 vs 市场的分歧点，按百分点差距降序，最多 4 条。"""
+    items: list[dict[str, Any]] = []
+    markets = _ur_mapping(info.get('derived_markets'))
+
+    model_1x2 = _ur_mapping(markets.get('1x2'))
+    market_1x2 = _ur_market_implied_1x2(info)
+    if model_1x2 and market_1x2:
+        labels = (('home', '主胜'), ('draw', '平局'), ('away', '客胜'))
+        gaps = []
+        for key, label in labels:
+            model_p = _ur_float(model_1x2.get(key))
+            market_p = _ur_float(market_1x2.get(key))
+            gaps.append((abs(model_p - market_p), label, model_p, market_p))
+        gaps.sort(reverse=True)
+        gap, label, model_p, market_p = gaps[0]
+        if gap > 0.01:
+            direction = '模型更看好' if model_p > market_p else '市场更看好'
+            items.append({
+                'topic': f'胜平负·{label}',
+                'model': f'{model_p:.1%}',
+                'market': f'{market_p:.1%}',
+                'magnitude_pp': round(gap * 100, 1),
+                'magnitude_text': f'{gap * 100:.1f}pp',
+                'note': f'{direction}{label}，模型与市场相差 {gap * 100:.1f} 个百分点',
+            })
+
+    ou = _ur_mapping(markets.get('ou'))
+    if ou:
+        line = _ur_float(ou.get('line'), 2.5) if ou.get('line') is not None else None
+        model_over = _ur_float(ou.get('over'))
+        market_over = _ur_market_over_prob(info, line)
+        if market_over is not None:
+            gap = abs(model_over - market_over)
+            if gap > 0.01:
+                side = '模型更看大' if model_over > market_over else '模型更看小'
+                items.append({
+                    'topic': f'大小球·{line if line is not None else 2.5}',
+                    'model': f'大球 {model_over:.1%}',
+                    'market': f'大球 {market_over:.1%}',
+                    'magnitude_pp': round(gap * 100, 1),
+                    'magnitude_text': f'{gap * 100:.1f}pp',
+                    'note': f'{side}，与市场隐含相差 {gap * 100:.1f} 个百分点',
+                })
+
+    ml = _ur_mapping(info.get('ml_prediction'))
+    if ml.get('used'):
+        trad = _ur_mapping(ml.get('traditional_lambda'))
+        poisson = _ur_mapping(ml.get('poisson_lambda'))
+        if trad and poisson:
+            delta_h = _ur_float(poisson.get('home')) - _ur_float(trad.get('home'))
+            delta_a = _ur_float(poisson.get('away')) - _ur_float(trad.get('away'))
+            worst = max(abs(delta_h), abs(delta_a))
+            if worst > 0.05:
+                base = max(abs(_ur_float(trad.get('home'))), abs(_ur_float(trad.get('away'))), 0.05)
+                items.append({
+                    'topic': 'λ 标定·ML vs 传统',
+                    'model': f'ML λ=({_ur_float(poisson.get("home")):.2f},{_ur_float(poisson.get("away")):.2f})',
+                    'market': f'传统 λ=({_ur_float(trad.get("home")):.2f},{_ur_float(trad.get("away")):.2f})',
+                    'magnitude_pp': round(worst / base * 100, 1),
+                    'magnitude_text': f'λ 偏移 {worst:.2f} 球',
+                    'note': f'ML 融合矩阵较传统泊松偏移 {worst:.2f} 球，注意总进球口径',
+                })
+
+    lock = _ur_mapping(info.get('direction_lock'))
+    locked = str(lock.get('direction') or '').strip()
+    predicted = str(info.get('predicted_result') or '').strip()
+    if locked in ('胜', '平', '负') and predicted in ('胜', '平', '负') and locked != predicted:
+        items.append({
+            'topic': '方向·方向锁 vs 模型',
+            'model': f'方向锁 {locked}',
+            'market': f'模型 {predicted}',
+            'magnitude_pp': 100.0,
+            'magnitude_text': '方向相反',
+            'note': '方向锁与模型倾向相反，按方向锁执行，模型结论仅作参考',
+        })
+
+    items.sort(key=lambda item: _ur_float(item.get('magnitude_pp')), reverse=True)
+    return items[:4]
+
+
+def _ur_risk_items(info: dict[str, Any]) -> list[dict[str, Any]]:
+    """风险与陷阱：每条都必须带可核对的触发条件。"""
+    risks: list[dict[str, Any]] = []
+    markets = _ur_mapping(info.get('derived_markets'))
+    ou = _ur_mapping(markets.get('ou'))
+    ou_line = info.get('ou_line')
+    if ou_line is None and ou.get('line') is not None:
+        ou_line = ou.get('line')
+
+    if info.get('is_edge'):
+        over_p = _ur_float(ou.get('over'))
+        risks.append({
+            'level': '中',
+            'title': '大小球高度边缘',
+            'trigger': f'盘口线 {ou_line if ou_line is not None else "未知"}，模型大球概率 {over_p:.1%}',
+            'detail': '边缘盘建议同时保留反向预案，不要单边重仓。',
+        })
+    if info.get('dti_protected'):
+        risks.append({
+            'level': '高',
+            'title': 'DTI 保护已激活',
+            'trigger': f'保护类型 {info.get("dti_protection_type") or "未标注"}',
+            'detail': '保护态的比分分布被压平，首选比分可信度下降，优先看方向。',
+        })
+    cold = _ur_float(info.get('cold_score'))
+    if cold >= 50:
+        risks.append({
+            'level': '高' if cold >= 70 else '中',
+            'title': '冷门预警',
+            'trigger': f'冷门分 {cold:.0f} ≥ 50',
+            'detail': '热门方向存在被做局可能，仓位下调并保留次选。',
+        })
+    cup_mode = str(info.get('cup_mode') or '常规')
+    if cup_mode not in ('常规', ''):
+        risks.append({
+            'level': '中',
+            'title': '杯赛/淘汰赛模式',
+            'trigger': f'检测到 {cup_mode}',
+            'detail': str(info.get('cup_note') or '两回合制会改变球队进攻意愿，模型假设需打折。'),
+        })
+    if info.get('homo_triggered'):
+        risks.append({
+            'level': '中',
+            'title': '同质化 λ 惩罚',
+            'trigger': '当日已出现相同 λ 模式场次',
+            'detail': '同模式重复下注会被集中定价，建议错开或减仓。',
+        })
+    anomaly = _ur_mapping(info.get('anomaly_payload'))
+    if anomaly.get('is_squeeze'):
+        risks.append({
+            'level': '高',
+            'title': '逼空/陷阱形态',
+            'trigger': 'anomaly_payload.is_squeeze = True',
+            'detail': '市场在诱导单边，陷阱预警段为反向分析模式。',
+        })
+    completeness = _ur_float(info.get('feature_completeness'))
+    if 0 < completeness < 0.6:
+        risks.append({
+            'level': '低',
+            'title': '特征完整度偏低',
+            'trigger': f'特征完整度 {completeness:.0%} < 60%',
+            'detail': '缺失特征由先验填补，结论稳定性弱于常规场次。',
+        })
+    if not risks:
+        risks.append({
+            'level': '低',
+            'title': '未触发硬风险闸门',
+            'trigger': '冷门分<50、无 DTI 保护、盘口非边缘、非杯赛模式',
+            'detail': '风险面干净，但仍按仓位纪律执行。',
+        })
+    return risks
+
+
+def _ur_evidence_items(info: dict[str, Any]) -> list[dict[str, Any]]:
+    """证据链：原始信号 + 来源 + 时间戳，便于复盘回溯。"""
+    calib = _ur_mapping(info.get('lambda_calibration'))
+    items: list[dict[str, Any]] = [
+        {
+            'signal': '抓取完成时间',
+            'value': str(info.get('pipeline_scrape_at') or '未记录'),
+            'source': str(info.get('correct_score_channel') or 'mobile'),
+            'timestamp': str(info.get('pipeline_scrape_at') or ''),
+        },
+        {
+            'signal': '赔率快照时间',
+            'value': str(info.get('odds_snapshot_time_curr') or '未记录'),
+            'source': 'odds_snapshot_curr',
+            'timestamp': str(info.get('odds_snapshot_time_curr') or ''),
+        },
+        {
+            'signal': '比分池版本',
+            'value': f'{len(info.get("top15_scores") or [])} 个候选',
+            'source': 'score_pool31_views',
+            'timestamp': str(info.get('pipeline_scrape_at') or ''),
+        },
+        {
+            'signal': '数据源就绪',
+            'value': '500网 ' + ('可用' if info.get('data_500_available') else '缺失'),
+            'source': 'data_500',
+            'timestamp': str(info.get('pipeline_scrape_at') or ''),
+        },
+    ]
+    if calib.get('available'):
+        hist = _ur_mapping(calib.get('historical'))
+        final = _ur_mapping(calib.get('final'))
+        items.append({
+            'signal': 'λ 校准样本',
+            'value': (
+                f'{int(_ur_float(calib.get("sample_count")))} 家机构 | '
+                f'历史λ=({_ur_float(hist.get("home")):.2f},{_ur_float(hist.get("away")):.2f}) → '
+                f'最终λ=({_ur_float(final.get("home")):.2f},{_ur_float(final.get("away")):.2f})'
+            ),
+            'source': 'LambdaCalibrator',
+            'timestamp': str(info.get('pipeline_scrape_at') or ''),
+        })
+    if info.get('okooo_match_id'):
+        items.append({
+            'signal': '澳客赛事ID',
+            'value': str(info.get('okooo_match_id')),
+            'source': 'okooo_mobile_cs',
+            'timestamp': str(info.get('pipeline_scrape_at') or ''),
+        })
+    return items
+
+
+def _ur_lesson_items(info: dict[str, Any], limit: int = 3) -> list[dict[str, Any]]:
+    """从教训库挑与本场语境相关的条目，命中关键词即视为适用。"""
+    try:
+        raw = load_brain_rules() if callable(globals().get('load_brain_rules')) else ''
+    except Exception as exc:  # noqa: BLE001 - 教训库读取失败不应影响主报告
+        print(f"   ⚠️ [统一报告] 教训库读取降级: {type(exc).__name__}")
+        raw = ''
+    rules = [line.strip().lstrip('-• ').strip() for line in str(raw or '').splitlines()]
+    rules = [rule for rule in rules if rule]
+    if not rules:
+        return []
+    context_tokens = []
+    if _ur_float(info.get('cold_score')) >= 50:
+        context_tokens.append('冷门')
+    if info.get('is_edge'):
+        context_tokens.append('边缘')
+    if str(info.get('cup_mode') or '常规') not in ('常规', ''):
+        context_tokens.append('杯赛')
+    if str(info.get('big_small') or '') in ('大球', '小球'):
+        context_tokens.append('大小球')
+    direction = str(info.get('predicted_result') or '').strip()
+    if direction in ('胜', '平', '负'):
+        context_tokens.append(direction)
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rule in rules:
+        if rule in seen:
+            continue
+        hits = [token for token in context_tokens if token and token in rule]
+        if hits:
+            seen.add(rule)
+            matched.append({'rule': rule, 'reason': f'命中本场语境：{"、".join(hits)}'})
+        if len(matched) >= limit:
+            break
+    if matched:
+        return matched
+    for rule in rules[:limit]:
+        matched.append({'rule': rule, 'reason': '通用铁律，长期有效'})
+    return matched
+
+
+def build_unified_analysis_report(
+    info: Any,
+    source: str = 'streamlit',
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """把任意一场 history 记录压成统一六段骨架。任何字段缺失都不抛异常。"""
+    data = info if isinstance(info, dict) else {}
+    confidence = _ur_confidence_label(data)
+    confidence_score = _ur_confidence_score(data)
+    primary = str(data.get('predicted_score') or data.get('first_score') or '').strip()
+    secondary = str(data.get('second_score') or '').strip()
+    direction = str(data.get('predicted_result') or '').strip()
+    lock = _ur_mapping(data.get('direction_lock'))
+    if str(lock.get('direction') or '') in ('胜', '平', '负'):
+        direction = str(lock.get('direction'))
+
+    if primary and primary not in ('➖', 'None', 'none'):
+        verdict = (
+            f"首选 {primary}｜次选 {secondary or '未形成'}｜方向 {direction or '未形成'}"
+            f"｜置信度 {confidence}（{confidence_score:.1f}%）"
+        )
+    else:
+        verdict = '尚未形成结论：缺少抓取结果，先执行「分析」再研判。'
+
+    markets = _ur_mapping(data.get('derived_markets'))
+    ou = _ur_mapping(markets.get('ou'))
+    metrics = [
+        {'label': '融合强度', 'value': f'{_ur_float(get_prediction_strength(data) if callable(globals().get("get_prediction_strength")) else 0.0):.1f}%', 'hint': '模型首选比分概率'},
+        {'label': '冷门分', 'value': f'{_ur_float(data.get("cold_score")):.0f}', 'hint': '≥50 触发冷门预警'},
+        {'label': 'DTI', 'value': f'{_ur_float(data.get("dti")):.3f}', 'hint': '离散度张力指标'},
+        {'label': '大小球', 'value': str(data.get('big_small') or '未形成'), 'hint': f'盘口线 {data.get("ou_line") if data.get("ou_line") is not None else (ou.get("line") if ou.get("line") is not None else "未知")}'},
+        {'label': 'λ 主/客', 'value': f'{_ur_float(data.get("lam_h")):.2f} / {_ur_float(data.get("lam_a")):.2f}', 'hint': '泊松期望进球'},
+        {'label': '特征完整度', 'value': f'{_ur_float(data.get("feature_completeness")):.0%}', 'hint': '低于 60% 需降权'},
+    ]
+
+    return {
+        'schema': UNIFIED_REPORT_SCHEMA,
+        'source': str(source or 'streamlit'),
+        'generated_at': generated_at or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'title': _ur_title_line(data),
+        'match': _ur_match_label(data),
+        'league': str(data.get('league') or '未知联赛'),
+        'confidence': confidence,
+        'confidence_score': confidence_score,
+        'sections': [
+            {
+                'key': 'verdict',
+                'title': '结论',
+                'verdict': verdict,
+                'confidence': confidence,
+                'confidence_score': confidence_score,
+                'direction': direction,
+                'primary': primary,
+                'secondary': secondary,
+            },
+            {'key': 'key_data', 'title': '关键数据', 'metrics': metrics},
+            {'key': 'divergence', 'title': '分歧点', 'items': _ur_divergence_items(data)},
+            {'key': 'risk', 'title': '风险与陷阱', 'items': _ur_risk_items(data)},
+            {'key': 'evidence', 'title': '证据链', 'items': _ur_evidence_items(data)},
+            {'key': 'lessons', 'title': '教训匹配', 'items': _ur_lesson_items(data)},
+        ],
+    }
+
+
+def _ur_section(report: dict[str, Any], key: str) -> dict[str, Any]:
+    for section in report.get('sections') or []:
+        if isinstance(section, dict) and section.get('key') == key:
+            return section
+    return {'key': key, 'title': key}
+
+
+def _ur_risk_line(item: dict[str, Any]) -> str:
+    return (
+        f"[{item.get('level') or '低'}] {item.get('title')}"
+        f" | 触发: {item.get('trigger')} | {item.get('detail')}"
+    )
+
+
+def _ur_magnitude_text(item: dict[str, Any]) -> str:
+    """分歧力度的人类可读文本：概率类用 pp，λ 类用球数。"""
+    text = str(item.get('magnitude_text') or '').strip()
+    if text:
+        return text
+    return f"{_ur_float(item.get('magnitude_pp')):.1f}pp"
+
+
+def _ur_divergence_line(item: dict[str, Any]) -> str:
+    return (
+        f"{item.get('topic')}: 模型 {item.get('model')} vs 市场 {item.get('market')}"
+        f" | 差 {_ur_magnitude_text(item)} | {item.get('note')}"
+    )
+
+
+def format_unified_report_cli(report: dict[str, Any]) -> str:
+    """CLI 指令渲染器：纯文本、可管道、无 emoji 依赖。"""
+    lines: list[str] = [
+        f"==== 统一研判报告 [{report.get('schema')}] ====",
+        f"赛事: {report.get('title')}",
+        f"联赛: {report.get('league')} | 来源: {report.get('source')} | 生成: {report.get('generated_at')}",
+        '-' * 60,
+    ]
+    verdict = _ur_section(report, 'verdict')
+    lines.append(f"[{verdict.get('title')}]")
+    lines.append(f"  {verdict.get('verdict')}")
+
+    key_data = _ur_section(report, 'key_data')
+    lines.append(f"[{key_data.get('title')}]")
+    metrics = key_data.get('metrics') or []
+    if metrics:
+        for metric in metrics:
+            lines.append(f"  - {metric.get('label')}: {metric.get('value')}  ({metric.get('hint')})")
+    else:
+        lines.append('  - 暂无关键数据')
+
+    divergence = _ur_section(report, 'divergence')
+    lines.append(f"[{divergence.get('title')}]")
+    div_items = divergence.get('items') or []
+    if div_items:
+        lines.extend(f"  - {_ur_divergence_line(item)}" for item in div_items)
+    else:
+        lines.append('  - 模型与市场暂无明显分歧')
+
+    risk = _ur_section(report, 'risk')
+    lines.append(f"[{risk.get('title')}]")
+    for item in risk.get('items') or []:
+        lines.append(f"  - {_ur_risk_line(item)}")
+
+    evidence = _ur_section(report, 'evidence')
+    lines.append(f"[{evidence.get('title')}]")
+    for item in evidence.get('items') or []:
+        lines.append(
+            f"  - {item.get('signal')}: {item.get('value')} | 来源 {item.get('source')}"
+            f" | {item.get('timestamp') or '无时间戳'}"
+        )
+
+    lessons = _ur_section(report, 'lessons')
+    lines.append(f"[{lessons.get('title')}]")
+    lesson_items = lessons.get('items') or []
+    if lesson_items:
+        lines.extend(f"  - {item.get('rule')}  ({item.get('reason')})" for item in lesson_items)
+    else:
+        lines.append('  - 教训库暂无匹配条目')
+    lines.append('-' * 60)
+    return '\n'.join(lines)
+
+
+def _ur_fit(text: str, budget: int) -> str:
+    """把一段文本压到 budget 字符内，优先在换行处截断并留省略号。"""
+    if budget <= 0:
+        return ''
+    if len(text) <= budget:
+        return text
+    suffix = '\n  …（已截断）'
+    keep = max(0, budget - len(suffix))
+    clipped = text[:keep]
+    cut = clipped.rfind('\n')
+    if cut > keep // 2:
+        clipped = clipped[:cut]
+    return clipped + suffix
+
+
+def format_unified_report_telegram(
+    report: dict[str, Any],
+    max_chars: int = UNIFIED_REPORT_TELEGRAM_BUDGET,
+) -> str:
+    """Telegram 渲染器：整体不超 max_chars，且结论与风险永远优先保住。
+
+    骨架顺序不变（结论→关键数据→分歧点→风险→证据链→教训匹配）。
+    预算分配分两轮：先给结论/风险按硬保留额度切块，剩余额度再按骨架顺序
+    填中间段落；超长时限截断中间段，绝不截断结论和风险。
+    """
+    limit = min(int(max_chars or UNIFIED_REPORT_TELEGRAM_BUDGET), UNIFIED_REPORT_TELEGRAM_LIMIT)
+    verdict = _ur_section(report, 'verdict')
+    risk = _ur_section(report, 'risk')
+    key_data = _ur_section(report, 'key_data')
+    divergence = _ur_section(report, 'divergence')
+    evidence = _ur_section(report, 'evidence')
+    lessons = _ur_section(report, 'lessons')
+
+    head = (
+        f"🧭【统一研判】{report.get('title')}\n"
+        f"{report.get('league')}｜生成 {report.get('generated_at')}"
+    )
+    verdict_block = f"🎯【结论】\n{verdict.get('verdict')}"
+    risk_lines = ['⚠️【风险与陷阱】']
+    for item in risk.get('items') or []:
+        risk_lines.append(
+            f"· [{item.get('level') or '低'}] {item.get('title')}\n"
+            f"  触发: {item.get('trigger')}\n"
+            f"  应对: {item.get('detail')}"
+        )
+    risk_block = '\n'.join(risk_lines)
+
+    key_block_lines = ['📊【关键数据】']
+    for metric in key_data.get('metrics') or []:
+        key_block_lines.append(f"· {metric.get('label')}: {metric.get('value')}")
+    key_block = '\n'.join(key_block_lines)
+
+    div_lines = ['⚖️【分歧点】']
+    div_items = divergence.get('items') or []
+    if div_items:
+        for item in div_items:
+            div_lines.append(
+                f"· {item.get('topic')}: 模型 {item.get('model')} vs 市场 {item.get('market')}"
+                f"（{_ur_magnitude_text(item)}）"
+            )
+    else:
+        div_lines.append('· 模型与市场暂无明显分歧')
+    div_block = '\n'.join(div_lines)
+
+    ev_lines = ['🧾【证据链】']
+    for item in evidence.get('items') or []:
+        ev_lines.append(f"· {item.get('signal')}: {item.get('value')}（{item.get('source')}）")
+    ev_block = '\n'.join(ev_lines)
+
+    les_lines = ['📖【教训匹配】']
+    lesson_items = lessons.get('items') or []
+    if lesson_items:
+        for item in lesson_items:
+            les_lines.append(f"· {item.get('rule')}（{item.get('reason')}）")
+    else:
+        les_lines.append('· 教训库暂无匹配条目')
+    les_block = '\n'.join(les_lines)
+
+    # 第一轮：结论与风险是硬保留段，先切出各自的额度。
+    remaining = max(0, limit - len(head) - 2)
+    verdict_budget = max(120, min(remaining // 4, 560))
+    risk_budget = max(200, min(remaining - verdict_budget - 2, 1500))
+    if verdict_budget + risk_budget + 2 > remaining:
+        verdict_budget = max(90, remaining // 3)
+        risk_budget = max(140, remaining - verdict_budget - 2)
+    verdict_text = _ur_fit(verdict_block, verdict_budget)
+    risk_text = _ur_fit(risk_block, risk_budget)
+
+    # 第二轮：中间段按骨架顺序吃剩余额度，额度不足时整段跳过而不是砍一半。
+    middle_budget = limit - len(head) - 2 - len(verdict_text) - len(risk_text) - 4
+    middle: list[str] = []
+    for block in (key_block, div_block, ev_block, les_block):
+        if middle_budget <= 80:
+            break
+        piece = _ur_fit(block, min(len(block), middle_budget))
+        middle.append(piece)
+        middle_budget -= len(piece) + 2
+
+    text = '\n\n'.join([head, verdict_text, *middle, risk_text])
+    if len(text) > limit:
+        # 兜底：只裁中间段，结论与风险保留原样。
+        overflow = len(text) - limit
+        middle_text = '\n'.join(middle)
+        if middle_text:
+            trimmed = middle_text[:max(0, len(middle_text) - overflow - 20)]
+            parts = [head, verdict_text, trimmed, risk_text]
+            text = '\n\n'.join(parts)
+        while len(text) > limit and len(middle) > 1:
+            middle.pop()
+            parts = [head, verdict_text, *middle, risk_text]
+            text = '\n\n'.join(parts)
+    return text
+
+
+def render_unified_report_streamlit(report: dict[str, Any]) -> None:
+    """Streamlit 渲染器：指标卡 + 表格 + 风险横幅，与 CLI/TG 同一份骨架。"""
+    if not isinstance(report, dict):
+        st.info('暂无统一研判报告可渲染')
+        return
+    verdict = _ur_section(report, 'verdict')
+    confidence = str(verdict.get('confidence') or '低')
+    st.markdown(f"#### 🎯 结论 · {confidence}置信度（{_ur_float(verdict.get('confidence_score')):.1f}%）")
+    st.success(str(verdict.get('verdict') or '尚未形成结论'))
+
+    key_data = _ur_section(report, 'key_data')
+    metrics = [m for m in (key_data.get('metrics') or []) if isinstance(m, dict)]
+    if metrics:
+        st.markdown('#### 📊 关键数据')
+        for start in range(0, len(metrics), 3):
+            row = metrics[start:start + 3]
+            columns = st.columns(len(row))
+            for column, metric in zip(columns, row):
+                column.metric(str(metric.get('label') or '-'), str(metric.get('value') or '-'),
+                              help=str(metric.get('hint') or ''))
+
+    divergence = _ur_section(report, 'divergence')
+    st.markdown('#### ⚖️ 分歧点')
+    div_items = [i for i in (divergence.get('items') or []) if isinstance(i, dict)]
+    if div_items:
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    '主题': item.get('topic'),
+                    '模型': item.get('model'),
+                    '市场': item.get('market'),
+                    '差距(pp)': _ur_float(item.get('magnitude_pp')),
+                    '说明': item.get('note'),
+                }
+                for item in div_items
+            ]),
+            hide_index=True,
+            width='stretch',
+        )
+    else:
+        st.caption('模型与市场暂无明显分歧')
+
+    st.markdown('#### ⚠️ 风险与陷阱')
+    for item in _ur_section(report, 'risk').get('items') or []:
+        level = str(item.get('level') or '低')
+        line = f"**{item.get('title')}** — 触发：{item.get('trigger')}\n\n应对：{item.get('detail')}"
+        if level == '高':
+            st.error(line)
+        elif level == '中':
+            st.warning(line)
+        else:
+            st.info(line)
+
+    st.markdown('#### 🧾 证据链')
+    st.dataframe(
+        pd.DataFrame([
+            {
+                '信号': item.get('signal'),
+                '值': item.get('value'),
+                '来源': item.get('source'),
+                '时间戳': item.get('timestamp') or '—',
+            }
+            for item in _ur_section(report, 'evidence').get('items') or []
+            if isinstance(item, dict)
+        ]),
+        hide_index=True,
+        width='stretch',
+    )
+
+    st.markdown('#### 📖 教训匹配')
+    lesson_items = [i for i in (_ur_section(report, 'lessons').get('items') or []) if isinstance(i, dict)]
+    if lesson_items:
+        for item in lesson_items:
+            st.markdown(f"- {item.get('rule')}  \n  <span style='color:#6B7280'>{item.get('reason')}</span>",
+                        unsafe_allow_html=True)
+    else:
+        st.caption('教训库暂无匹配条目')
 
 
 class AntiConsensusDetector:
@@ -41305,7 +42032,13 @@ def handle_tg_command(msg_text):
                     send_tg(f"⚠️【陷阱预警】{info.get('match', '')}\n\n{trap_content_tg}")
                     # 在extra开头加陷阱预警标识
                     extra = "\n⚠️【陷阱预警已激活】反向分析模式开启" + extra
-                send_tg(report + extra)  # report already filtered at line 4970
+                # 统一骨架：结论/关键数据/分歧点/风险与陷阱/证据链/教训匹配 一次性渲染。
+                try:
+                    _unified_report = build_unified_analysis_report(info, source='telegram')
+                    send_tg(format_unified_report_telegram(_unified_report))
+                except Exception as _uni_err:  # noqa: BLE001 - 统一骨架失败要回退到原报告，不能丢推送
+                    print(f"   ⚠️ [统一报告] TG 渲染降级: {_uni_err}")
+                    send_tg(report + extra)  # report already filtered at line 4970
                 found = True
                 break
         if not found:
@@ -41333,6 +42066,24 @@ def handle_tg_command(msg_text):
     if msg == "教训":
         rules = load_brain_rules()
         send_tg(f"📖 【历史教训规则库】\n\n{rules}")
+        return
+
+    if msg.startswith("研判"):
+        # 统一骨架的纯文本出口：与 Telegram / 页面共用同一个 formatter。
+        keyword = msg.replace("研判", "", 1).strip()
+        data = load_json(HISTORY_FILE)
+        target = None
+        for fid, info in data.items():
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get('match') or info.get('cn_name') or '')
+            if not keyword or keyword in name or keyword == str(fid):
+                target = info
+                break
+        if target is None:
+            send_tg(f"未找到匹配「{keyword or '任意'}」的赛事。先发「分析」抓取名单，或用「研判 周四001」。")
+            return
+        send_tg(format_unified_report_cli(build_unified_analysis_report(target, source='cli')))
         return
 
     if msg == "状态":
@@ -41380,6 +42131,7 @@ def handle_tg_command(msg_text):
                 "🔹 方向 周四001 负 → 只重算这一场，指定客胜\n"
                 "🔹 冷门 → 今日冷门分≥50的场次预警\n"
                 "🔹 比较 → 首选vs次选对比，推荐最优投注组合\n"
+                "🔹 研判 周四001 → 统一骨架研判（结论/数据/分歧/风险/证据/教训）\n"
                 "🔹 教训 → 查看历史教训规则库\n"
                 "🔹 状态 → 系统运行状态\n"
                 "🔹 帮助 → 显示本指令列表\n"
@@ -42588,6 +43340,35 @@ if _CLI_DAILY_LEARN_MODE:
         sys.exit(0)
 
 
+# ================= 11.9b CLI：--report → 统一骨架研判纯文本输出 =================
+if _CLI_REPORT_MODE:
+    try:
+        _cli_report_keyword = ''
+        for _idx, _arg in enumerate(sys.argv):
+            if _arg == '--report' and _idx + 1 < len(sys.argv):
+                _nxt = str(sys.argv[_idx + 1] or '')
+                if not _nxt.startswith('-'):
+                    _cli_report_keyword = _nxt
+        _cli_history = load_json(HISTORY_FILE) if os.path.exists(HISTORY_FILE) else {}
+        _cli_target = None
+        for _fid, _rec in (_cli_history.items() if isinstance(_cli_history, dict) else []):
+            if not isinstance(_rec, dict):
+                continue
+            _name = str(_rec.get('match') or _rec.get('cn_name') or '')
+            if not _cli_report_keyword or _cli_report_keyword in _name or _cli_report_keyword == str(_fid):
+                _cli_target = _rec
+                break
+        if _cli_target is None:
+            print(f"未找到匹配「{_cli_report_keyword or '任意'}」的赛事。先运行「分析」抓取名单，"
+                  f"或用 --report 周四001 指定场次。")
+        else:
+            print(format_unified_report_cli(build_unified_analysis_report(_cli_target, source='cli')))
+    except Exception as _cli_rep_err:  # noqa: BLE001 - CLI 报告失败要给可读信息，不能静默
+        print(f"❌ [CLI] 统一研判报告生成失败: {type(_cli_rep_err).__name__}: {_cli_rep_err}")
+    finally:
+        sys.exit(0)
+
+
 # ================= 11.10 CLI：--open-scrape → 仅未开赛全新抓取并输出 TG =================
 if _CLI_OPEN_SCRAPE:
     try:
@@ -42833,11 +43614,269 @@ def backfill_historical_data(days=30):
     return summary
 
 
+def _ui_status_pill(label, value, ok=None):
+    """状态条单格：值 + 颜色点。ok=None 表示未探测（灰），True 绿，False 红。"""
+    dot = '⚪' if ok is None else ('🟢' if ok else '🔴')
+    return f"{dot} **{label}** · {value}"
+
+
+def _ui_render_status_strip() -> None:
+    """侧栏顶部紧凑状态条：DB / sklearn / DeepSeek / Telegram / 代理。"""
+    try:
+        diag = build_system_diagnostics(force_tg_check=False)
+    except Exception as exc:  # noqa: BLE001 - 状态条失败不能让页面挂掉
+        st.sidebar.error(f"状态条读取失败：{type(exc).__name__}: {exc}")
+        return
+    db = _ui_dict(diag.get('db'))
+    telegram = _ui_dict(diag.get('telegram_getme'))
+    proxy = _ui_dict(diag.get('proxy'))
+
+    db_path = str(db.get('path') or '未解析')
+    schema_version = str(db.get('schema_version') or 'unknown')
+    db_ok = not db.get('error')
+    sklearn_ok = bool(globals().get('ML_SKLEARN_OK'))
+    deepseek_ok = bool(diag.get('deepseek_key_present'))
+    tg_present = bool(diag.get('telegram_token_present'))
+    tg_status = str(telegram.get('status') or 'unknown')
+    proxy_reachable = proxy.get('reachable')
+    proxy_route = str(proxy.get('route') or 'auto')
+
+    with st.sidebar.container(border=True):
+        st.caption('系统状态')
+        st.markdown(_ui_status_pill('DB', f'schema v{schema_version}', db_ok), unsafe_allow_html=False)
+        st.caption(f"　`{db_path}`")
+        st.markdown(_ui_status_pill('sklearn', '可用' if sklearn_ok else '缺失（走泊松兜底）', sklearn_ok))
+        st.markdown(_ui_status_pill('DeepSeek', 'key 已配置' if deepseek_ok else 'key 缺失', deepseek_ok))
+        if tg_present:
+            st.markdown(_ui_status_pill('Telegram', tg_status, tg_status == 'ok'))
+        else:
+            st.markdown(_ui_status_pill('Telegram', 'token 未配置', False))
+        if proxy.get('url_configured'):
+            st.markdown(_ui_status_pill('代理', f"{proxy_route} · {'可达' if proxy_reachable else '不可达'}", bool(proxy_reachable)))
+        else:
+            st.markdown(_ui_status_pill('代理', f'{proxy_route} · 未配置', None))
+
+
+def _ui_section_of(key: str) -> str:
+    return str(st.session_state.get(key) or '概览')
+
+
+def _ui_conf_badge(confidence: str) -> str:
+    """置信度色标：高红、中高橙、中黄、中偏低蓝、低灰。"""
+    palette = {
+        '高': ('#B91C1C', '#FEE2E2'),
+        '中偏高': ('#C2410C', '#FFEDD5'),
+        '中': ('#A16207', '#FEF9C3'),
+        '中偏低': ('#1D4ED8', '#DBEAFE'),
+        '低': ('#4B5563', '#F3F4F6'),
+    }
+    fg, bg = palette.get(str(confidence or '').strip(), palette['低'])
+    label = str(confidence or '未知')
+    return (
+        f"<span style='background:{bg};color:{fg};padding:2px 8px;border-radius:10px;"
+        f"font-size:0.8rem;font-weight:600'>{label}</span>"
+    )
+
+
+def _ui_risk_badge(score) -> str:
+    """风险色标：冷门分 ≥70 红、≥50 橙、其余灰。"""
+    try:
+        value = float(score or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value >= 70:
+        fg, bg = '#B91C1C', '#FEE2E2'
+    elif value >= 50:
+        fg, bg = '#C2410C', '#FFEDD5'
+    else:
+        fg, bg = '#4B5563', '#F3F4F6'
+    return (
+        f"<span style='background:{bg};color:{fg};padding:2px 8px;border-radius:10px;"
+        f"font-size:0.8rem;font-weight:600'>{value:.0f}</span>"
+    )
+
+
+def _ui_metric_row(items) -> None:
+    """统一指标卡：3 列自适应，缺值显示 ➖。"""
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    if not rows:
+        st.caption('暂无指标')
+        return
+    for start in range(0, len(rows), 3):
+        chunk = rows[start:start + 3]
+        columns = st.columns(len(chunk))
+        for column, item in zip(columns, chunk):
+            column.metric(
+                str(item.get('label') or '-'),
+                str(item.get('value') if item.get('value') not in (None, '') else '➖'),
+                help=str(item.get('hint') or ''),
+            )
+
+
+def _ui_render_summary_cards(data) -> None:
+    """概览页顶部：总场次 / 未开赛 / 进行中 / 完场 / 冷门告警。"""
+    records = [v for v in (data or {}).values() if isinstance(v, dict)]
+    total = len(records)
+    pending = sum(1 for r in records if str(r.get('status') or '').lower() == 'pending')
+    live = sum(1 for r in records if str(r.get('status') or '').lower() == 'live')
+    done = sum(1 for r in records if str(r.get('status') or '').lower() == 'completed')
+    cold = sum(1 for r in records if float(r.get('cold_score') or 0) >= 50)
+    columns = st.columns(5)
+    columns[0].metric('总场次', total)
+    columns[1].metric('未开赛', pending)
+    columns[2].metric('进行中', live)
+    columns[3].metric('已完场', done)
+    columns[4].metric('冷门告警', cold, delta=None if not cold else '需关注', delta_color='inverse')
+    if total == 0:
+        st.info('暂无赛事数据：先点侧栏「自动化抓取分析」，或执行 `python app_v84_hermes.py --open-scrape`。')
+
+
+def _ui_render_confidence_mix(data) -> None:
+    """置信度分布：颜色随档次变化，便于一眼看结构。"""
+    records = [v for v in (data or {}).values() if isinstance(v, dict)]
+    if not records:
+        st.caption('暂无置信度分布（等待抓取结果）')
+        return
+    order = ['高', '中偏高', '中', '中偏低', '低']
+    counts = {label: 0 for label in order}
+    for record in records:
+        label = str(record.get('confidence') or '低').strip()
+        counts[label if label in counts else '低'] += 1
+    colors = {'高': '#B91C1C', '中偏高': '#C2410C', '中': '#A16207', '中偏低': '#1D4ED8', '低': '#6B7280'}
+    figure = go.Figure(data=[go.Bar(
+        x=order,
+        y=[counts[label] for label in order],
+        marker_color=[colors[label] for label in order],
+        text=[counts[label] for label in order],
+        textposition='outside',
+    )])
+    figure.update_layout(
+        height=260,
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        yaxis_title='场次',
+        template='plotly_white',
+        showlegend=False,
+    )
+    st.plotly_chart(figure, width='stretch', key='war_room_conf_mix')
+
+
+def _ui_table_style(frame, confidence_col=None, risk_col=None):
+    """表格着色：置信度列按档位，风险列按分值。返回 Styler 或原表。"""
+    try:
+        styler = frame.style
+    except Exception:  # noqa: BLE001 - Styler 不可用时直接返回原表
+        return frame
+
+    def _conf_color(value):
+        mapping = {
+            '高': 'background-color:#FEE2E2;color:#B91C1C;font-weight:600',
+            '中偏高': 'background-color:#FFEDD5;color:#C2410C;font-weight:600',
+            '中': 'background-color:#FEF9C3;color:#A16207',
+            '中偏低': 'background-color:#DBEAFE;color:#1D4ED8',
+            '低': 'background-color:#F3F4F6;color:#4B5563',
+        }
+        return mapping.get(str(value or '').strip(), '')
+
+    def _risk_color(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return ''
+        if number >= 70:
+            return 'background-color:#FEE2E2;color:#B91C1C;font-weight:600'
+        if number >= 50:
+            return 'background-color:#FFEDD5;color:#C2410C;font-weight:600'
+        return ''
+
+    try:
+        if confidence_col and confidence_col in frame.columns:
+            styler = styler.map(_conf_color, subset=[confidence_col])
+        if risk_col and risk_col in frame.columns:
+            styler = styler.map(_risk_color, subset=[risk_col])
+    except Exception:  # noqa: BLE001 - 着色失败退回素表
+        return frame
+    return styler
+
+
+# 页面分区渲染器占位：真实实现在下面的 Streamlit UI 块里绑定。
+# 先给出模块级定义，保证 headless 模式（CLI）能安全 import 本文件。
+def _page_render_monitor_terminal() -> None:
+    """分区「赛程·盘口监控」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_pretrade() -> None:
+    """分区「分析·赛前推演」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_reconciliation() -> None:
+    """分区「复盘·对账」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_overview() -> None:
+    """分区「概览」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_schedule() -> None:
+    """分区「赛程」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_analysis() -> None:
+    """分区「分析」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_review() -> None:
+    """分区「复盘」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_furnace() -> None:
+    """分区「熔炉」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_lessons() -> None:
+    """分区「教训」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_status() -> None:
+    """分区「状态」占位（UI 块内会覆盖）。"""
+
+
+def _page_render_report() -> None:
+    """分区「统一研判报告」占位（UI 块内会覆盖）。"""
+
+
+def _render_top_nav(active: str) -> None:
+    """顶部导航占位（UI 块内会覆盖）。"""
+
+
+def _nav_goto(section: str) -> None:
+    """分区跳转占位（UI 块内会覆盖）。"""
+
+
 if not _CLI_HEADLESS:
     # Streamlit UI skipped when BLADE_HEADLESS/CLI
-    # ===== 侧边栏：战情室经典控制台（deepseek-flash） =====
-    st.sidebar.header("战情室控制台")
-    st.sidebar.caption(f"引擎：{DS_FLASH_MODEL}｜V16.31 标准清算")
+    # ===== 侧栏：分区导航 + 紧凑状态条（战情室布局） =====
+    _WAR_ROOM_SECTIONS = {
+        'overview': '概览',
+        'schedule': '赛程',
+        'analysis': '分析',
+        'review': '复盘',
+        'furnace': '熔炉',
+        'lessons': '教训',
+        'status': '状态',
+    }
+    with st.sidebar:
+        st.markdown('## 🎛️ 战情室')
+        st.caption(f'引擎 {DS_FLASH_MODEL}｜V16.31 标准清算')
+        _ui_render_status_strip()
+        st.markdown('---')
+        _war_section = st.radio(
+            '分区导航',
+            options=list(_WAR_ROOM_SECTIONS.keys()),
+            format_func=lambda key: _WAR_ROOM_SECTIONS.get(key, key),
+            key='war_room_section',
+            label_visibility='collapsed',
+        )
+        st.markdown('---')
 
     # —— 技能 / 指令（合并，避免两套入口重复）——
     st.sidebar.subheader("核心技能")
@@ -43758,10 +44797,7 @@ if not _CLI_HEADLESS:
             st.rerun()
 
 
-    # ================= 大屏主视界渲染（升级：首屏优先展示预测结果） =================
-    st.title("⚽ BladeQuant V2 足球量化分析战情室")
-    st.caption("经典模式｜DeepSeek-flash 研判引擎｜手机盘口监控｜市均对比｜未开赛推演｜历史分析报告")
-
+    # ================= 大屏主视界（标题由分区路由统一渲染） =================
 
     # --- 【卡片放大查看 dialog（必须在 fragment 外部定义）】 ---
     @st.dialog("放大查看", width="large")
@@ -44037,11 +45073,8 @@ if not _CLI_HEADLESS:
         except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             st.warning(f"冷门预警区渲染异常，已跳过本次刷新：{e}")
 
-    tab_mon, tab_pre, tab_audit = st.tabs(
-        ["📊 盘口监控终端", "🎯 实时赛前精算", "📊 赛后对账与胜率面板"]
-    )
-
-    with tab_mon:
+    def _page_render_monitor_terminal():
+        """分区「赛程·盘口监控」：盘口监控终端面板。"""
         try:
             from blade_monitor_panel import (
                 render_blade_monitor_dashboard as _bq_mon_dash,
@@ -44051,7 +45084,10 @@ if not _CLI_HEADLESS:
         except Exception as _bq_mon_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             st.warning(f"盘口监控面板渲染异常: {_bq_mon_err}")
 
-    with tab_pre:
+
+
+    def _page_render_pretrade():
+        """分区「分析·赛前推演」：冷门预警 + 历史查询 + 推演详情。"""
         render_cold_alerts()
         # 历史在前：已开赛/完场；推演详情只放未开赛
         render_history_query_main()
@@ -44116,7 +45152,6 @@ if not _CLI_HEADLESS:
                         info = _detail_data[fid]
                         match_name = info.get('match', '未知对阵')
                         conf = info.get('confidence', '未知')
-                        status = info.get('status', 'pending')
                         fusion_strength = get_prediction_strength(info)
                         cup_mode = info.get('cup_mode', '常规')
                         cup_tag = f" | {cup_mode}" if cup_mode != '常规' else ''
@@ -44150,6 +45185,13 @@ if not _CLI_HEADLESS:
                         with tab1:
                             st.markdown("---")
                             render_v1631_clearing_room(info)
+                            st.markdown("#### 🧾 统一研判骨架")
+                            try:
+                                render_unified_report_streamlit(
+                                    build_unified_analysis_report(info, source='streamlit')
+                                )
+                            except Exception as _uni_ui_err:  # noqa: BLE001 - 骨架失败要横幅且保留原始报告
+                                st.error(f"统一研判骨架渲染失败：{type(_uni_ui_err).__name__}: {_uni_ui_err}")
                             st.markdown("#### 📝 原始分析报告")
                             if info.get("full_report"):
                                 import re as _re_rpt2
@@ -44799,5 +45841,291 @@ if not _CLI_HEADLESS:
         except Exception as _detail_panel_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             st.warning(f"详情面板渲染异常，已跳过: {_detail_panel_err}")
 
-    with tab_audit:
+
+
+    def _page_render_reconciliation():
+        """分区「复盘·对账」：赛后对账与胜率面板。"""
         render_backtest_audit_dashboard(FEATURE_DB_FILE)
+
+
+
+
+    def _page_render_overview():
+        """分区「概览」：战情室首屏。状态摘要 + 置信度分布 + 冷门告警 + 待开赛清单。"""
+        data = page_history()
+        st.markdown('### 🧭 战情室概览')
+        _ui_render_summary_cards(data)
+        left, right = st.columns([3, 2])
+        with left:
+            st.markdown('#### 📊 置信度分布')
+            _ui_render_confidence_mix(data)
+        with right:
+            st.markdown('#### 🧪 系统快照')
+            try:
+                diag = build_system_diagnostics(force_tg_check=False)
+                db = _ui_dict(diag.get('db'))
+                counts = _ui_dict(db.get('row_counts'))
+                _data_rows = int(counts.get('match_features') or 0) + int(counts.get('match_entropy_features') or 0)
+                _ui_metric_row([
+                    {'label': 'DB schema', 'value': f"v{db.get('schema_version') or 'unknown'}", 'hint': str(db.get('path') or '')},
+                    {'label': '特征库场次', 'value': _data_rows, 'hint': str(counts)},
+                    {'label': 'sklearn', 'value': '可用' if globals().get('ML_SKLEARN_OK') else '兜底', 'hint': '缺失时走本地泊松'},
+                ])
+                if _data_rows == 0:
+                    st.info(FEATURE_STORE_EMPTY_AUDIT_MESSAGE)
+            except Exception as _ov_err:  # noqa: BLE001 - 概览快照失败给横幅，不静默
+                st.error(f'系统快照读取失败：{type(_ov_err).__name__}: {_ov_err}')
+            st.markdown('#### 🎯 快速动作')
+            _qa1, _qa2 = st.columns(2)
+            if _qa1.button('🔄 刷新页面数据', key='war_overview_refresh', width='stretch'):
+                st.cache_data.clear()
+                st.rerun()
+            if _qa2.button('📡 盘口监控', key='war_overview_monitor', width='stretch'):
+                st.session_state['war_room_section'] = 'schedule'
+                st.rerun()
+
+        st.markdown('---')
+        render_cold_alerts()
+
+        st.markdown('#### 📋 待开赛清单')
+        pending = [
+            (fid, info) for fid, info in (data or {}).items()
+            if isinstance(info, dict) and is_history_match_not_started(info)
+        ]
+        if not pending:
+            st.info('暂无待开赛赛事：点侧栏「自动化抓取分析」拉取今日在售名单。')
+            return
+        pending.sort(key=lambda item: str(item[1].get('time') or '9999-99-99'))
+        rows = []
+        for fid, info in pending[:40]:
+            rows.append({
+                '开赛': str(info.get('time') or '未知'),
+                '对阵': str(info.get('match') or fid),
+                '联赛': str(info.get('league') or '未知'),
+                '首选': str(info.get('predicted_score') or '➖'),
+                '次选': str(info.get('second_score') or '➖'),
+                '置信度': str(info.get('confidence') or '低'),
+                '冷门分': float(info.get('cold_score') or 0),
+                '融合强度': f'{get_prediction_strength(info):.1f}%',
+            })
+        frame = pd.DataFrame(rows)
+        st.dataframe(
+            _ui_table_style(frame, confidence_col='置信度', risk_col='冷门分'),
+            hide_index=True,
+            width='stretch',
+            height=min(420, 60 + 35 * len(rows)),
+        )
+
+
+    def _page_render_schedule():
+        """分区「赛程」：盘口监控终端 + 主数据总览表。"""
+        st.markdown('### 📅 赛程与盘口')
+        _page_render_monitor_terminal()
+        st.markdown('---')
+        st.markdown('#### 📋 未开赛总览')
+        render_main_table()
+
+
+    def _page_render_analysis():
+        """分区「分析」：赛前推演（历史查询 + 详情面板 + 统一研判骨架）。"""
+        st.markdown('### 🎯 实时赛前精算')
+        with st.expander('🧾 统一研判报告（六段骨架）', expanded=False):
+            _page_render_report()
+        st.markdown('---')
+        _page_render_pretrade()
+
+
+    def _page_render_review():
+        """分区「复盘」：赛后对账与胜率面板。"""
+        st.markdown('### 📊 赛后复盘与对账')
+        _page_render_reconciliation()
+
+
+    def _page_render_furnace():
+        """分区「熔炉」：自我学习进化入口 + 命中趋势 + 回测结果。"""
+        st.markdown('### 🔥 深度自我学习熔炉')
+        st.caption('熔炉把赛果回灌特征库、重训泊松/GBDT 标定，并把铁律写进教训库。')
+        col_a, col_b = st.columns(2)
+        if col_a.button('🧠 启动熔炉（后台）', key='war_furnace_run', width='stretch'):
+            st.session_state['war_furnace_out'] = deepseek_flash_skill_dispatch('furnace')
+            st.success(st.session_state['war_furnace_out'])
+        if col_b.button('📘 生成学习报告', key='war_furnace_learn', width='stretch'):
+            with st.spinner('deepseek-flash 学习报告生成中...'):
+                try:
+                    st.session_state['war_furnace_report'] = deepseek_flash_run_learning_report()
+                    st.success('学习报告已生成')
+                except Exception as exc:  # noqa: BLE001 - 用户可见失败要有横幅
+                    st.error(f'学习报告生成失败：{type(exc).__name__}: {exc}')
+        if st.session_state.get('war_furnace_report'):
+            with st.expander('学习报告全文', expanded=False):
+                st.text(str(st.session_state.get('war_furnace_report'))[:8000])
+
+        st.markdown('---')
+        st.markdown('#### 📈 近7日命中率趋势')
+        render_hit_trend()
+
+        st.markdown('---')
+        st.markdown('#### 🧪 特征库训练样本')
+        try:
+            status = feature_store_schema_status()
+            counts = _ui_dict(status.get('row_counts'))
+            _ui_metric_row([
+                {'label': '特征库场次', 'value': int(counts.get('match_features') or 0), 'hint': '可用于重训的历史场次'},
+                {'label': '熵特征场次', 'value': int(counts.get('match_entropy_features') or 0), 'hint': '含方向锁的样本'},
+                {'label': '对账审计', 'value': int(counts.get('reconciliation_audit') or 0), 'hint': '对账审计记录条数'},
+            ])
+        except Exception as exc:  # noqa: BLE001 - 用户可见失败要有横幅
+            st.error(f'特征库状态读取失败：{type(exc).__name__}: {exc}')
+
+
+    def _page_render_lessons():
+        """分区「教训」：教训库浏览 + 最近对账命中率。"""
+        st.markdown('### 📖 教训库')
+        st.caption('熔炉与复盘写回的每一条铁律都在这里；统一研判报告的「教训匹配」段会引用它。')
+        try:
+            rules_text = load_brain_rules()
+        except Exception as exc:  # noqa: BLE001 - 用户可见失败要有横幅
+            st.error(f'教训库读取失败：{type(exc).__name__}: {exc}')
+            return
+        rules = [line.strip().lstrip('-• ').strip() for line in str(rules_text or '').splitlines()]
+        rules = [rule for rule in rules if rule]
+        if not rules:
+            st.info('教训库为空：先跑一次「熔炉」让系统把铁律写回。')
+        else:
+            _ui_metric_row([{'label': '铁律条数', 'value': len(rules), 'hint': str(RULES_FILE)}])
+            st.dataframe(
+                pd.DataFrame([{'#': index + 1, '铁律': rule} for index, rule in enumerate(rules)]),
+                hide_index=True,
+                width='stretch',
+            )
+        st.markdown('---')
+        st.markdown('#### ➕ 手工追加铁律')
+        _new_rule = st.text_area('新的教训（一行一条）', key='war_new_rule', height=90,
+                                 placeholder='例：平局赔率低于 3.0 时不要追高冷门分')
+        if st.button('写入教训库', key='war_save_rule', type='primary'):
+            added = 0
+            for line in str(_new_rule or '').splitlines():
+                candidate = line.strip().lstrip('-• ').strip()
+                if len(candidate) >= 6:
+                    save_brain_rules(candidate)
+                    added += 1
+            if added:
+                st.success(f'已写入 {added} 条铁律')
+            else:
+                st.error('没有可写入的内容：每条铁律至少 6 个字。')
+
+
+    def _page_render_status():
+        """分区「状态」：完整诊断 + 自检动作 + 空态说明。"""
+        st.markdown('### 🧪 系统状态')
+        col_a, col_b = st.columns([3, 2])
+        with col_a:
+            st.markdown('#### 🩺 诊断输出')
+            if st.button('重新探测（含 Telegram getMe）', key='war_status_probe'):
+                st.session_state['war_status_force'] = True
+            force = bool(st.session_state.pop('war_status_force', False))
+            try:
+                st.code(format_system_diagnostics_text(force_tg_check=force), language='text')
+            except Exception as exc:  # noqa: BLE001 - 用户可见失败要有横幅
+                st.error(f'诊断输出失败：{type(exc).__name__}: {exc}')
+        with col_b:
+            st.markdown('#### 🔧 自检动作')
+            if st.button('特征库事务往返自检', key='war_status_roundtrip', width='stretch'):
+                try:
+                    result = feature_store_reconciliation_round_trip()
+                    st.json(result)
+                except Exception as exc:  # noqa: BLE001 - 用户可见失败要有横幅
+                    st.error(f'自检失败：{type(exc).__name__}: {exc}')
+            if st.button('清理缓存并重载', key='war_status_clear', width='stretch'):
+                st.cache_data.clear()
+                st.rerun()
+            st.markdown('#### 📦 数据文件')
+            for path in (HISTORY_FILE, RULES_FILE, HIT_HISTORY_FILE, GAME_THEORY_FILE):
+                exists = os.path.exists(path)
+                st.caption(f"{'🟢' if exists else '⚪'} `{path}`" + ('' if exists else '（尚未生成）'))
+
+
+    def _page_render_report():
+        """分区「分析·统一研判骨架」：选一场比赛，六段骨架原样渲染。"""
+        st.markdown('### 🧾 统一研判报告')
+        st.caption('与 CLI `--report`、Telegram `研判` 指令共用同一个 formatter，六段顺序固定。')
+        data = page_history()
+        options = {}
+        for fid, info in (data or {}).items():
+            if not isinstance(info, dict):
+                continue
+            options[fid] = f"{info.get('match') or fid} | {info.get('confidence') or '未知'}"
+        if not options:
+            st.info('暂无对账数据：数据库已初始化，等待赛果写入。先点侧栏「自动化抓取分析」。')
+            return
+        chosen = st.selectbox('选择赛事', options=list(options.keys()),
+                              format_func=lambda key: options[key], key='war_report_select')
+        if not chosen:
+            return
+        info = data[chosen]
+        report = build_unified_analysis_report(info, source='streamlit')
+        render_unified_report_streamlit(report)
+        with st.expander('导出为 CLI 纯文本', expanded=False):
+            st.code(format_unified_report_cli(report), language='text')
+
+
+    # ================= 大屏主视界路由（分区页面） =================
+    _PAGE_RENDERERS = {
+        'overview': _page_render_overview,
+        'schedule': _page_render_schedule,
+        'analysis': _page_render_analysis,
+        'review': _page_render_review,
+        'furnace': _page_render_furnace,
+        'lessons': _page_render_lessons,
+        'status': _page_render_status,
+    }
+    _SECTION_META = {
+        'overview': ('🧭 概览', '今日战况、置信度结构、冷门告警一眼看完'),
+        'schedule': ('📅 赛程', '盘口监控终端与未开赛总览'),
+        'analysis': ('🎯 分析', '赛前推演、历史报告与统一研判骨架'),
+        'review': ('📊 复盘', '赛后对账、方向命中率与胜率面板'),
+        'furnace': ('🔥 熔炉', '自我学习进化、命中趋势与训练样本'),
+        'lessons': ('📖 教训', '铁律库浏览与手工补录'),
+        'status': ('🧪 状态', '完整诊断、自检动作与数据文件'),
+    }
+    _SECTION_ORDER = ('overview', 'schedule', 'analysis', 'review', 'furnace', 'lessons', 'status')
+    _WAR_SECTION_KEY = 'war_room_section'
+
+
+    def _nav_goto(section: str) -> None:
+        """顶部导航点击：写入会话态并立即重跑，让侧栏与页面同源。"""
+        if section not in _PAGE_RENDERERS:
+            return
+        st.session_state[_WAR_SECTION_KEY] = section
+
+
+    def _render_top_nav(active: str) -> None:
+        """顶部一级导航条：与侧栏分区共享同一个状态键。"""
+        columns = st.columns(len(_SECTION_ORDER))
+        for column, section in zip(columns, _SECTION_ORDER):
+            title = _SECTION_META[section][0]
+            is_active = section == active
+            column.button(
+                ('▸ ' + title) if is_active else title,
+                key=f'war_nav_{section}',
+                width='stretch',
+                type='primary' if is_active else 'secondary',
+                on_click=_nav_goto,
+                args=(section,),
+            )
+
+
+    _active_section = str(st.session_state.get(_WAR_SECTION_KEY) or 'overview')
+    if _active_section not in _PAGE_RENDERERS:
+        _active_section = 'overview'
+    _head_title, _head_caption = _SECTION_META[_active_section]
+    st.title(f'⚽ BladeQuant V2 · {_head_title}')
+    st.caption(f'{_head_caption}｜引擎 {DS_FLASH_MODEL}｜V16.31 标准清算')
+    _render_top_nav(_active_section)
+    st.markdown('---')
+    _renderer = _PAGE_RENDERERS[_active_section]
+    try:
+        _renderer()
+    except Exception as _page_err:  # noqa: BLE001 - 分区异常要给横幅而不是白屏
+        st.error(f'分区「{_SECTION_META[_active_section][0]}」渲染失败：'
+                 f'{type(_page_err).__name__}: {_page_err}')
