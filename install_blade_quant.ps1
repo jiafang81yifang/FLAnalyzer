@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 14c2b1e = merge cursor/war-room-redesign (new app + wizard)，app md5 ffc71bd8b70b670db67b7ea27830e737
-$PinCommit = '14c2b1e6dd2105bc2634b20628fe5df3a67b858f'
+# 2834fe6 = fix unformed-λ guard + TG chat_id/失败分类 + 占位符密钥 + 控制台 UTF-8
+$PinCommit = '2834fe63644055b238cbd76f1e5c34c2093bda03'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
