@@ -2043,6 +2043,67 @@ def test_pack_row_counts_match_the_matrix_row_counts() -> None:
     assert sum(short['counts'].values()) == len(short['rows'])
 
 
+def test_pack_path_and_app_path_agree_row_for_row() -> None:
+    """D10: the pack must build its market vector exactly like build_pool31_option_rows.
+
+    The app normalises each source separately and then mixes; mixing raw 100/odds
+    and normalising once gives a different vector, so the same capture produced two
+    pos_count answers (pack 22 vs app 21 on 1347778). One table, one answer.
+
+    Revert tested: restoring the single-pass "mix raw then renormalise" block ->
+    maxΔmarket 0.36-1.25 and pos_count differs by 1-2 on all four captures.
+    """
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes())
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(fh.read()))
+    for mid in ('1347776', '1347778', '1347775', '1347780'):
+        jc = okooo.parse_jczq_score_odds(text, mid)['odds']
+        app_rows = app.build_pool31_option_rows(
+            [], lam_home=1.45, lam_away=1.10,
+            jc_score_odds=jc, odds_correct_score=page['page_avg'],
+        )
+        direct = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+            [], lam_home=1.45, lam_away=1.10,
+            jc_score_odds=jc, extra_market_odds=page['page_avg'],
+        )
+        app_pos = sum(
+            1 for r in app_rows
+            if r['market'] is not None and r['theory'] is not None
+            and float(r['market']) > float(r['theory'])
+        )
+        assert direct['pos_count'] == app_pos, (mid, direct['pos_count'], app_pos)
+        for mine, theirs in zip(direct['rows'], app_rows):
+            assert mine['score'] == theirs['score'], (mid, mine['score'])
+            assert abs(float(mine['market']) - float(theirs['market'])) < 0.01, (
+                mid, mine['score'], mine['market'], theirs['market'])
+        # and a round-trip through the pack must not change the answer either
+        again = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+            app_rows, lam_home=1.45, lam_away=1.10, jc_score_odds=jc)
+        assert again['pos_count'] == app_pos, (mid, again['pos_count'], app_pos)
+
+
+def test_rendered_jc_column_is_devigged_not_single_house() -> None:
+    """D10: the table's 竞彩隐含% column printed raw 1/odds, summing to ~146%.
+
+    A column that sums to 146 next to one that sums to 100 is not comparable, and
+    it is the same defect the pack-level sums fixed — the renderer was missed.
+
+    Revert tested: putting `100.0 / jc` back in format_theo_mkt_31_tg_lines ->
+    the parsed 竞彩隐含% column sums to ~146 and this test fails.
+    """
+    pack = _pack_with_market('1347778')
+    lines = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+    jc_col: list[float] = []
+    for line in lines:
+        if not re.match(r'^  \d{2} ', line):
+            continue
+        found = re.search(r'竞彩\s+[\d.]+\s+([\d.]+)%', line)
+        if found:
+            jc_col.append(float(found.group(1)))
+    assert len(jc_col) == 31, len(jc_col)
+    assert abs(sum(jc_col) - 100.0) < 0.5, sum(jc_col)
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}

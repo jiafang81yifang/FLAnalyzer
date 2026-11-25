@@ -477,31 +477,69 @@ class DeepSeekAnalyzer:
                         'market_prob', 'implied_prob', 'jc_odds', 'mkt_minus_jc'):
                 if key in row and row.get(key) not in (None, ''):
                     merged.setdefault(key, row.get(key))
-        # 市均补 market
-        for score, odd in extra_odds.items():
+        # 市均与竞彩各自先归一，再按选项混合，最后整体再归一。
+        # 这一步必须和 app 端 build_pool31_option_rows 的 market_src 完全同序：
+        # 先混合原始 100/odds 再整体归一，与「各自归一后混合」得到的向量不同，
+        # 同一场比赛会给出两个 pos_count —— 一张表不能有两个答案。
+        jc_odds = kwargs.get('jc_score_odds')
+        jc_odds = jc_odds if isinstance(jc_odds, dict) else {}
+        _jc_set = set(JCZQ_ALL_OPTIONS)
+
+        def _odds_value(odd: Any) -> float | None:
+            if isinstance(odd, dict):
+                odd = odd.get('odds') if odd.get('odds') is not None else odd.get('avg')
+            return _f(odd)
+
+        def _implied_vec(odds_map: dict[str, Any]) -> dict[str, float]:
+            """只认 31 项里显式给出的键，1/odds 后归一。
+
+            4-3/3-4/4-4 不算市均对「其它」的报价，绝不折进桶里——
+            否则 22+9 会串成 25+6。
+            """
+            vec: dict[str, float] = {}
+            for score, odd in (odds_map or {}).items():
+                key = _norm_score(score)
+                value = _odds_value(odd)
+                if key in _jc_set and value is not None and value > 1:
+                    vec[key] = 1.0 / value
+            total = sum(vec.values())
+            return {k: v / total for k, v in vec.items()} if total > 0 else {}
+
+        _page_vec = _implied_vec(extra_odds)
+        _jc_vec = _implied_vec(jc_odds)
+        _mix: dict[str, float] = {}
+        _mix_of: dict[str, str] = {}
+        for option in JCZQ_ALL_OPTIONS:
+            if option in _page_vec:
+                _mix[option] = _page_vec[option]
+                _mix_of[option] = str(kwargs.get('extra_market_source') or 'market_avg_odds')
+            elif option in _jc_vec:
+                _mix[option] = _jc_vec[option]
+                _mix_of[option] = 'jc_score_odds'
+        _mix_total = sum(_mix.values())
+        if _mix_total > 0:
+            _mix = {k: v * 100.0 / _mix_total for k, v in _mix.items()}
+        for option, value in _mix.items():
+            row = by_score.setdefault(option, {'score': option})
+            if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
+                row['market'] = round(value, 4)
+                row['market_source'] = _mix_of.get(option, '')
+        # 竞彩赔率本身始终要落盘（31 项的原生赔率），与 market 取不取自竞彩无关。
+        for score, odd in jc_odds.items():
             key = _norm_score(score)
-            odd_f = _f(odd)
+            odd_f = _odds_value(odd)
             if not key or odd_f is None or odd_f <= 1:
                 continue
             row = by_score.setdefault(key, {'score': key})
-            if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
-                row['market'] = round(100.0 / odd_f, 4)
-                row['market_source'] = kwargs.get('extra_market_source') or 'market_avg_odds'
-        # 竞彩 31 比分赔率是「九个市均覆盖不到的选项」唯一的合法来源
-        # （5-0/5-1/5-2/0-5/1-5/2-5 与三个「其它」）。只补市场概率，不动理论。
-        jc_odds = kwargs.get('jc_score_odds')
-        if isinstance(jc_odds, dict):
-            for score, odd in jc_odds.items():
-                key = _norm_score(score)
-                odd_f = _f(odd)
-                if not key or odd_f is None or odd_f <= 1:
-                    continue
-                row = by_score.setdefault(key, {'score': key})
-                if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
-                    row['market'] = round(100.0 / odd_f, 4)
-                    row['market_source'] = 'jc_score_odds'
-                if _f(row.get('jc_odds')) is None:
-                    row['jc_odds'] = odd_f
+            if _f(row.get('jc_odds')) is None:
+                row['jc_odds'] = odd_f
+        # 4-3/3-4/4-4 属表尾附注，单列出去，不占 31 行。
+        _extras: dict[str, float] = {}
+        for score, odd in extra_odds.items():
+            key = _norm_score(score)
+            odd_f = _odds_value(odd)
+            if key and key not in _jc_set and odd_f is not None and odd_f > 1:
+                _extras[key] = odd_f
         # 理论概率：用已冻结的 λ 泊松分布补齐（λ 冻结是既定事实，不是编造）。
         lam_h = _f(kwargs.get('lam_home'))
         lam_a = _f(kwargs.get('lam_away'))
@@ -580,6 +618,7 @@ class DeepSeekAnalyzer:
             'market_sum': market_sum,
             'theory_sum': theory_sum,
             'jc_pct_sum': jc_pct_sum,
+            'cs31_extras': _extras,
             'system_prejudge': {},
             'home': str(kwargs.get('home') or ''),
             'away': str(kwargs.get('away') or ''),
@@ -753,10 +792,12 @@ class DeepSeekAnalyzer:
             counts[src] = counts.get(src, 0) + 1
             market_txt = f'{market:.2f}' if market is not None else '-'
             jc_txt = f'{jc:.2f}' if jc is not None else '-'
-            # 市均隐含% 用 market 字段（已是百分比），竞彩隐含% 由赔率反推后归一不划算，
-            # 直接用 pack 里已有的 jc 赔率折算单家隐含率（1/odds），标注清楚它是单家口径。
+            # 竞彩隐含% 必须用去水归一后的 jc_odds_pct，不能是单家 1/odds。
+            # 单家口径 31 项加起来是 145.95%，和已归一的市均% 不是一把尺子，
+            # 同表的 Δ 与「市均热过理论」都会被这列带偏。
+            jc_pct_val = _f(row.get('jc_odds_pct'))
             market_pct = f'{market:.1f}%' if market is not None else '-'
-            jc_pct = f'{100.0 / jc:.1f}%' if jc else '-'
+            jc_pct = f'{jc_pct_val:.1f}%' if jc_pct_val is not None else '-'
             delta = f'{market - theory:+.1f}' if (market is not None and theory is not None) else '-'
             lines.append(
                 f'  {idx:02d} {score:<5s} 市均{market_txt:>7s} {market_pct:>7s} '
