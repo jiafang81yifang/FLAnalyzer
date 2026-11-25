@@ -441,8 +441,13 @@ print('KB_SEED:' + ('; '.join(results) if results else 'ok'))
 $KbOutput = & $VenvPython $KbHelper $InstallDir $KbDir 2>&1
 $KbCode = $LASTEXITCODE
 Remove-Item $KbHelper -Force -ErrorAction SilentlyContinue
-if ($KbCode -eq 0 -and "$KbOutput" -eq 'ok') {
-    Write-Ok "knowledge_base 已就绪（statistical_skills.json + strategy_skills.json）"
+# 辅助脚本只回一行，以 KB_SEED: 开头，避免和程序自身的输出混在一起。
+$KbText = ("$KbOutput" -split "`n" | Where-Object { $_ -match 'KB_SEED:' } | Select-Object -Last 1)
+if ($KbText) { $KbText = $KbText.Trim() } else { $KbText = '' }
+if ($KbCode -eq 0 -and $KbText -eq 'KB_SEED:ok') {
+    Write-Ok "knowledge_base 已就绪（statistical_skills.json + strategy_skills.json 已存在且非空）"
+} elseif ($KbCode -eq 0 -and $KbText) {
+    Write-Ok ("knowledge_base " + $KbText.Substring('KB_SEED:'.Length))
 } else {
     Write-Warn "knowledge_base: $KbOutput（程序仍会以「本场未激活技能」继续）"
 }
