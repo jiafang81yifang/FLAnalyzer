@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 2834fe6 = fix unformed-λ guard + TG chat_id/失败分类 + 占位符密钥 + 控制台 UTF-8
-$PinCommit = '2834fe63644055b238cbd76f1e5c34c2093bda03'
+# 2facea0 = 六项实盘日志缺口: 知识库补种+统一降级 / audit_theo_mkt_31_rows / 澳客CS真页面+阶段化reason / 必发源诊断 / 水位单次重抓 / reason 不再为 None
+$PinCommit = '2facea0831d7bfb70a0bea704e86557576ea9fc9'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
