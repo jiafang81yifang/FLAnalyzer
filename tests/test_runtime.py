@@ -761,3 +761,196 @@ def test_six_market_pack_fixture_is_not_a_scrape_cache() -> None:
     pack = _captured_pack()
     assert pack['_fixture_note']
     assert pack['source_report']['1x2']['status'] == 200
+
+
+# ---------------------------------------------------------------------------
+# Round 4: heat kwarg/legality, lineup, AH company timeline, dual-source gate.
+# ---------------------------------------------------------------------------
+
+def test_cs_heat_labels_emit_the_accepted_keyword() -> None:
+    """Defect 1: _cs_heat_labels must emit `channel`, not `heat_channel`."""
+    rec = {'correct_score_channel': 'okooo_cs', 'score_market_heat': {'source': 'okooo_cs_books_avg'}}
+    labels = app._cs_heat_labels(rec)
+    assert 'heat_channel' not in labels
+    assert labels['channel'] == 'okooo_cs'
+    # And the call it feeds must accept the label verbatim (this used to TypeError).
+    heat = okooo.build_score_market_heat_ranking({'1:0': 8.0, '2:1': 12.0}, **labels)
+    assert heat['ranking']
+
+
+def test_build_score_market_heat_ranking_accepts_heat_channel_alias() -> None:
+    """Older/embedded callers still send heat_channel; that must not raise."""
+    heat = okooo.build_score_market_heat_ranking({'1:0': 8.0}, heat_channel='okooo_cs')
+    assert heat['channel'] == 'okooo_cs'
+    assert heat['ranking'][0]['odds'] == 8.0
+
+
+def test_ranking_rows_expose_avg_odds() -> None:
+    """Defect 1b: the legality gate counts rows by avg_odds, which was never emitted."""
+    heat = okooo.build_score_market_heat_ranking(
+        {'1:0': 15.28, '2:0': 25.48, '2:1': 19.09, '0:0': 17.21},
+        heat_source='okooo_cs_books_avg', channel='okooo_cs',
+    )
+    for row in heat['ranking']:
+        assert 'avg_odds' in row and row['avg_odds'] == row['odds']
+    assert app._is_legal_mobile_cs_heat(heat) is True
+
+
+def test_desktop_pool31_heat_still_banned_but_desktop_cs_page_legal() -> None:
+    """The ban targets the desktop analysis page/pool31, not the /cs/ 波胆 page."""
+    banned = {'source': 'pool31', 'channel': 'pool31', 'ranking': [{'avg_odds': 9}]}
+    assert app._is_legal_mobile_cs_heat(banned) is False
+    banned2 = {'source': 'desktop_api', 'channel': 'desktop', 'ranking': [{'avg_odds': 9}]}
+    assert app._is_legal_mobile_cs_heat(banned2) is False
+    legal = okooo.build_score_market_heat_ranking(
+        {'1:0': 15.28, '2:0': 25.48, '1:1': 7.88, '0:0': 17.21},
+        heat_source='okooo_cs_books_avg', channel='okooo_cs',
+    )
+    assert app._is_legal_mobile_cs_heat(legal) is True
+
+
+def test_legacy_desktop_cs_labels_normalise_to_legal() -> None:
+    """Old recs/embedded copies labelled desktop_cs must still reach the table."""
+    heat = okooo.build_score_market_heat_ranking(
+        {'1:0': 15.28, '2:0': 25.48, '1:1': 7.88, '0:0': 17.21},
+        heat_channel='desktop_cs', heat_source='okooo_desktop_cs_page_avg',
+    )
+    assert heat['channel'] == 'okooo_cs'
+    assert heat['source'] == 'okooo_cs_books_avg'
+    assert app._is_legal_mobile_cs_heat(heat) is True
+
+
+def test_rec_to_heat_to_compare_heat_keeps_a_ranking() -> None:
+    """rec → heat → _resolve_compare_heat_from_history must survive non-empty."""
+    page_avg = {'1:0': 15.28, '2:0': 25.48, '2:1': 19.09, '0:0': 17.21,
+                '1:1': 7.88, '0:1': 9.58, '2:2': 16.43}
+    heat = okooo.build_score_market_heat_ranking(
+        page_avg, page_avg_odds=page_avg,
+        heat_source='okooo_cs_books_avg', channel='okooo_cs',
+    )
+    rec = {
+        'correct_score_channel': 'okooo_cs',
+        'correct_score_page_avg': page_avg,
+        'correct_score_books_avg': page_avg,
+        'score_market_heat': heat,
+    }
+    resolved = app._resolve_compare_heat_from_history(rec)
+    assert resolved.get('ranking'), resolved
+    assert resolved.get('source') == 'okooo_cs_books_avg'
+    assert resolved.get('channel') == 'okooo_cs'
+
+
+def test_formation_parser_reads_starters_subs_and_absences() -> None:
+    """Defect 2b: real /formation/ page → 11+11 starters, subs, 伤停."""
+    html = (FIXTURES / 'okooo_formation_1347776.html').read_bytes()
+    parsed = okooo._parse_lineup_page(okooo.decode_okooo_html(html))
+    assert parsed['available'] is True
+    assert parsed['home_count'] == 11 and parsed['away_count'] == 11
+    home0 = parsed['home']['starters'][0]
+    assert home0['number'] and home0['name']
+    # 澳**票-style prices come from .player-price
+    assert any(p['price'].endswith('万') for p in parsed['starters'])
+    assert parsed['substitutes'], 'substitutes must parse from 主队替补/客队替补'
+    assert all(s['price'].endswith('万') for s in parsed['substitutes'][:3] if s['price'])
+    assert parsed['absences'], '伤停 must parse from match-battle-shangting'
+    absence = parsed['absences'][0]
+    assert absence['state'] and absence['position'].startswith('【') and absence['name']
+
+
+def test_formation_parser_second_match_has_six_absences() -> None:
+    html = (FIXTURES / 'okooo_formation_1347778.html').read_bytes()
+    parsed = okooo._parse_lineup_page(okooo.decode_okooo_html(html))
+    assert parsed['home_count'] == 11 and parsed['away_count'] == 11
+    assert len(parsed['absences']) == 6
+
+
+def test_ah_change_timeline_parses_real_rows() -> None:
+    """Defect 3: change.php carries the per-company盤口 timeline."""
+    html = (FIXTURES / 'okooo_ah_change_1347776_pid84.html').read_bytes()
+    changes = okooo._parse_ah_change_list(okooo.decode_okooo_html(html))
+    assert len(changes) == 8
+    first = changes[0]
+    assert (first['home_water'], first['line_text'], first['away_water']) == (2.17, '受半球', 1.61)
+    assert first['line'] == -0.5
+    # the row the user quoted: 2.18 / 受半球 / 1.60 @ 赛前33小时9分
+    assert any(
+        c['home_water'] == 2.18 and c['line_text'] == '受半球'
+        and c['away_water'] == 1.60 and c['note'] == '赛前33小时9分'
+        for c in changes
+    )
+
+
+def test_ah_ou_books_reports_no_ou_timeline_honestly() -> None:
+    """OU has no change.php links; the pack must say so instead of inventing one."""
+    books = okooo.scrape_okooo_mobile_ah_ou_books('1347776', book_cap=1, detail_cap=0)
+    # Network may be blocked in CI; only assert the contract when it succeeded.
+    if not books.get('available'):
+        pytest.skip(f"live AH unavailable: {books.get('error')}")
+    assert all(b['changes'] == [] for b in books['over_under']['companies'])
+    assert books['over_under']['detail_block_reason'], 'must explain the missing timeline'
+
+
+def test_dual_source_gate_recomputes_water_gaps() -> None:
+    """Defect 4: a stale cached water_gaps must not force ready=False."""
+    fallback = importlib.import_module('odds_fallback')
+    rec = {
+        'correct_score_page_avg': {'1:0': 8.0, '2:1': 12.0},
+        'correct_score_channel': 'okooo_cs',
+        'asian_handicap': -0.75,
+        'ou_line': 3.25,
+        'odds_1x2': {'home': 4.55, 'draw': 4.2, 'away': 1.47},
+        # stale from an earlier failed scrape
+        'water_gaps': ['asian_handicap', 'ou_line', 'odds_1x2'],
+    }
+    gate = fallback.ensure_dual_source_before_judgment(rec)
+    assert gate['ready'] is True
+    assert gate['reason'] == ''
+    assert gate['water_gaps'] == []
+    assert rec['water_gaps'] == [], 'fresh gaps must be written back'
+
+
+def test_dual_source_gate_still_reports_genuine_gaps() -> None:
+    fallback = importlib.import_module('odds_fallback')
+    rec = {
+        'correct_score_page_avg': {'1:0': 8.0},
+        'correct_score_channel': 'okooo_cs',
+        'asian_handicap': -0.75,
+    }
+    gate = fallback.ensure_dual_source_before_judgment(rec)
+    assert gate['ready'] is False
+    assert 'ou_line' in gate['reason'] and 'odds_1x2' in gate['reason']
+    assert rec['water_gaps'] == ['ou_line', 'odds_1x2']
+
+
+def test_pack_reason_never_collapses_to_empty() -> None:
+    """Defect 2a: the real reason must survive the log line."""
+    assert app._pack_reason({'reason': 'external_fetch_not_configured'}) == 'external_fetch_not_configured'
+    assert app._pack_reason({'block_reason': 'x', 'reason': 'y'}) == 'x'
+    assert app._pack_reason({'error': 'HTTP 405'}) == 'HTTP 405'
+    assert app._pack_reason({}) == 'empty'
+    assert app._pack_reason(None) == 'invalid_payload'
+
+
+def test_lineup_and_books_stubs_expose_a_reason_field() -> None:
+    """Every unavailable pack must carry a reason the log can print."""
+    for fn, args in (
+        (okooo.scrape_okooo_mobile_lineup, ('',)),
+        (okooo.scrape_okooo_mobile_ah_ou_books, ('',)),
+    ):
+        pack = fn(*args)
+        assert pack.get('available') is False
+        assert app._pack_reason(pack) not in ('empty', 'invalid_payload')
+
+
+def test_every_fixture_declares_its_source() -> None:
+    """Fixture hygiene: real captures with URL + status + bytes recorded."""
+    manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
+    files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}
+    assert files, 'no fixtures found'
+    missing = sorted(files - set(manifest))
+    assert missing == [], f'fixtures without provenance: {missing}'
+    for name in files:
+        entry = manifest[name]
+        assert entry.get('url'), name
+        assert entry.get('status') == 200, name
+        assert entry.get('captured'), name

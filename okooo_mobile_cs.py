@@ -121,12 +121,16 @@ def decode_okooo_html(raw: Any, headers: Any = None) -> str:
         if not text:
             text = data.decode('utf-8', 'replace')
     if '\\u' in text:
-        try:
-            # 大小球页整页是 JS 转义串，反转义后才能匹配 class 名。
-            text = text.encode('utf-8').decode('unicode_escape')
-            text = text.encode('latin-1', 'ignore').decode('utf-8', 'ignore') or text
-        except (UnicodeDecodeError, UnicodeEncodeError):
-            pass
+        # 有的页面把整段 HTML 写成 JS 的 \uXXXX 转义。只替换转义序列本身，
+        # 不能用 unicode_escape 整体往返——那会把真实的非 ASCII 文本弄坏，
+        # 而且对 "\/" 之类的 HTML 转义会告警。
+        def _unescape(match: re.Match[str]) -> str:
+            try:
+                return chr(int(match.group(1), 16))
+            except ValueError:
+                return match.group(0)
+
+        text = re.sub(r'\\u([0-9a-fA-F]{4})', _unescape, text)
     return text
 
 
@@ -392,7 +396,25 @@ def build_score_market_heat_ranking(
     page_avg_odds: Any = None,
     heat_source: str = 'okooo_mobile_cs_existing_odds',
     channel: str = 'mobile',
+    **kwargs: Any,
 ) -> dict[str, Any]:
+    """按比分赔率排热度。
+
+    `channel` 是正式参数名，但历史调用方（以及已发布的单文件内嵌副本）
+    发的是 `heat_channel`。这里接受它作为别名，避免一个关键字名把整块
+    score_market_heat 打挂——那会连带方向锁重建失败。
+    """
+    alias_channel = kwargs.get('heat_channel')
+    if alias_channel and (not channel or channel == 'mobile'):
+        # 显式传了别名就以它为准（默认值 'mobile' 不算显式）。
+        channel = str(alias_channel)
+    # 法律通道标签归一：桌面波胆页抓到的市均是合法的 27 家公司均值，
+    # 不是被禁的「桌面分析页/pool31」。历史标签 desktop_cs 归一成 okooo_cs，
+    # 让 _is_legal_mobile_cs_heat 的 okooo_cs_books_avg 分支能认它。
+    if channel in {'desktop_cs', 'okooo_desktop_cs', 'okooo_cs_desktop'}:
+        channel = 'okooo_cs'
+    if 'desktop' in heat_source:
+        heat_source = 'okooo_cs_books_avg'
     rows = []
     odds_sources: list[tuple[str, Any]] = []
     if isinstance(odds_map, dict):
@@ -434,8 +456,13 @@ def build_score_market_heat_ranking(
             odd_f = 0.0
         enriched = enriched_by_score.get(score_key)
         row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}
+        # avg_odds 是赔率的同义词：合法市均闸门按 avg_odds 数「可用的行」，
+        # 只发 odds 会让真市均被判非法。
+        row['avg_odds'] = odd_f
         if isinstance(enriched, dict):
             row.update({k: v for k, v in enriched.items() if k not in row})
+            if row.get('avg_odds') in (None, 0, 0.0) and odd_f:
+                row['avg_odds'] = odd_f
         rows.append(row)
     rows.sort(key=lambda r: r['heat'], reverse=True)
     return {
@@ -655,10 +682,14 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
             fetch_urls=list(urls),
             parse_stage=stage,
         )
+    # 桌面 /cs/ 波胆页是 27 家公司的合法市均，不是被禁的「桌面分析页/pool31」。
+    # 通道标签用 okooo_cs（法律闸门已有 okooo_cs_books_avg 分支），
+    # 不再自标 desktop_cs——那个名字会被 'desktop' 规则整体判非法。
     heat = build_score_market_heat_ranking(
         parsed['page_avg'],
         page_avg_odds=parsed['page_avg'],
-        heat_source='okooo_desktop_cs_page_avg',
+        heat_source='okooo_cs_books_avg',
+        channel='okooo_cs',
     )
     heat.update({
         'available': True,
@@ -669,7 +700,7 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
         'correct_score_books_avg': parsed['books_avg'],
         'correct_score_books_n': parsed['books_n'],
         'correct_score_site_avg': parsed['page_avg'],
-        'correct_score_channel': 'desktop_cs',
+        'correct_score_channel': 'okooo_cs',
         'cs_fetch_url': str(fetch.get('url') or (urls[0] if urls else '')),
         'cs_fetch_status': int(fetch.get('status') or 0),
         'cs_fetch_bytes': int(fetch.get('bytes') or 0),
@@ -1156,8 +1187,172 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
     return pack
 
 
+_AH_CHANGE_LINK_RE = r'change\.php\?mid=(\d+)&(?:amp;)?pid=(\d+)&(?:amp;)?Type=Handicap'
+
+
+def _parse_ah_change_list(html: Any) -> list[dict[str, Any]]:
+    """解析单个公司的盘口变化表 `table.changeTable`。
+
+    真实结构（m.okooo.com/match/change.php?mid=<id>&pid=<pid>&Type=Handicap&c=1）：
+      <td><span class="fontblue">2.17</span><span>受半球</span><span class="fontred2">1.61</span></td>
+      <td class="timetd jsChangeContent" time="11-25 21:01">赛前28小时43分</td>
+    颜色 class 表示涨跌，不参与语义；取三个 span 的文本即可。
+    """
+    text = str(html or '')
+    table = re.search(r'<table[^>]*class="changeTable"[^>]*>([\s\S]*?)</table>', text, re.IGNORECASE)
+    if not table:
+        return []
+    changes: list[dict[str, Any]] = []
+    for row in re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', table.group(1), re.IGNORECASE):
+        spans = [
+            re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', s)).strip()
+            for s in re.findall(r'<span[^>]*>([\s\S]*?)</span>', row)
+        ]
+        stamp = re.search(r'class="timetd[^"]*"[^>]*time="([^"]*)"[^>]*>\s*([^<]*?)\s*<', row)
+        if len(spans) >= 3:
+            home_water, line_text, away_water = spans[0], spans[1], spans[2]
+        else:
+            continue
+        changes.append({
+            'home_water': _num_of(home_water),
+            'line_text': line_text,
+            'line': ah_text_to_line(line_text),
+            'away_water': _num_of(away_water),
+            'time': stamp.group(1).strip() if stamp else '',
+            'note': (stamp.group(2).strip() if stamp else ''),
+        })
+    return changes
+
+
 def scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
-    return {'available': False, 'match_id': str(match_id or ''), 'ah_books': [], 'ou_books': [], 'reason': 'external_fetch_not_configured'}
+    """每家公司亚指/大小球明细。
+
+    亚指：手机 `handicap.php` 每行都带 `change.php?mid=&pid=&Type=Handicap`，
+    跟着抓该公司的时间线（首次/最新盘口随时间变化）。
+    大小球：`ah.php?type=daxiao` **没有** change.php 链接，所以只给最新/初盘两列，
+    `changes` 留空并写明 detail_block_reason——绝不编造时间线。
+    """
+    mid = str(match_id or '').strip()
+    if not mid:
+        return {'available': False, 'match_id': '', 'reason': 'no_match_id',
+                'block_reason': 'no_match_id', 'ah_books': [], 'ou_books': []}
+    cap = int(kwargs.get('book_cap') or os.environ.get('OKOOO_AH_BOOK_CAP') or 8)
+    detail_cap = int(kwargs.get('detail_cap') or os.environ.get('OKOOO_AH_DETAIL_CAP') or 5)
+
+    ah_url = f'https://m.okooo.com/match/handicap.php?MatchID={mid}'
+    ah_page = _fetch_detail(ah_url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
+    ah_books: list[dict[str, Any]] = []
+    detail_fetched = 0
+    if ah_page.get('ok'):
+        text = ah_page.get('html')
+        # 注意：change.php 链接在 <tr onclick="...window.location='...'"> 的属性里，
+        # 不在行内文本中。必须连 <tr ...> 标签一起抓，否则拿不到任何 pid。
+        for row in re.findall(r'<tr([^>]*)>([\s\S]*?)</tr>', text, re.IGNORECASE):
+            tr_attrs, inner = row
+            cells = re.findall(r'<td[^>]*>([\s\S]*?)</td>', inner, re.IGNORECASE)
+            if len(cells) < 3:
+                continue
+            pids = re.findall(_AH_CHANGE_LINK_RE, tr_attrs) or re.findall(_AH_CHANGE_LINK_RE, inner)
+            name = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', cells[0])).strip()
+            start = _tag_text(cells[1], None, ['zhu', 'chu', 'ke'])
+            latest = _tag_text(cells[2], None, ['xinzhu', 'xin', 'xinke'])
+            if not latest and not pids:
+                continue
+            book = {
+                'name': name,
+                'pid': pids[0][1] if pids else '',
+                'start': {'home_water': _num_of(start.get('zhu')),
+                          'line_text': start.get('chu') or '',
+                          'line': ah_text_to_line(start.get('chu')),
+                          'away_water': _num_of(start.get('ke'))},
+                'latest': {'home_water': _num_of(latest.get('xinzhu')),
+                           'line_text': latest.get('xin') or '',
+                           'line': ah_text_to_line(latest.get('xin')),
+                           'away_water': _num_of(latest.get('xinke'))},
+                'changes': [],
+                'detail_url': (f'https://m.okooo.com/match/change.php?mid={pids[0][0]}&pid={pids[0][1]}&Type=Handicap&c=1'
+                               if pids else ''),
+                'detail_block_reason': '',
+            }
+            if not book['pid']:
+                book['detail_block_reason'] = '该行没有 change.php 链接，无法取时间线'
+            elif name and '平均' not in name and detail_fetched < detail_cap:
+                detail = _fetch_detail(book['detail_url'], proxies=kwargs.get('proxies'),
+                                       session=kwargs.get('session'), retries=1)
+                if detail.get('ok'):
+                    book['changes'] = _parse_ah_change_list(detail.get('html'))
+                    detail_fetched += 1
+                    if not book['changes']:
+                        book['detail_block_reason'] = '变化页无可解析行(changeTable 为空)'
+                else:
+                    book['detail_block_reason'] = (
+                        f"变化页 HTTP {detail.get('status') or detail.get('error')}"
+                    )
+            elif '平均' not in name:
+                book['detail_block_reason'] = f'达到明细抓取上限({detail_cap}家)，只保留最新/初盘'
+            ah_books.append(book)
+            if len([b for b in ah_books if '平均' not in b['name']]) >= cap:
+                break
+
+    ou_url = f'https://m.okooo.com/match/ah.php?type=daxiao&matchId={mid}'
+    ou_page = _fetch_detail(ou_url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
+    ou_books: list[dict[str, Any]] = []
+    ou_reason = ''
+    if ou_page.get('ok'):
+        text = ou_page.get('html')
+        rows = re.findall(r'<tr[^>]*class="[^"]*jsContentItem[^"]*"[^>]*>([\s\S]*?)</tr>', text, re.IGNORECASE)
+        for row in rows:
+            name_m = re.search(r'<td class="width16"><a>([^<]*)</a>', row)
+            start = _tag_text(row, None, ['sort-chu-daqiu', 'filter-chu', 'sort-chu-xiaoqiu'])
+            latest = _tag_text(row, None, ['sort-xin-daqiu', 'filter-xin', 'sort-xin-xiaoqiu'])
+            if not latest:
+                continue
+            ou_books.append({
+                'name': (name_m.group(1).strip() if name_m else ''),
+                'start': {'over_water': _num_of(start.get('sort-chu-daqiu')),
+                          'line': _num_of(start.get('filter-chu')),
+                          'under_water': _num_of(start.get('sort-chu-xiaoqiu'))},
+                'latest': {'over_water': _num_of(latest.get('sort-xin-daqiu')),
+                           'line': _num_of(latest.get('filter-xin')),
+                           'under_water': _num_of(latest.get('sort-xin-xiaoqiu'))},
+                'changes': [],
+            })
+            if len(ou_books) >= cap:
+                break
+        ou_reason = '大小球页没有 change.php 链接，只给最新/初盘两列，无法生成时间线'
+    else:
+        ou_reason = f"大小球页 HTTP {ou_page.get('status') or ou_page.get('error')}"
+
+    ah_report = {
+        'url': ah_url, 'status': int(ah_page.get('status') or 0),
+        'bytes': int(ah_page.get('bytes') or 0), 'title': str(ah_page.get('title') or ''),
+    }
+    ou_report = {
+        'url': ou_url, 'status': int(ou_page.get('status') or 0),
+        'bytes': int(ou_page.get('bytes') or 0), 'title': str(ou_page.get('title') or ''),
+    }
+    out = {
+        'available': bool(ah_books or ou_books),
+        'channel': 'mobile',
+        'match_id': mid,
+        'source_path': '手机析→亚指→盘口→公司；析→大小球→最值→公司',
+        'asian_handicap': {'rows': [b for b in ah_books if '平均' in b['name']],
+                           'companies': [b for b in ah_books if '平均' not in b['name']]},
+        'over_under': {'rows': [], 'companies': ou_books,
+                       'detail_block_reason': ou_reason},
+        'ah_detail_fetched': detail_fetched,
+        'source_report': {'ah': ah_report, 'ou': ou_report},
+        'writes_first_score': False,
+        'changes_direction': False,
+    }
+    if not out['available']:
+        out['reason'] = 'okooo_ah_ou_books_fetch_failed'
+        out['block_reason'] = 'okooo_ah_ou_books_fetch_failed'
+        out['error'] = (
+            f"ah HTTP {ah_report['status']} {ah_report['bytes']}B; "
+            f"ou HTTP {ou_report['status']} {ou_report['bytes']}B"
+        )
+    return out
 
 
 def scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1226,8 +1421,192 @@ def scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -
     return out
 
 
+_ABSENCE_STATE = {'伤': '伤', '停': '停', '疑': '疑'}
+
+
+def _parse_lineup_page(html: Any) -> dict[str, Any]:
+    """解析桌面 /soccer/match/<id>/formation/ 阵容页。
+
+    真实结构（2026-11-25 现场核对，1347776 191,730B / 1347778 199,508B，gb18030）：
+      * `div.match-battle-field`：左半 =.field-flex-col（主队），
+        右半 = `div.field-right`（客队），共 22 个 `div.field-player-box`，
+        每个含 `.qius`(球衣号) / `.player-name` / `.player-price`。
+      * `div.match-battle-substitution`：`主队替补` / `客队替补` 两块，
+        每块若干 `a.name.playersObj` + `.price`。
+      * `div.match-battle-shangting.item-home` / `.item-away`：伤停，
+        每个 `div.shangting-list-item` 含 `.item-state`(伤/停) /
+        `.item-text`(位置) / `.item-detail a.name` + `.price` + `.text`。
+    页面上「右半」用 class field-right 标出，主客以位置区分，不靠队名猜。
+    """
+    text = str(html or '')
+    out: dict[str, Any] = {
+        'available': False, 'stage': 'ok',
+        'home': {}, 'away': {},
+        'starters': [], 'substitutes': [], 'absences': [],
+    }
+    if 'match-battle-field' not in text:
+        out['stage'] = 'no_battle_field'
+        return out
+
+    def _txt(raw: str) -> str:
+        return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', raw)).strip()
+
+    def _players(chunk: str, side: str) -> list[dict[str, Any]]:
+        """切出所有 field-player-box。
+
+        不能靠 `</div></a>` 收尾：页面最后一个球员的闭合标签写法不同，
+        会漏掉一人（客队只剩 10）。这里按 box 起点切片。
+        """
+        # class 有两种写法：'field-player-box' 与 'field-player-box left-price'
+        # （客队/左价球员用后者）。只匹配前者会静默漏掉整半支球队。
+        starts = [m.start() for m in re.finditer(r'<div class="field-player-box\b', chunk)]
+        players = []
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else len(chunk)
+            box = chunk[start:end]
+            number = re.search(r'<div class="qius"[^>]*>\s*([^<]*?)\s*</div>', box)
+            name = re.search(r'<div class="player-name">\s*([^<]*?)\s*</div>', box)
+            price = re.search(r'<div class="player-price">\s*([^<]*?)\s*</div>', box)
+            if not name:
+                continue
+            players.append({
+                'side': side,
+                'number': (number.group(1).strip() if number else ''),
+                'name': name.group(1).strip(),
+                'price': price.group(1).strip() if price else '',
+            })
+        return players
+
+    field = re.search(r'<div class="match-battle-field">([\s\S]*?)\Z', text)
+    field_body = field.group(1) if field else text
+    right_at = field_body.find('field-right')
+    left_part = field_body[:right_at] if right_at > 0 else field_body
+    right_part = field_body[right_at:] if right_at > 0 else ''
+    home_starters = _players(left_part, 'home')
+    away_starters = _players(right_part, 'away')
+    if not away_starters and right_at > 0:
+        # 右半没有 field-player-box 时，按 11 人切分（页面顺序：主队 11 后客队 11）。
+        all_players = _players(field_body, 'home')
+        home_starters, away_starters = all_players[:11], [
+            {**p, 'side': 'away'} for p in all_players[11:]
+        ]
+
+    subs = {'home': [], 'away': []}
+    sub_at = text.find('match-battle-substitution')
+    if sub_at > 0:
+        sub_block = text[sub_at:]
+        blocks = re.split(r'<div class="item-title">\s*(主队替补|客队替补)\s*</div>', sub_block)
+        for idx in range(1, len(blocks) - 1, 2):
+            label = blocks[idx]
+            side = 'home' if '主队' in label else 'away'
+            # 价格 div 里还嵌着 <em> 标记，所以按 item-item 起点切片而不是用收尾正则；
+            # 价格取 <div class="price"> 到下一个 <em 之前的纯文本。
+            body = blocks[idx + 1]
+            starts = [m.start() for m in re.finditer(r'<div class="item-item clearfix">', body)]
+            for j, start in enumerate(starts):
+                end = starts[j + 1] if j + 1 < len(starts) else len(body)
+                item = body[start:end]
+                name = re.search(r'class="name playersObj"[^>]*>([^<]*?)</a>', item)
+                if not name:
+                    continue
+                price = re.search(r'<div class="price">([\s\S]*?)(?:<em|</div>)', item)
+                subs[side].append({
+                    'side': side,
+                    'name': name.group(1).strip(),
+                    'price': re.sub(r'\s+', ' ', price.group(1)).strip() if price else '',
+                })
+
+    absences = []
+    for side, cls in (('home', 'item-home'), ('away', 'item-away')):
+        block = re.search(
+            rf'<div class="match-battle-shangting {cls}">([\s\S]*?)(?=<div class="match-battle-shangting|'
+            rf'<div class="match-battle-item|</section>)', text)
+        if not block:
+            continue
+        for item in re.findall(r'<div class="shangting-list-item clearfix">([\s\S]*?)</div>\s*</div>\s*</div>', block.group(1)):
+            state = re.search(r'<div class="item-state[^"]*">\s*([^<]*?)\s*</div>', item)
+            position = re.search(r'<div class="item-text">\s*([^<]*?)\s*</div>', item)
+            name = re.search(r'class="name playersObj"[^>]*>([^<]*?)</a>', item)
+            price = re.search(r'<div class="price">\s*([^<]*?)\s*</div>', item)
+            note = re.search(r'<div class="text">\s*([^<]*?)\s*</div>', item)
+            if not name:
+                continue
+            absences.append({
+                'side': side,
+                'state': (state.group(1).strip() if state else ''),
+                'position': (position.group(1).strip() if position else ''),
+                'name': name.group(1).strip(),
+                'price': (price.group(1).strip() if price else ''),
+                'note': (note.group(1).strip() if note else ''),
+            })
+
+    out['home'] = {'starters': home_starters, 'substitutes': subs['home'],
+                   'absences': [a for a in absences if a['side'] == 'home']}
+    out['away'] = {'starters': away_starters, 'substitutes': subs['away'],
+                   'absences': [a for a in absences if a['side'] == 'away']}
+    out['starters'] = home_starters + away_starters
+    out['substitutes'] = subs['home'] + subs['away']
+    out['absences'] = absences
+    out['home_count'] = len(home_starters)
+    out['away_count'] = len(away_starters)
+    out['available'] = bool(out['starters'] or out['substitutes'] or out['absences'])
+    if not out['available']:
+        out['stage'] = 'no_players_parsed'
+    return out
+
+
 def scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
-    return {'available': False, 'match_id': str(match_id or ''), 'home': [], 'away': [], 'reason': 'external_fetch_not_configured'}
+    """每场阵容：桌面 `/soccer/match/<id>/formation/`（手机端没有阵容页）。
+
+    已探明的死路（不要再试）：桌面 lineup/ players/ shuju/ → 405/404；
+    手机 lineup.php formation.php analysis.php team.php → 404；
+    手机 players.php 是「每场球员数据」，不是首发名单。
+    """
+    mid = str(match_id or '').strip()
+    if not mid:
+        return {
+            'available': False, 'match_id': '', 'channel': 'desktop_formation',
+            'home': {}, 'away': {}, 'starters': [], 'substitutes': [], 'absences': [],
+            'reason': 'no_match_id', 'block_reason': 'no_match_id',
+        }
+    url = f'https://www.okooo.com/soccer/match/{mid}/formation/'
+    page = _fetch_detail(url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
+    # 阵容页与波胆页同受间歇 WAF 405 影响（现场见过同一 URL 隔几十秒转 200）。
+    # 有界耐心重试，仍然失败就如实回报，不编名单。
+    patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_LINEUP_PATIENCE') or 2) or 0)
+    gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_LINEUP_PATIENCE_GAP') or 35) or 35)
+    for _attempt in range(patience):
+        if page.get('ok') or not page.get('blocked'):
+            break
+        time.sleep(gap)
+        page = _fetch_detail(url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
+    report = {
+        'url': url, 'status': int(page.get('status') or 0),
+        'bytes': int(page.get('bytes') or 0), 'title': str(page.get('title') or ''),
+        'blocked': bool(page.get('blocked')),
+    }
+    base = {
+        'match_id': mid, 'channel': 'desktop_formation', 'source_path': '桌面 析→阵容',
+        'source_report': report,
+    }
+    if not page.get('ok'):
+        return {
+            **base, 'available': False, 'home': {}, 'away': {}, 'starters': [],
+            'substitutes': [], 'absences': [],
+            'reason': 'external_okooo_formation_fetch_failed',
+            'block_reason': 'external_okooo_formation_fetch_failed',
+            'error': f"{url} → HTTP {report['status'] or page.get('error')}",
+        }
+    parsed = _parse_lineup_page(page.get('html'))
+    out = {**base, **parsed}
+    if not out.get('available'):
+        out['reason'] = 'okooo_formation_parse_empty'
+        out['block_reason'] = 'okooo_formation_parse_empty'
+        out['error'] = (
+            f"{url} 200 {report['bytes']}B title={report['title'] or '-'} "
+            f"stage={parsed.get('stage')}"
+        )
+    return out
 
 
 def _is_filled(value: Any) -> bool:

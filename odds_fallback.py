@@ -56,6 +56,20 @@ def attach_500_shuju_to_rec(rec: dict[str, Any], force: bool = False) -> dict[st
     return pack
 
 
+def _local_water_gaps(rec: Any) -> list[str]:
+    """本地重算水位缺口（与 okooo_mobile_cs.missing_six_market_waters 同规则）。
+
+    这里不 import 那个模块：odds_fallback 被 app 在抓取链路里早早导入，
+    反向依赖会绕成环。规则很短，就地实现并保持同步。
+    """
+    if not isinstance(rec, dict):
+        return ['invalid_record']
+    return [
+        key for key in ('asian_handicap', 'ou_line', 'odds_1x2')
+        if not rec.get(key)
+    ]
+
+
 def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any = None) -> dict[str, Any]:
     """把手机市均与 500 兜底合成一个可审计的整合包。
 
@@ -87,7 +101,7 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
         books_avg = page_avg if isinstance(page_avg, dict) else {}
     cs_books_n = len(books_avg) if isinstance(books_avg, dict) else 0
     mobile_channel = str(rec.get('correct_score_channel') or '').lower()
-    mobile_entered = bool(cs_books_n and mobile_channel in {'mobile', 'desktop_cs'})
+    mobile_entered = bool(cs_books_n and mobile_channel in {'mobile', 'desktop_cs', 'okooo_cs'})
 
     fallback_500 = facts.get('fallback_500_fenxi') if isinstance(facts.get('fallback_500_fenxi'), dict) else {}
     filled_from_500: list[str] = []
@@ -101,13 +115,23 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
         if rec.get(key) not in (None, '', {}, []):
             kept_mobile.append(slot)
 
+    # 水位缺口必须每次从字段现算。缓存的 rec['water_gaps'] 可能是上一轮（或抓取失败时）
+    # 留下的旧名单；信它会把「三块都齐」的记录判成未就绪，日志就会出现
+    # reason=水位缺asian_handicap/ou_line/odds_1x2 而实际并不缺。
+    water_gaps = _local_water_gaps(rec)
+    if not water_gaps and not any(rec.get(k) not in (None, '', {}, []) for k in
+                                 ('asian_handicap', 'ou_line', 'odds_1x2')):
+        # 三块字段完全不存在（纯缓存记录）：才用缓存名单，避免把空记录当齐全。
+        cached = rec.get('water_gaps') if isinstance(rec.get('water_gaps'), list) else []
+        water_gaps = [str(g) for g in cached]
+    rec['water_gaps'] = list(water_gaps)
+
     cs_block = str(rec.get('cs_block_reason') or '').strip()
     reasons: list[str] = []
     if not mobile_entered:
         reasons.append(f'手机市均未进入整合包(cs_n={cs_books_n}, channel={mobile_channel or "-"})')
         if cs_block:
             reasons.append(f'cs_block={cs_block}')
-    water_gaps = rec.get('water_gaps') if isinstance(rec.get('water_gaps'), list) else []
     if water_gaps:
         reasons.append('水位缺' + '/'.join(str(g) for g in water_gaps))
     ready = bool(mobile_entered) and not water_gaps
@@ -126,5 +150,6 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
         'cs_books_n': cs_books_n,
         'filled_from_500': filled_from_500,
         'kept_mobile': kept_mobile,
+        'water_gaps': list(water_gaps),
         'reason': '' if ready else '；'.join(reasons) or '数据不足且未给出原因',
     }
