@@ -76,7 +76,13 @@ def resolve_direction(scores: Any, *args: Any, **kwargs: Any) -> tuple[str, dict
     「not enough values to unpack」并被吞成降级。这里返回二元组；
     同时保留 `_legacy_string=True` 选项给需要旧形状的调用方。
     """
-    scores_list = list(scores or []) if not isinstance(scores, str) else []
+    # 非可迭代输入（3 / 3.5 / True / None）必须降级成空方向，绝不抛 TypeError。
+    if isinstance(scores, str) or not isinstance(scores, (list, tuple, set, dict)):
+        try:
+            iter(scores)
+        except TypeError:
+            scores = []
+    scores_list: list[Any] = list(scores or [])
     module_direction = ''
     if args:
         module_direction = str(args[0] or '')

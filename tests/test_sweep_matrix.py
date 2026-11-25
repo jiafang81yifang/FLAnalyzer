@@ -250,6 +250,83 @@ def _check_case(pool_size, water, channel, source, stub_shape, gap_state) -> lis
         if not isinstance(_r, dict):
             fails.append('(vi) tolerant unpack produced a non-dict resolution')
 
+    # ---- (vii) every "31" producer means the SAME 31 options ----
+    # Defect 11's root cause: the view's 31 (raw poisson cells, 28 of them JC)
+    # and the audit's 31 (JC options) were different sets.
+    view = app.build_score_pool31_views([], lam_home=1.45, lam_away=1.10)
+    if view.get('pool_size') != 31:
+        fails.append(f'(vii) view pool_size={view.get("pool_size")}')
+    if set(view.get('options') or []) != set(pipe.JCZQ_ALL_OPTIONS):
+        extra = sorted(set(view.get('options') or []) - set(pipe.JCZQ_ALL_OPTIONS))
+        fails.append(f'(vii) view options are not the JC 31 (extra={extra[:3]})')
+    enriched = app.build_31pool_enriched_list({'lam_h': 1.45, 'lam_a': 1.10})
+    if {row['score'] for row in enriched} != set(pipe.JCZQ_ALL_OPTIONS):
+        fails.append('(vii) build_31pool_enriched_list is not the JC 31')
+    if abs(sum(row['theory_prob'] for row in enriched) - 1.0) > 1e-6:
+        fails.append('(vii) enriched theory_prob does not sum to 1')
+
+    # ---- (viii) jc31 always lands in correct_score_jc_official ----
+    jc31 = {option: 8.0 for option in pipe.JCZQ_ALL_OPTIONS}
+    stamped: dict[str, Any] = {}
+    app._stamp_more_play_scores(stamped, {'jc_score_odds': jc31})
+    if len(stamped.get('correct_score_jc_official') or {}) != 31:
+        fails.append('(viii) jc31 did not land in correct_score_jc_official')
+
+    # ---- (ix) independent falsy-zero expectations ----
+    # These must NOT be derived from missing_six_market_waters / the gate: an
+    # invariant computed from the function under test can never catch that
+    # function's own bug. 0.0 is a real 平手盘 / OU line.
+    z = {'asian_handicap': 0.0, 'ou_line': 2.5,
+         'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+         'correct_score_page_avg': {'1:0': 8.0}, 'correct_score_channel': 'okooo_cs'}
+    if okooo.missing_six_market_waters(z) != []:
+        fails.append(f'(ix) ah=0.0 reported as a gap: {okooo.missing_six_market_waters(z)}')
+    zg = fallback.ensure_dual_source_before_judgment(dict(z))
+    if zg['ready'] is not True:
+        fails.append(f'(ix) ah=0.0 gate not ready: {zg["reason"]}')
+    if 'asian_handicap' not in (zg.get('kept_mobile') or []):
+        fails.append('(ix) ah=0.0 not in kept_mobile')
+    settle0 = mathmod.apply_six_cs_settlement_v2_to_rec(dict(z))
+    if settle0.get('available') is not True or settle0.get('asian_handicap') != 0.0:
+        fails.append(f'(ix) settlement dropped ah=0.0: {settle0.get("block_reason")}')
+    board0 = pipe.DeepSeekAnalyzer.build_cross_market_board(dict(z))
+    if board0.get('asian_handicap') != 0.0:
+        fails.append(f'(ix) cross_market_board ah={board0.get("asian_handicap")}')
+    z5 = dict(z)
+    z5['dual_source_facts'] = {'fallback_500_fenxi': {'available': True, 'ah_line': 0.5}}
+    if 'ah_line' in (fallback.ensure_dual_source_before_judgment(z5).get('filled_from_500') or []):
+        fails.append('(ix) 500 refill would overwrite a real 平手盘')
+    # OU line 0.0 is likewise "present" for gap purposes
+    if 'ou_line' in okooo.missing_six_market_waters({'asian_handicap': 0.0, 'ou_line': 0.0, 'odds_1x2': {'h': 1}}):
+        fails.append('(ix) ou_line=0.0 reported as a gap')
+    # and the negatives must stay gaps
+    for bad in (None, '', {}):
+        if 'asian_handicap' not in okooo.missing_six_market_waters(
+            {'asian_handicap': bad, 'ou_line': 2.5, 'odds_1x2': {'h': 1}}
+        ):
+            fails.append(f'(ix) ah={bad!r} not treated as a gap')
+    # a 0.0 rec without any CS stays unready for the CS reason only
+    no_cs = {'asian_handicap': 0.0, 'ou_line': 2.5, 'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0}}
+    ng = fallback.ensure_dual_source_before_judgment(dict(no_cs))
+    if ng['ready'] is not False:
+        fails.append('(ix) no-CS rec reported ready')
+    if '水位缺' in (ng.get('reason') or ''):
+        fails.append(f'(ix) no-CS rec blamed water: {ng.get("reason")}')
+
+    # ---- (x) chart market precedence: 市均 first, jc31 fills the rest ----
+    jc_fixture = {'1-0': 11.0, '2-1': 10.5, '1-1': 6.25, '0-1': 7.25, '5-0': 400.0}
+    chart_jc_only = app.generate_31pool_theory_vs_market_chart(
+        {'lam_h': 1.45, 'lam_a': 1.1, 'odds_correct_score': dict(jc_fixture),
+         'market_source_note': '竞彩31比分'}
+    )
+    if app.chart31_pool_verdict(chart_jc_only)['status'] == 'degraded':
+        fails.append('(x) chart degraded although jc31 supplies market')
+    chart_none = app.generate_31pool_theory_vs_market_chart(
+        {'lam_h': 1.45, 'lam_a': 1.1, 'odds_correct_score': {}}
+    )
+    if app.chart31_pool_verdict(chart_none)['status'] == 'full':
+        fails.append('(x) chart claimed full market with no odds at all')
+
     return fails
 
 

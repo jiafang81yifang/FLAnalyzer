@@ -323,19 +323,55 @@ def _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:
         return False
 
 
+def _looks_like_score_map(value: Any) -> bool:
+    """一个 dict 是不是「比分→赔率」裸映射（而不是带键的 pack）。
+
+    判据：没有任何已知的容器键，且过半的键看起来像比分（1-0 / 1:0 / 胜其它）。
+    """
+    if not isinstance(value, dict) or not value:
+        return False
+    known = {
+        'correct_score_jc_official', 'jc_score_odds', 'correct_score_page_avg',
+        'correct_score_books_avg', 'correct_score_site_avg', 'available', 'channel',
+        'match_id', 'boards_hit', 'missing', 'source_report',
+    }
+    if known & set(value):
+        return False
+    score_like = 0
+    for key, odd in value.items():
+        text = str(key or '').strip()
+        if re.fullmatch(r'\d{1,2}\s*[-:：]\s*\d{1,2}', text) or '其它' in text:
+            try:
+                if float(odd) > 1:
+                    score_like += 1
+            except (TypeError, ValueError):
+                continue
+    return score_like > 0 and score_like * 2 >= len(value)
+
+
 def _okooo_apply_jc_score_fill(
     record: dict[str, Any],
     pack: dict[str, Any] | None = None,
     source_note: str = '',
     overwrite: bool = False,
 ) -> dict[str, Any]:
+    """把竞彩比分赔率写进 record['correct_score_jc_official']。
+
+    `pack` 既可以是带键的容器（jc_score_odds / correct_score_jc_official），
+    也可以直接是裸的 {score: odd} 映射。历史上只认前者，于是调用方把裸映射
+    传进来时什么都写不进去，日志里 `jc=0` 永远消不掉。
+    """
     if not isinstance(record, dict):
         return {}
     src = pack if isinstance(pack, dict) else record
     jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}
+    if not (isinstance(jc, dict) and jc) and _looks_like_score_map(src):
+        jc = src
+    if not (isinstance(jc, dict) and jc) and _looks_like_score_map(record):
+        jc = record
     if isinstance(jc, dict) and jc:
         if overwrite or not record.get('correct_score_jc_official'):
-            record['correct_score_jc_official'] = jc
+            record['correct_score_jc_official'] = dict(jc)
         if source_note:
             record['correct_score_jc_source_note'] = source_note
     return record
@@ -408,9 +444,15 @@ def build_score_market_heat_ranking(
     if alias_channel and (not channel or channel == 'mobile'):
         # 显式传了别名就以它为准（默认值 'mobile' 不算显式）。
         channel = str(alias_channel)
+    if not channel:
+        channel = 'unknown'
     # 法律通道标签归一：桌面波胆页抓到的市均是合法的 27 家公司均值，
     # 不是被禁的「桌面分析页/pool31」。历史标签 desktop_cs 归一成 okooo_cs，
     # 让 _is_legal_mobile_cs_heat 的 okooo_cs_books_avg 分支能认它。
+    # 标签归一前先强制成字符串：heat_source/channel 可能被传 None 或数字，
+    # `'desktop' in None` 会直接 TypeError，把整块 heat 打挂。
+    channel = str(channel or '')
+    heat_source = str(heat_source or '')
     if channel in {'desktop_cs', 'okooo_desktop_cs', 'okooo_cs_desktop'}:
         channel = 'okooo_cs'
     if 'desktop' in heat_source:
@@ -1059,6 +1101,50 @@ def _mobile_exchange_pnl(html: Any) -> dict[str, Any]:
     return out
 
 
+_JCZQ_PAGE_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _jczq_cache_ttl() -> float:
+    try:
+        return float(os.environ.get('OKOOO_JCZQ_CACHE_TTL') or 90)
+    except (TypeError, ValueError):
+        return 90.0
+
+
+def _remember_jczq_page(url: str, page: dict[str, Any]) -> None:
+    _JCZQ_PAGE_CACHE[url] = {
+        'page': dict(page),
+        'at': time.time(),
+        'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+
+def _jczq_page_cached(url: str, proxies: Any = None, session: Any = None) -> tuple[dict[str, Any], bool, str]:
+    """取竞足赛程页的原始 HTML，带短 TTL 进程内缓存。
+
+    一轮 20 场共用同一份 183KB 文档；不缓存就要下载 20 次、等 20 次 WAF。
+    只缓存**原始页面**，每场仍现场解析（parse_jczq_score_odds 按 matchid 取行）。
+    返回 (page, cached, fetched_at)：命中缓存时 cached=True 且带原始抓取时间，
+    调用方把它写进 source_report，日志仍然说清数据是哪来的。
+    """
+    ttl = _jczq_cache_ttl()
+    entry = _JCZQ_PAGE_CACHE.get(url)
+    if entry and (time.time() - float(entry.get('at') or 0)) <= ttl:
+        page = dict(entry.get('page') or {})
+        if page.get('ok'):
+            return page, True, str(entry.get('fetched_at') or '')
+    page = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+    # 与波胆/阵容页同受间歇 WAF 影响：被拦时有界重试，别让 31 项比分静默变空。
+    for _jc_try in range(int(os.environ.get('OKOOO_JCZQ_PATIENCE') or 2)):
+        if page.get('ok') or not page.get('blocked'):
+            break
+        time.sleep(float(os.environ.get('OKOOO_JCZQ_PATIENCE_GAP') or 30))
+        page = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+    if page.get('ok'):
+        _remember_jczq_page(url, page)
+    return page, False, time.strftime('%Y-%m-%d %H:%M:%S')
+
+
 def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:
     """六盘口水位：亚指 / 大小球 / 胜平负，只认能解析的真实页面。
 
@@ -1188,37 +1274,53 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
 
     pack['available'] = bool(pack['boards_hit'])
     # 竞彩比分 31 项：唯一真实来源是竞足赛程页的 oddsData.SportteryScore。
-    # 只在这里抓一次，写进 jc_score_odds，供 _stamp_more_play_scores 落盘。
+    # 该页 183KB 且一轮 20 场都是同一份文档，所以走短 TTL 页缓存（只缓存原始页面，
+    # 每场仍现场解析）。命中缓存必须如实标注，不能伪装成刚抓的。
     try:
-        _jc_fetch = _fetch_detail(
-            'https://m.okooo.com/jczq/', proxies=proxies, session=session, retries=1,
+        _jc_url = 'https://m.okooo.com/jczq/'
+        _jc_page, _jc_cached, _jc_fetched_at = _jczq_page_cached(
+            _jc_url, proxies=proxies, session=session,
         )
-        # 与波胆/阵容页同受间歇 WAF 影响：被拦时有界重试，别让 31 项比分静默变空。
-        for _jc_try in range(int(os.environ.get('OKOOO_JCZQ_PATIENCE') or 2)):
-            if _jc_fetch.get('ok') or not _jc_fetch.get('blocked'):
-                break
-            time.sleep(float(os.environ.get('OKOOO_JCZQ_PATIENCE_GAP') or 30))
-            _jc_fetch = _fetch_detail(
-                'https://m.okooo.com/jczq/', proxies=proxies, session=session, retries=1,
-            )
+        _jc_fetch = _jc_page
         _jc_report = {
-            'url': 'https://m.okooo.com/jczq/',
+            'url': _jc_url,
             'channel': 'mobile',
             'status': int(_jc_fetch.get('status') or 0),
             'bytes': int(_jc_fetch.get('bytes') or 0),
             'title': str(_jc_fetch.get('title') or ''),
             'blocked': bool(_jc_fetch.get('blocked')),
             'error': str(_jc_fetch.get('error') or ''),
+            'cached': bool(_jc_cached),
+            'fetched_at': _jc_fetched_at,
             'stage': '',
         }
         if _jc_fetch.get('ok'):
             _jc = parse_jczq_score_odds(_jc_fetch.get('html'), mid)
             _jc_report['stage'] = _jc.get('stage') or ''
             _jc_report['orderid'] = _jc.get('orderid') or ''
+            if not _jc.get('available') and _jc_cached:
+                # 缓存页里没有本场（抓缓存时这场还没上架）：允许真抓一次再解析。
+                _jc_page = _fetch_detail(_jc_url, proxies=proxies, session=session, retries=1)
+                _jc_fetch = _jc_page
+                _jc_report.update({
+                    'status': int(_jc_fetch.get('status') or 0),
+                    'bytes': int(_jc_fetch.get('bytes') or 0),
+                    'title': str(_jc_fetch.get('title') or ''),
+                    'blocked': bool(_jc_fetch.get('blocked')),
+                    'error': str(_jc_fetch.get('error') or ''),
+                    'cached': False,
+                    'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                })
+                if _jc_fetch.get('ok'):
+                    _remember_jczq_page(_jc_url, _jc_fetch)
+                    _jc = parse_jczq_score_odds(_jc_fetch.get('html'), mid)
+                    _jc_report['stage'] = _jc.get('stage') or ''
+                    _jc_report['orderid'] = _jc.get('orderid') or ''
             if _jc.get('available'):
                 pack['jc_score_odds'] = dict(_jc['odds'])
                 pack['jc_score_source'] = '手机竞足→更多玩法→胜平负比分'
                 pack['jc_score_orderid'] = _jc.get('orderid') or ''
+                pack['jc_score_page_cached'] = bool(_jc_cached)
                 pack['boards_hit']['胜平负比分'] = True
             else:
                 pack['jc_score_block_reason'] = (
@@ -1303,8 +1405,9 @@ def scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) ->
     ah_page = _fetch_detail(ah_url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
     ah_books: list[dict[str, Any]] = []
     detail_fetched = 0
-    if ah_page.get('ok'):
-        text = ah_page.get('html')
+    _ah_html = ah_page.get('html')
+    if ah_page.get('ok') and isinstance(_ah_html, str):
+        text = _ah_html
         # 注意：change.php 链接在 <tr onclick="...window.location='...'"> 的属性里，
         # 不在行内文本中。必须连 <tr ...> 标签一起抓，否则拿不到任何 pid。
         for row in re.findall(r'<tr([^>]*)>([\s\S]*?)</tr>', text, re.IGNORECASE):
@@ -1358,8 +1461,9 @@ def scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) ->
     ou_page = _fetch_detail(ou_url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)
     ou_books: list[dict[str, Any]] = []
     ou_reason = ''
-    if ou_page.get('ok'):
-        text = ou_page.get('html')
+    _ou_html = ou_page.get('html')
+    if ou_page.get('ok') and isinstance(_ou_html, str):
+        text = _ou_html
         rows = re.findall(r'<tr[^>]*class="[^"]*jsContentItem[^"]*"[^>]*>([\s\S]*?)</tr>', text, re.IGNORECASE)
         for row in rows:
             name_m = re.search(r'<td class="width16"><a>([^<]*)</a>', row)
@@ -1762,7 +1866,8 @@ def parse_jczq_score_odds(html: Any, match_id: Any) -> dict[str, Any]:
         out['stage'] = 'orderid_not_found'
         return out
     out['orderid'] = orderid
-    slot = data.get(orderid) if isinstance(data.get(orderid), dict) else {}
+    _slot_raw = data.get(orderid)
+    slot: dict[str, Any] = _slot_raw if isinstance(_slot_raw, dict) else {}
     score_block = ((slot.get('OddsList') or {}).get('SportteryScore') or {})
     if not isinstance(score_block, dict) or not score_block:
         out['stage'] = 'sporttery_score_missing'
@@ -1778,14 +1883,6 @@ def parse_jczq_score_odds(html: Any, match_id: Any) -> dict[str, Any]:
     if not out['available']:
         out['stage'] = f'incomplete_{len(odds)}_of_31'
     return out
-    """一个值算不算「有内容」。空串/空容器/None 都算没有。"""
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, dict, set)):
-        return bool(value)
-    return True
 
 
 # apply_mobile_books_lines 要搬的字段：三块水位 + 它们的来源与水位值。
@@ -1813,23 +1910,76 @@ def _is_filled(value: Any) -> bool:
 def seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:
     """把盘口包放进 record['mobile_ah_ou_books']，供 apply_mobile_books_lines 读取。
 
-    以前用 setdefault：先挂上的空壳（available=False）会把后来真正的数据挡在外面，
-    于是 seed 之后再 apply 仍然什么都没有。现在改成按字段合并，有值的覆盖空值。
+    两个包在同一个键上形状不同，必须都留住：
+      * books 包（scrape_okooo_mobile_ah_ou_books）：asian_handicap 是
+        {'rows': [...], 'companies': [{name, pid, start, latest, changes, ...}]}
+      * six 包（scrape_okooo_mobile_six_markets）：asian_handicap 是标量 -0.5
+    以前直接 dict.update，标量把公司明细整块覆盖掉，刚抓到的 change.php 时间线就没了。
+    现在撞到「一边 dict、一边标量」时：明细留在原键，标量另存为
+    asian_handicap_line（apply_mobile_books_lines 需要这个数）。
+    历史用 setdefault，先挂上的空壳会把真数据挡在外面，这里也一并按字段合并。
     """
     if not isinstance(record, dict):
         return {'available': False}
     incoming = pack if isinstance(pack, dict) else {}
     existing = record.get('mobile_ah_ou_books')
     if not isinstance(existing, dict):
-        record['mobile_ah_ou_books'] = dict(incoming) if incoming else {'available': False}
-        return record['mobile_ah_ou_books']
-    if incoming:
-        merged = dict(existing)
-        for key, value in incoming.items():
-            if _is_filled(value) or key not in merged:
-                merged[key] = value
+        merged = dict(incoming) if incoming else {'available': False}
+        _lift_scalar_ah(merged)
         record['mobile_ah_ou_books'] = merged
-    return record['mobile_ah_ou_books']
+        return merged
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key == 'asian_handicap':
+            _merge_ah_slot(merged, value)
+            continue
+        if _is_filled(value) or key not in merged:
+            merged[key] = value
+    _lift_scalar_ah(merged)
+    record['mobile_ah_ou_books'] = merged
+    return merged
+
+
+def _merge_ah_slot(target: dict[str, Any], value: Any) -> None:
+    """asian_handicap 这个键可能是明细 dict（books 包）或标量（six 包）。
+
+    明细 dict 留在 asian_handicap；标量写 asian_handicap_line。
+    两者同时到达时都保留，谁也不覆盖谁。
+    """
+    if isinstance(value, dict):
+        current = target.get('asian_handicap')
+        if isinstance(current, dict):
+            merged = dict(current)
+            for k, v in value.items():
+                if _is_filled(v) or k not in merged:
+                    merged[k] = v
+            target['asian_handicap'] = merged
+        else:
+            # 已存的标量先搬去 asian_handicap_line，再把明细放回主键。
+            if current is not None:
+                target.setdefault('asian_handicap_line', current)
+            target['asian_handicap'] = dict(value)
+        return
+    if value is None:
+        return
+    if isinstance(target.get('asian_handicap'), dict):
+        target['asian_handicap_line'] = value
+    else:
+        target['asian_handicap'] = value
+
+
+def _lift_scalar_ah(target: dict[str, Any]) -> None:
+    """把 asian_handicap_line 里的标量同步到记录可直接读的位置。
+
+    只补 asian_handicap_line，不动 asian_handicap（那是明细 dict）。
+    """
+    if isinstance(target.get('asian_handicap'), dict) and target.get('asian_handicap_line') is None:
+        row = (target['asian_handicap'].get('rows') or [{}])
+        first = row[0] if row and isinstance(row[0], dict) else {}
+        _latest_raw = first.get('latest')
+        latest: dict[str, Any] = _latest_raw if isinstance(_latest_raw, dict) else {}
+        if latest.get('line') is not None:
+            target['asian_handicap_line'] = latest.get('line')
 
 
 def apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1853,6 +2003,20 @@ def apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | Non
             if not isinstance(source, dict):
                 continue
             value = source.get(key)
+            if key == 'asian_handicap' and isinstance(value, dict):
+                # 同一个键在 books 包里是公司明细 dict。水位本身要写标量，
+                # 明细另存 ah_detail —— 覆盖成一个 dict 会让下游算术直接崩。
+                row = (value.get('rows') or [{}])
+                first = row[0] if row and isinstance(row[0], dict) else {}
+                _latest_raw2 = first.get('latest')
+                latest2: dict[str, Any] = _latest_raw2 if isinstance(_latest_raw2, dict) else {}
+                scalar = value.get('asian_handicap')
+                if scalar is None:
+                    scalar = latest2.get('line')
+                picked.setdefault('ah_detail', value)
+                if scalar is not None and 'asian_handicap' not in picked:
+                    picked['asian_handicap'] = scalar
+                continue
             if _is_filled(value):
                 picked[key] = value
                 break
@@ -1884,14 +2048,33 @@ def detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, A
     return contradictions
 
 
+def water_is_present(value: Any) -> bool:
+    """水位字段算不算「有」。
+
+    0.0 是真实盘口（平手盘 / 大小球 0 线），必须算有；None、空串、空容器、
+    空 bool 之外的缺失都算没有。`not value` 会把 0.0 误判成缺失，
+    于是全齐的记录被报缺、被整场重抓、被研判闸门挡住。
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple, set)):
+        return bool(value)
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    return True
+
+
+_WATER_FIELDS = ('asian_handicap', 'ou_line', 'odds_1x2')
+
+
 def missing_six_market_waters(record: dict[str, Any]) -> list[str]:
     if not isinstance(record, dict):
         return ['invalid_record']
-    missing = []
-    for key in ('asian_handicap', 'ou_line', 'odds_1x2'):
-        if not record.get(key):
-            missing.append(key)
-    return missing
+    return [key for key in _WATER_FIELDS if not water_is_present(record.get(key))]
 
 
 def finish_match_water_scrape(record: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:

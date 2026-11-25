@@ -56,18 +56,30 @@ def attach_500_shuju_to_rec(rec: dict[str, Any], force: bool = False) -> dict[st
     return pack
 
 
+def _line_present(value: Any) -> bool:
+    """水位/盘口线算不算「有」。0.0 是真实盘口（平手盘），算有。
+
+    None / 空串 / 空容器才算缺。判「有」绝不能用 `not value`。
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple, set)):
+        return bool(value)
+    return True
+
+
 def _local_water_gaps(rec: Any) -> list[str]:
     """本地重算水位缺口（与 okooo_mobile_cs.missing_six_market_waters 同规则）。
 
     这里不 import 那个模块：odds_fallback 被 app 在抓取链路里早早导入，
-    反向依赖会绕成环。规则很短，就地实现并保持同步。
+    反向依赖会绕成环。规则很短，就地实现并保持同步——
+    **判「有」不能用 `not value`**：0.0 是平手盘/大小球0线这种真实盘口。
     """
     if not isinstance(rec, dict):
         return ['invalid_record']
-    return [
-        key for key in ('asian_handicap', 'ou_line', 'odds_1x2')
-        if not rec.get(key)
-    ]
+    return [key for key in ('asian_handicap', 'ou_line', 'odds_1x2') if not _line_present(rec.get(key))]
 
 
 def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any = None) -> dict[str, Any]:
@@ -113,12 +125,23 @@ def ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any =
     mobile_channel = str(rec.get('correct_score_channel') or '').lower()
     mobile_entered = bool(cs_books_n and mobile_channel in {'mobile', 'desktop_cs', 'okooo_cs'})
 
-    fallback_500 = facts.get('fallback_500_fenxi') if isinstance(facts.get('fallback_500_fenxi'), dict) else {}
+    _fb_raw = facts.get('fallback_500_fenxi')
+    fallback_500: dict[str, Any] = _fb_raw if isinstance(_fb_raw, dict) else {}
     filled_from_500: list[str] = []
     if isinstance(fallback_500, dict) and fallback_500.get('available'):
+        # 500 只在「本地确实没有」时补。`not rec.get(slot)` 会把平手盘 0.0
+        # 当成缺，从而用 500 的数字覆盖真实的 0 线。
+        _slot_keys = {
+            'ah_line': ('ah_line', 'asian_handicap'),
+            'ou_line': ('ou_line',),
+            'euro_1x2': ('odds_1x2',),
+        }
         for slot in ('ah_line', 'ou_line', 'euro_1x2'):
-            if fallback_500.get(slot) and not rec.get(slot):
-                filled_from_500.append(slot)
+            if not fallback_500.get(slot):
+                continue
+            if any(_line_present(rec.get(k)) for k in _slot_keys[slot]):
+                continue
+            filled_from_500.append(slot)
 
     kept_mobile: list[str] = []
     for slot, key in (('asian_handicap', 'asian_handicap'), ('ou_line', 'ou_line'), ('odds_1x2', 'odds_1x2')):

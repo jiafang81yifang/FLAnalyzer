@@ -73,15 +73,18 @@ def apply_six_cs_settlement_v2_to_rec(rec: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(rec, dict):
         return {'available': False, 'reason': 'invalid_rec', 'block_reason': 'invalid_rec'}
     ou_line = rec.get('ou_line')
-    asian_handicap = rec.get('asian_handicap') or rec.get('ah_line')
+    # 平手盘 ah=0.0 是真实盘口：`or` 会让它落到 ah_line 甚至 None。
+    # 规则：数值线只要 is not None 就算有；None/空串/空容器才算缺。
+    _ah = rec.get('asian_handicap')
+    asian_handicap = _ah if _ah is not None else rec.get('ah_line')
     cs_books = rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg')
     cs_available = bool(isinstance(cs_books, dict) and cs_books) or bool(
         isinstance(rec.get('odds_correct_score'), dict) and rec.get('odds_correct_score')
     )
     missing = []
-    if ou_line in (None, ''):
+    if ou_line is None or (isinstance(ou_line, str) and not ou_line.strip()) or isinstance(ou_line, (dict, list)):
         missing.append('ou_line')
-    if asian_handicap in (None, ''):
+    if asian_handicap is None or (isinstance(asian_handicap, str) and not asian_handicap.strip()):
         missing.append('asian_handicap')
     if not cs_available:
         missing.append('correct_score')

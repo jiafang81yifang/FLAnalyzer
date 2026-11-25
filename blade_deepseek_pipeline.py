@@ -188,6 +188,17 @@ def _poisson_score_probs(lam_home: float, lam_away: float, max_goals: int = 10) 
     return out
 
 
+def _line_or_none(primary: Any, secondary: Any) -> Any:
+    """盘口线取值：primary 只要 is not None 就用（0.0 是平手盘），否则用 secondary。
+
+    不能用 `primary or secondary`：平手盘 ah=0.0 会被当成「没有」而落到另一个键，
+    甚至落到 None，行情分析就看不到真实的 0 线。
+    """
+    if primary is not None:
+        return primary
+    return secondary
+
+
 class DeepSeekAnalyzer:
     """Deterministic analyzer/formatter surface used by app_v84_hermes."""
 
@@ -237,7 +248,7 @@ class DeepSeekAnalyzer:
             'available': True,
             'first_score': _norm_score(first_score),
             'second_score': _norm_score(second_score),
-            'asian_handicap': d.get('asian_handicap') or d.get('ah_line'),
+            'asian_handicap': _line_or_none(d.get('asian_handicap'), d.get('ah_line')),
             'ou_line': d.get('ou_line'),
             'jc_handicap': d.get('jc_handicap'),
             'odds_1x2': d.get('odds_1x2') or {},

@@ -36,6 +36,17 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _line_or_none(primary: Any, secondary: Any) -> Any:
+    """盘口线取值：primary 只要 is not None 就用（0.0 = 平手盘是真实值）。
+
+    `primary or secondary` 会把平手盘 0.0 当成缺失，于是特征退化成默认 0.0，
+    和真实的平手盘再也分不开。
+    """
+    if primary is not None:
+        return primary
+    return secondary
+
+
 def calc_bivariate_poisson_matrix(
     lam_h: Any,
     lam_a: Any,
@@ -97,7 +108,7 @@ def _extract_training_rows(history: Any) -> list[dict[str, Any]]:
             'lam_h': _safe_float(rec.get('lam_h') or rec.get('lambda_home'), 1.2),
             'lam_a': _safe_float(rec.get('lam_a') or rec.get('lambda_away'), 0.9),
             'ou_line': _safe_float(rec.get('ou_line'), 2.5),
-            'ah_line': _safe_float(rec.get('asian_handicap') or rec.get('ah_line'), 0.0),
+            'ah_line': _safe_float(_line_or_none(rec.get('asian_handicap'), rec.get('ah_line')), 0.0),
             'home_goals': h,
             'away_goals': a,
         })
@@ -159,7 +170,7 @@ def _predict_lambdas_from_bundle(bundle: dict[str, Any], info: dict[str, Any]) -
         _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2)),
         _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)),
         _safe_float(info.get('ou_line'), 2.5),
-        _safe_float(info.get('asian_handicap') or info.get('ah_line'), 0.0),
+        _safe_float(_line_or_none(info.get('asian_handicap'), info.get('ah_line')), 0.0),
     ]
     if bundle.get('model_type') == 'gradient_boosting' and bundle.get('home_model') and bundle.get('away_model'):
         try:

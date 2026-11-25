@@ -1052,6 +1052,295 @@ def test_gate_books_n_matches_the_key_it_read() -> None:
     assert gate['ready'] is True
 
 
+def test_jc_scores_land_in_correct_score_jc_official() -> None:
+    """Item 1: a pack carrying only jc_score_odds must still fill jc_official."""
+    jc = {option: 7.0 + idx for idx, option in enumerate(pipe_mod.JCZQ_ALL_OPTIONS)}
+    assert len(jc) == 31
+    rec: dict[str, Any] = {}
+    app._stamp_more_play_scores(rec, {'jc_score_odds': jc})
+    assert len(rec['correct_score_jc_official']) == 31
+    assert len(rec['jc_score_odds']) == 31
+    # a bare {score: odd} map works too (the reported failure mode)
+    bare: dict[str, Any] = {}
+    okooo._okooo_apply_jc_score_fill(bare, jc)
+    assert len(bare['correct_score_jc_official']) == 31
+    # a full pack still takes the explicit key
+    packed: dict[str, Any] = {}
+    okooo._okooo_apply_jc_score_fill(packed, {'jc_score_odds': {'1-0': 9.0}})
+    assert packed['correct_score_jc_official'] == {'1-0': 9.0}
+
+
+def test_heat_ranking_tolerates_bad_source_and_channel() -> None:
+    """Item 2: 'desktop' in None raised TypeError."""
+    for source in (None, 5, '', object()):
+        heat = okooo.build_score_market_heat_ranking({'1:0': 8.0}, heat_source=source)
+        assert heat['ranking']
+    for channel in (None, 5, ''):
+        assert okooo.build_score_market_heat_ranking({'1:0': 8.0}, channel=channel)['ranking']
+
+
+def test_resolve_direction_tolerates_non_iterable() -> None:
+    """Item 3: int/float/bool input must degrade, never raise."""
+    arb_mod = importlib.import_module('convergence_arbitrator')
+    for bad in (3, 3.5, True, False, 0, None):
+        result = arb_mod.resolve_direction(bad)
+        assert isinstance(result, tuple) and len(result) == 2, (bad, result)
+        assert result[0] == ''
+
+
+def test_pool31_views_are_exactly_the_jc_options() -> None:
+    """Item 4: the view's 31 must be the JC 31, not 28 + 4-3/3-4/5-3."""
+    views = app.build_score_pool31_views([], lam_home=1.45, lam_away=1.1)
+    assert views['pool_size'] == 31
+    assert set(views['options']) == set(pipe_mod.JCZQ_ALL_OPTIONS)
+    # the raw cells that used to steal slots are gone
+    scores = {row['比分选项'] for row in views['theory_desc']}
+    assert not ({'4-3', '3-4', '5-3'} & scores)
+    for bucket in ('胜其它', '平其它', '负其它'):
+        assert bucket in scores
+
+
+def test_pool31_views_audit_complete_with_jc_odds() -> None:
+    """Item 4: with real JC odds the view-backed audit is complete and the
+    log line must take the full branch, claiming exactly pool_size."""
+    jc = okooo.parse_jczq_score_odds(
+        okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata.html').read_bytes()), '1347780',
+    )['odds']
+    views = app.build_score_pool31_views([], lam_home=1.45, lam_away=1.1, jc_score_odds=jc)
+    audit = pipe_mod.DeepSeekAnalyzer.audit_theo_mkt_31_rows(views['rows'])
+    assert audit['complete'] is True, audit['missing']
+    line = (
+        f"市场/理论/双序对齐={views['pool_size']}项（未齐故不作满额结论）"
+        if not audit['complete'] else f"市场/理论/双序对齐={views['pool_size']}项"
+    )
+    assert '未齐' not in line
+    assert '=31项' in line
+
+
+def test_all_three_producers_emit_exactly_jc31_summing_to_one() -> None:
+    """Item 4b: every "31" producer must mean the same 31 options, Σtheory≈1."""
+    lam_h, lam_a = 1.45, 1.1
+    # 1) the view builder
+    views = app.build_score_pool31_views([], lam_home=lam_h, lam_away=lam_a)
+    assert set(views['options']) == set(pipe_mod.JCZQ_ALL_OPTIONS)
+    assert views['pool_size'] == 31
+    # 2) the enrichment list that feeds pool31_enriched / chart_pool_enriched
+    enriched = app.build_31pool_enriched_list({'lam_h': lam_h, 'lam_a': lam_a})
+    assert {row['score'] for row in enriched} == set(pipe_mod.JCZQ_ALL_OPTIONS)
+    assert len(enriched) == 31
+    assert abs(sum(row['theory_prob'] for row in enriched) - 1.0) < 1e-6
+    # 3) the audited pack
+    pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=lam_h, lam_away=lam_a, jc_score_odds={o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS},
+    )
+    assert {row['score'] for row in pack['rows']} == set(pipe_mod.JCZQ_ALL_OPTIONS)
+    assert len(pack['rows']) == 31
+
+
+def test_31pool_enriched_list_no_longer_truncates_at_six_goals() -> None:
+    """The old max_goals=6 lost 5-0/5-1/5-2 entirely."""
+    rows = app.build_31pool_enriched_list({'lam_h': 2.4, 'lam_a': 0.6})
+    scores = {row['score'] for row in rows}
+    assert {'5-0', '5-1', '5-2'} <= scores
+    assert len(rows) == 31
+
+
+def test_inline_detail_key_list_matches_shared_constant() -> None:
+    """Item 5: one key list, so the jc keys can never be dropped again."""
+    for key in ('jc_score_odds', 'jc_score_source', 'jc_score_orderid'):
+        assert key in app._OKOOO_DETAIL_KEYS
+
+
+def test_complete_jc31_skips_the_500_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Item 6: 31 JC odds are a legal market source, so no 500 fallback."""
+    calls: list[str] = []
+
+    def fake_fallback(rec, m_obj=None, **kwargs):
+        calls.append('500')
+        return {'available': False, 'source': 'fallback_existing_odds'}
+
+    fb_mod = importlib.import_module('odds_fallback')
+    monkeypatch.setattr(fb_mod, 'apply_fallback_cs_to_rec', fake_fallback)
+    # 整个函数会真的去抓 CS/六盘口；这里全部短路成「抓不到」，只验证兜底决策。
+    monkeypatch.setattr(okooo, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(okooo, 'scrape_okooo_mobile_six_markets', lambda *a, **k: {'available': False, 'missing': []})
+    monkeypatch.setattr(app, 'scrape_okooo_detail', lambda *a, **k: {'okooo_match_id': '1347776'})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', lambda *a, **k: {'available': False, 'missing': []})
+    monkeypatch.setattr(app, '_attach_mobile_exchange_pnl', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_attach_mobile_lineup', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_attach_mobile_ah_ou_books', lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, 'attach_okooo_ids_to_matches', lambda rows: rows)
+
+    jc = {o: 9.0 for o in pipe_mod.JCZQ_ALL_OPTIONS}
+    rec = {'okooo_match_id': '1347776', 'match': 'H vs A', 'jc_score_odds': jc}
+    result = app.enrich_history_okooo_cs_facts(dict(rec), cn_name='H vs A')
+    assert result is False
+    assert calls == [], '500 fallback must not run when jc31 is complete'
+
+    # without jc31 (and no CS) the fallback path is allowed to run
+    calls.clear()
+    app.enrich_history_okooo_cs_facts({'okooo_match_id': '1347776', 'match': 'H vs A'}, cn_name='H vs A')
+    assert calls == ['500'], '500 fallback must still run with no CS source at all'
+
+
+def test_falsy_zero_ah_is_present_everywhere() -> None:
+    """Item 7: ah=0.0 (平手盘) was dropped by `not`/`or` in seven places."""
+    rec = {
+        'asian_handicap': 0.0, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+        'correct_score_page_avg': {'1:0': 8.0}, 'correct_score_channel': 'okooo_cs',
+        'ah_line': 0.55,  # a stale second key must not win over the real 0.0
+    }
+    assert okooo.ah_text_to_line('平手') == 0.0
+    # 1 & 2: the two gap functions
+    assert okooo.missing_six_market_waters(rec) == []
+    fallback_mod = importlib.import_module('odds_fallback')
+    assert fallback_mod._local_water_gaps(rec) == []
+    # 3: settlement keeps the real line
+    settle = math_mod.apply_six_cs_settlement_v2_to_rec(dict(rec))
+    assert settle['available'] is True
+    assert settle['asian_handicap'] == 0.0
+    # 4: cross-market board
+    board = pipe_mod.DeepSeekAnalyzer.build_cross_market_board(rec)
+    assert board['asian_handicap'] == 0.0
+    # 6: the gate
+    gate = fallback_mod.ensure_dual_source_before_judgment(dict(rec))
+    assert gate['ready'] is True
+    assert 'asian_handicap' in gate['kept_mobile']
+    # 7: 500 must not overwrite a real 平手盘
+    rec500 = dict(rec)
+    rec500['dual_source_facts'] = {'fallback_500_fenxi': {'available': True, 'ah_line': 0.5}}
+    assert 'ah_line' not in fallback_mod.ensure_dual_source_before_judgment(rec500)['filled_from_500']
+    # negatives stay gaps
+    for bad in (None, '', {}):
+        assert 'asian_handicap' in okooo.missing_six_market_waters(
+            {'asian_handicap': bad, 'ou_line': 2.5, 'odds_1x2': {'h': 1}}
+        )
+
+
+def test_falsy_zero_ou_line_is_present() -> None:
+    """Item 7: OU 0.0 counts as present for gap purposes (downstream judges plausibility)."""
+    assert okooo.missing_six_market_waters(
+        {'asian_handicap': 0.0, 'ou_line': 0.0, 'odds_1x2': {'h': 1}}
+    ) == []
+
+
+def test_falsy_zero_without_cs_blames_cs_only() -> None:
+    """Item 7: a 0.0 rec with no CS is unready for the CS reason, never water."""
+    fallback_mod = importlib.import_module('odds_fallback')
+    gate = fallback_mod.ensure_dual_source_before_judgment({
+        'asian_handicap': 0.0, 'ou_line': 2.5,
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0},
+    })
+    assert gate['ready'] is False
+    assert '水位缺' not in gate['reason']
+    assert '手机市均' in gate['reason']
+
+
+def test_chart_uses_jc31_when_market_avg_blocked() -> None:
+    """Item 8: the chart's documented market source includes 竞彩 odds."""
+    jc = okooo.parse_jczq_score_odds(
+        okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata.html').read_bytes()), '1347780',
+    )['odds']
+    text = app.generate_31pool_theory_vs_market_chart({
+        'lam_h': 1.45, 'lam_a': 1.1,
+        'odds_correct_score': dict(jc),
+        'market_source_note': '竞彩31比分',
+    })
+    verdict = app.chart31_pool_verdict(text)
+    assert verdict['status'] == 'full'
+    assert verdict['rows'] == 31
+    assert '市场来源: 竞彩31比分' in text
+
+
+def test_chart_stays_honest_with_no_market_at_all() -> None:
+    """Item 8: with neither 市均 nor jc, it must not claim a full market."""
+    text = app.generate_31pool_theory_vs_market_chart({'lam_h': 1.45, 'lam_a': 1.1, 'odds_correct_score': {}})
+    assert app.chart31_pool_verdict(text)['status'] != 'full'
+
+
+def test_jczq_page_cache_is_ttl_bounded_and_honest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Item 9: one page serves many matches, but a hit must say it was a hit."""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache'))
+    html = (FIXTURES / 'okooo_jczq_oddsdata.html').read_bytes()
+    calls: list[str] = []
+
+    def fake_fetch(url, proxies=None, session=None, retries=1, timeout=15):
+        calls.append(url)
+        return {
+            'ok': True, 'url': url, 'status': 200, 'bytes': len(html),
+            'title': 'x', 'blocked': False, 'error': '',
+            'html': okooo.decode_okooo_html(html),
+        }
+
+    monkeypatch.setattr(okooo, '_fetch_detail', fake_fetch)
+    monkeypatch.setattr(okooo, '_JCZQ_PAGE_CACHE', {})
+    monkeypatch.setenv('OKOOO_JCZQ_CACHE_TTL', '90')
+
+    first = okooo.scrape_okooo_mobile_six_markets('1347780')
+    report1 = first['source_report']['jczq_scores']
+    assert report1['cached'] is False
+    assert len(first.get('jc_score_odds') or {}) == 31
+    assert calls, 'first call must actually fetch'
+
+    before = len([u for u in calls if u.endswith('/jczq/')])
+    second = okooo.scrape_okooo_mobile_six_markets('1347776')
+    report2 = second['source_report']['jczq_scores']
+    assert report2['cached'] is True, 'second match must report the cache hit'
+    assert report2['fetched_at'], 'a cached hit must carry the original fetch time'
+    after = len([u for u in calls if u.endswith('/jczq/')])
+    assert after == before, 'a cache hit must not re-download the jczq page'
+    # per-match parsing still happens fresh: different row, different orderid
+    assert report2['orderid'] and report2['orderid'] != report1['orderid']
+    assert len(second.get('jc_score_odds') or {}) == 31
+
+    # TTL 0 disables the cache entirely
+    monkeypatch.setenv('OKOOO_JCZQ_CACHE_TTL', '0')
+    okooo._JCZQ_PAGE_CACHE.clear()
+    third = okooo.scrape_okooo_mobile_six_markets('1347780')
+    assert third['source_report']['jczq_scores']['cached'] is False
+
+
+def test_seed_keeps_ah_company_detail_and_the_scalar_line() -> None:
+    """Item 11: the six pack's scalar asian_handicap used to destroy the books pack's
+    company list and change.php timelines on the same key."""
+    books = {
+        'available': True,
+        'asian_handicap': {
+            'rows': [{'name': '平均', 'latest': {'line': -0.5}}],
+            'companies': [{
+                'name': '澳**票', 'pid': '84',
+                'start': {'line': -0.75}, 'latest': {'line': -0.5},
+                'changes': [{'line': -0.5, 'note': '赛前33小时9分'}, {'line': -0.75}],
+                'detail_url': 'https://m.okooo.com/match/change.php?mid=1347776&pid=84&Type=Handicap',
+            }],
+        },
+        'over_under': {'companies': [{'name': 'Pinnacle'}]},
+    }
+    six = {'available': True, 'asian_handicap': -0.5, 'ou_line': 2.5,
+           'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 4.0}}
+    rec: dict[str, Any] = {'mobile_ah_ou_books': books}
+    okooo.seed_mobile_ah_ou_books(rec, six)
+    merged = rec['mobile_ah_ou_books']
+    # the scalar line survives, under a key that cannot collide with the detail
+    assert merged['asian_handicap_line'] == -0.5
+    # and so does the per-company detail, timelines included
+    companies = merged['asian_handicap']['companies']
+    assert [c['name'] for c in companies] == ['澳**票']
+    assert len(companies[0]['changes']) == 2
+    assert 'change.php' in companies[0]['detail_url']
+    assert merged['over_under']['companies'][0]['name'] == 'Pinnacle'
+
+    # apply must write a SCALAR to record['asian_handicap'] and keep detail apart
+    okooo.apply_mobile_books_lines(rec)
+    assert rec['asian_handicap'] == -0.5
+    assert not isinstance(rec['asian_handicap'], dict)
+    assert rec['ou_line'] == 2.5
+    assert [c['name'] for c in rec['ah_detail']['companies']] == ['澳**票']
+    assert okooo.missing_six_market_waters(rec) == []
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}
