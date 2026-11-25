@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 1e3f16f = 13项: jc31落盘/平手盘0.0/31池同集/图表jc兜底/jczq缓存/AH明细(含ah_detail合并白名单)/seed调用点/500兜底顺序
-$PinCommit = '1e3f16f273c313434e3f456ddd60511f78733bcf'
+# 4311dc3 = 31池24/31补齐(jc逐键并集) + 缓存版本化 + TG三表(31对比/市短/市热) + 闸门同包 + D5/D6/D7
+$PinCommit = '4311dc381b4aacc8faa60605480d1079225873cf'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
