@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# d170483 = 六项实盘日志缺口 + 手机澳客水位真源(亚指/大小球/胜平负/盈亏) + GBK/UTF-8 混合解码
-$PinCommit = 'd1704832fdaad4c306aa9f186530c3e86d13ef0b'
+# 8679929 = 实盘日志六项 + 手机澳客水位真源 + 三块水位完整写回(odds_1x2 曾漏搬)
+$PinCommit = '86799297f0aabff01e90b1d161f70996e2123390'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
