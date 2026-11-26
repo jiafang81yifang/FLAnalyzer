@@ -2104,6 +2104,174 @@ def test_rendered_jc_column_is_devigged_not_single_house() -> None:
     assert abs(sum(jc_col) - 100.0) < 0.5, sum(jc_col)
 
 
+JC31_NINE = ['5-0', '5-1', '5-2', '0-5', '1-5', '2-5', '胜其它', '平其它', '负其它']
+
+
+def _record_shape(mid: str) -> dict[str, Any]:
+    """A record shaped the way `scrape_okooo_mobile_cs_zuizhi` actually builds it.
+
+    D13 happened because the test harness fed `page['page_avg']` (the raw 25-key
+    page) while production stores the ALREADY-MERGED 31-key vector in
+    `correct_score_page_avg` plus a provenance map. Nothing in the raw odds
+    reveals that 9 of those 31 came from 竞彩, so without `cs31_provenance`
+    every row is labelled 市均.
+    """
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes())
+    jc = okooo.parse_jczq_score_odds(text, mid)['odds']
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(fh.read()))
+    merged = okooo.merge_cs31(page['page_avg'], page['books_avg'], jc)
+    return {
+        # exactly what the scraper stores: the merged 31-key vector
+        'correct_score_page_avg': merged['scores'],
+        'correct_score_books_avg': page['books_avg'],
+        'correct_score_books_n': page['books_n'],
+        'correct_score_jc_official': jc,
+        'jc_score_odds': jc,
+        'cs31_provenance': merged['provenance'],
+        'cs31_extras': merged['extras'],
+        'cs31_counts': merged['counts'],
+        'cs31_complete': merged['complete'],
+    }
+
+
+def _pack_from_record(mid: str = '1347776') -> Any:
+    """The production route: record -> _collect_legal_cs_market_odds -> pack."""
+    rec = _record_shape(mid)
+    extra = pipe_mod.DeepSeekAnalyzer._collect_legal_cs_market_odds(rec, [])
+    return pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+        [], lam_home=1.45, lam_away=1.10,
+        jc_score_odds=rec['jc_score_odds'],
+        extra_market_odds=extra,
+        market_provenance=rec.get('cs31_provenance'),
+    )
+
+
+def test_pack_from_merged_record_keeps_the_22_9_split() -> None:
+    """D13a: on the merged record every row was labelled 市均 (31+0).
+
+    Revert tested: dropping `market_provenance=` from the pack call -> counts
+    become {market_avg_odds: 31} and this assertion fails.
+    """
+    for mid in ('1347776', '1347778', '1347775', '1347780'):
+        pack = _pack_from_record(mid)
+        counts = pack['cs31_counts']
+        assert counts.get('desktop_cs') == 22, (mid, counts)
+        assert counts.get('jc_official') == 9, (mid, counts)
+        labels = {r['score']: r['market_source'] for r in pack['rows']}
+        for option in JC31_NINE:
+            assert labels[option] == 'jc_official', (mid, option, labels[option])
+            row = next(r for r in pack['rows'] if r['score'] == option)
+            assert row['delta_same_source'] is True, (mid, option)
+
+
+def test_cs31_provenance_survives_the_merge_into_the_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """D13b: `cs31_*` were emitted by the scraper but missing from the allow-list.
+
+    Without them the record cannot carry the split forward, so every later
+    rebuild is back to 31+0. Revert tested: removing the four `cs31_*` names
+    from _OKOOO_DETAIL_KEYS -> none of them reach the record.
+    """
+    merged = _record_shape('1347776')
+    pack = {
+        'cs31_provenance': merged['cs31_provenance'],
+        'cs31_counts': merged['cs31_counts'],
+        'cs31_extras': merged['cs31_extras'],
+        'cs31_complete': merged['cs31_complete'],
+    }
+    rec: dict[str, Any] = {}
+    app._merge_okooo_detail_into_rec(rec, pack)
+    for key in ('cs31_provenance', 'cs31_counts', 'cs31_extras', 'cs31_complete'):
+        assert key in rec, f'{key} was dropped by the merge allow-list'
+    assert rec['cs31_counts'] == {'desktop_cs': 22, 'jc_official': 9}
+
+
+def test_short_matrix_never_compares_jc_against_jc() -> None:
+    """D13c: a row whose market came from 竞彩 cannot be 市均 > 竞彩.
+
+    On the merged record 市短 returned 22 rows, 9 of them jc-vs-jc with a
+    nonzero gap produced purely by renormalisation noise.
+
+    On real data the 9 jc rows happen to come out with a *negative* gap (the
+    mixed vector halves them), so "no jc rows in the output" alone would pass
+    even with the guard removed — it would be a test that cannot fail. The
+    second half therefore feeds a jc row that DOES have a positive gap, which
+    is exactly the shape the buggy path produced.
+
+    Revert tested: removing the delta_same_source / jc-label skip ->
+    the constructed jc row appears in the matrix and this test fails.
+    """
+    for mid in ('1347776', '1347778', '1347775', '1347780'):
+        pack = _pack_from_record(mid)
+        matrix = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+        jc_rows = [
+            r for r in matrix['rows']
+            if str(r.get('source') or '') in ('jc_official', 'jc_score_odds')
+        ]
+        assert jc_rows == [], (mid, jc_rows)
+        assert len(matrix['rows']) == sum(matrix['counts'].values())
+
+    # a jc-sourced row with a real positive gap must still be excluded
+    synthetic = {
+        'rows': [
+            {'score': '1-0', 'market': 8.0, 'jc_odds_pct': 5.0,
+             'market_source': 'desktop_cs', 'delta_same_source': False},
+            {'score': '0-5', 'market': 7.0, 'jc_odds_pct': 2.0,
+             'market_source': 'jc_official', 'delta_same_source': True},
+        ],
+    }
+    matrix = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(synthetic)
+    scores = [r['score'] for r in matrix['rows']]
+    assert scores == ['1-0'], scores
+
+
+def test_merged_record_short_matrix_matches_the_raw_page_answer() -> None:
+    """D13: the merged record and the raw page must give ONE 市短 answer.
+
+    Raw page (25 keys + jc) has always given 13/11/14/11. The merged record gave
+    22/19/21/19 because the 31-key vector was normalised as if all 31 were 市均.
+    Renormalising the market vector over only the true 市均 keys fixes it.
+
+    Revert tested: removing the `_page_only` restriction -> 市短 goes back to
+    13/10/12/11 (the merged vector diluted over 31) and this fails.
+    """
+    expected = {'1347776': 13, '1347778': 11, '1347775': 14, '1347780': 11}
+    for mid, want in expected.items():
+        rec = _record_shape(mid)
+        with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as fh:
+            page = okooo._parse_cs_datatable(okooo.decode_okooo_html(fh.read()))
+        raw_pack = pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+            [], lam_home=1.45, lam_away=1.10,
+            jc_score_odds=rec['jc_score_odds'],
+            extra_market_odds=page['page_avg'],
+        )
+        raw_short = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(raw_pack)
+        merged_short = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(
+            _pack_from_record(mid))
+        assert len(merged_short['rows']) == want, (mid, len(merged_short['rows']))
+        assert len(raw_short['rows']) == len(merged_short['rows']), (
+            mid, len(raw_short['rows']), len(merged_short['rows']))
+        assert raw_short['counts'] == merged_short['counts'], (mid, raw_short['counts'])
+
+
+def test_merged_record_table_renders_22_9_and_keeps_the_extras() -> None:
+    """The user-visible deliverable: 汇总 reads desktop_cs=22 jc_official=9.
+
+    Revert tested: without provenance the 31 rows all render as desktop_cs and
+    the 汇总 line reads desktop_cs=31.
+    """
+    pack = _pack_from_record('1347776')
+    lines = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+    summary = next(ln for ln in lines if '汇总' in ln)
+    assert 'desktop_cs=22' in summary, summary
+    assert 'jc_official=9' in summary, summary
+    note = next((ln for ln in lines if '附注' in ln), '')
+    for extra in ('4-3', '3-4', '4-4'):
+        assert extra in note, (extra, note)
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}

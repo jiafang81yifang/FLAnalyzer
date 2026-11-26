@@ -348,6 +348,7 @@ class DeepSeekAnalyzer:
         p = pack if isinstance(pack, dict) else {}
         rows = []
         counts = {'胜': 0, '平': 0, '负': 0}
+        _jc_labels = {'jc_official', 'jc_score_odds', 'jc', '竞彩'}
         for row in (p.get('rows') or []):
             if not isinstance(row, dict):
                 continue
@@ -359,6 +360,10 @@ class DeepSeekAnalyzer:
             except (TypeError, ValueError):
                 continue
             if market_f is None or jc_f is None:
+                continue
+            # 市场本身就取自竞彩的行不能进市短：那是「竞彩 vs 竞彩」，
+            # 差值恒为 0，归一化的小数误差还会变成一条有正 gap 的假信号。
+            if row.get('delta_same_source') or str(row.get('market_source') or '') in _jc_labels:
                 continue
             gap = market_f - jc_f
             if gap <= 0:
@@ -507,9 +512,52 @@ class DeepSeekAnalyzer:
 
         _page_vec = _implied_vec(extra_odds)
         _jc_vec = _implied_vec(jc_odds)
+        # 合并页把 31 键放在同一个向量里，直接按 31 归一就把 9 个竞彩项的水
+        # 摊到了市均头上（市均份额整体被压低约 三分之一，市短随之少掉几行）。
+        # 有出处时先把竞彩那一路从市均向量里摘出去，只按真正的市均键归一。
+        _prov_raw0 = kwargs.get('market_provenance')
+        if isinstance(_prov_raw0, dict) and _prov_raw0:
+            _jc_keys = {
+                _norm_score(k) for k, v in _prov_raw0.items()
+                if str(v or '').strip() in ('jc_official', 'jc_score_odds', 'jc', '竞彩')
+            }
+            _page_only = {k: v for k, v in (extra_odds or {}).items() if _norm_score(k) not in _jc_keys}
+            if _page_only:
+                _page_vec = _implied_vec(_page_only)
+        # 生产记录里 `correct_score_page_avg` 已经是 merge_cs31 的 31 键合并结果，
+        # 那 9 个市均没有的选项就在里面，光看数值分不出来自哪一边。出处必须由
+        # 合并方给出的 `market_provenance`（{option: desktop_cs|jc_official}）覆盖，
+        # 否则 31 行全标 desktop_cs、市短还会拿竞彩去比竞彩。
+        _prov_raw = kwargs.get('market_provenance')
+        _prov: dict[str, str] = {}
+        if isinstance(_prov_raw, dict):
+            for score, src in _prov_raw.items():
+                key = _norm_score(score)
+                label = str(src or '').strip()
+                if key in _jc_set and label:
+                    _prov[key] = label
+        _JC_LABELS = {'jc_official', 'jc_score_odds', 'jc', '竞彩'}
+
+        def _prov_label(option: str) -> str:
+            return _prov.get(option, '')
+
+        def _prov_is_jc(option: str) -> bool:
+            return _prov_label(option) in _JC_LABELS
+
         _mix: dict[str, float] = {}
         _mix_of: dict[str, str] = {}
         for option in JCZQ_ALL_OPTIONS:
+            if _prov_is_jc(option):
+                # 出处说是竞彩，就用竞彩赔率那一路的值（两边同源时数值本来就相等，
+                # 但如果市均合并值与竞彩有微小出入，以出处为准）。
+                if option in _jc_vec:
+                    _mix[option] = _jc_vec[option]
+                elif option in _page_vec:
+                    _mix[option] = _page_vec[option]
+                else:
+                    continue
+                _mix_of[option] = 'jc_score_odds'
+                continue
             if option in _page_vec:
                 _mix[option] = _page_vec[option]
                 _mix_of[option] = str(kwargs.get('extra_market_source') or 'market_avg_odds')
@@ -566,6 +614,13 @@ class DeepSeekAnalyzer:
             row['market'] = market
             row['in_31'] = True
             row['formed'] = theory is not None and market is not None
+            # 市场取自竞彩时 Δ 恒为 0，是「同源」而不是「真的没偏差」。
+            # 出处缺失时退回原来的推断，保证老调用点行为不变。
+            if _prov:
+                row['market_source'] = _prov_label(option) or row.get('market_source') or ''
+                row['delta_same_source'] = _prov_is_jc(option)
+            else:
+                row['delta_same_source'] = row.get('market_source') == 'jc_score_odds'
             full_rows.append(row)
 
         # market 必须落在 100% 基准上再和 theory/jc 比。
@@ -607,6 +662,16 @@ class DeepSeekAnalyzer:
         market_sum = round(sum(float(r['market']) for r in full_rows if _f(r.get('market')) is not None), 4)
         theory_sum = round(sum(float(r['theory']) for r in full_rows if _f(r.get('theory')) is not None), 4)
         jc_pct_sum = round(sum(float(r['jc_odds_pct']) for r in full_rows if _f(r.get('jc_odds_pct')) is not None), 4)
+        # 逐键出处与计数一并带出：调用点要能把它写回记录，下一次重建才不会再
+        # 把 9 个竞彩项当成市均（同一场比赛，抓取时 22+9、重建时 31+0）。
+        _prov_out: dict[str, str] = {}
+        for row in full_rows:
+            label = str(row.get('market_source') or '')
+            if label:
+                _prov_out[str(row['score'])] = label
+        _counts_out: dict[str, int] = {}
+        for label in _prov_out.values():
+            _counts_out[label] = _counts_out.get(label, 0) + 1
         return {
             'available': bool(full_rows),
             'rows': full_rows,
@@ -618,7 +683,10 @@ class DeepSeekAnalyzer:
             'market_sum': market_sum,
             'theory_sum': theory_sum,
             'jc_pct_sum': jc_pct_sum,
+            'cs31_provenance': _prov_out,
+            'cs31_counts': _counts_out,
             'cs31_extras': _extras,
+            'cs31_complete': bool(full_rows) and all(r.get('formed') for r in full_rows),
             'system_prejudge': {},
             'home': str(kwargs.get('home') or ''),
             'away': str(kwargs.get('away') or ''),
