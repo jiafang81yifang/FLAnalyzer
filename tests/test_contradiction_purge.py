@@ -131,49 +131,103 @@ def test_ventropy_never_fills_secondary_from_another_tier_direction() -> None:
 
 BANNED_PICK_WORDS = ('首选', '次选', '双选', '强推', '推荐')
 
+# The ⚠️ block and the ★ line are the summary rows; the heading is included so a
+# regression that smuggles guidance into a heading is caught too.
+SUMMARY_PREFIXES = ('★', '💡', '⚠️', '-')
+
 
 def _summary_lines(body: str) -> list[str]:
-    """The summary rows: the ★ risk line and the ⚠️ block, plus the 💡 heading."""
+    """Summary rows only: the ★ risk line, the 💡 heading and the ⚠️ block."""
     kept = []
-    for line in body.splitlines():
-        if line.startswith(('★', '  ★', '💡', '⚠️', '  -')):
-            kept.append(line.strip())
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(SUMMARY_PREFIXES):
+            kept.append(line)
     return kept
 
 
-def test_summary_lines_carry_no_selection_guidance(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ruling 1: keep the wording, purely as a risk statement.
+def _star_line(body: str) -> str:
+    """The single ★ risk line; empty when the report rendered none."""
+    for line in _summary_lines(body):
+        if line.startswith('★'):
+            return line
+    return ''
 
-    Every summary line must be free of 首选 / 次选 / 双选 / 强推 / 推荐 — no
-    pick guidance of any kind. "不做推荐" is the one allowed use of 推荐 because
-    it *withholds* a recommendation; it is excluded from the banned scan by
-    checking the negation first.
-    """
-    app = _load_app()
+
+def _render(monkeypatch: pytest.MonkeyPatch, app, pending: dict) -> str:
     sent: list[str] = []
     monkeypatch.setattr(app, 'send_tg', lambda text, parse_mode=None: sent.append(str(text)))
-    monkeypatch.setattr(app, 'load_json', lambda path: {
-        # wide gap -> the ">3pp" branch
-        'm1': {
-            'status': 'pending', 'match': 'A vs B', 'predicted_score': '2-0',
-            'second_score': '3-0', 'confidence': '中', 'dti': 0.1,
-            'top15_scores': [['2-0', {'prob': 0.10}], ['3-0', {'prob': 0.09}]],
-        },
-        # narrow gap -> the "分歧过大" branch
-        'm2': {
-            'status': 'pending', 'match': 'C vs D', 'predicted_score': '1-1',
-            'second_score': '0-0', 'confidence': '低', 'dti': 0.2,
-            'top15_scores': [['1-1', {'prob': 0.09}], ['0-0', {'prob': 0.088}]],
-        },
-    })
+    monkeypatch.setattr(app, 'load_json', lambda path: pending)
     app.compare_matches()
     assert sent, 'report went silent — the risk warning must still be printed'
-    body = sent[0]
+    return sent[0]
+
+
+def _match(match: str, first_prob: float, second_prob: float) -> dict:
+    """A pending record whose top-2 gap is (first_prob - second_prob) * 100 pp."""
+    return {
+        'status': 'pending', 'match': match, 'predicted_score': '2-0',
+        'second_score': '3-0', 'confidence': '中', 'dti': 0.1,
+        'top15_scores': [['2-0', {'prob': first_prob}], ['3-0', {'prob': second_prob}]],
+    }
+
+
+# Hand-computed gaps: 0.200/0.090 -> 20.0-9.0 = 11.0 pp  (> 3, the wide branch)
+#                     0.090/0.088 ->  9.0-8.8 =  0.2 pp  (< 3, the narrow branch)
+WIDE_GAP_PP = 11.0
+NARROW_GAP_PP = 0.2
+
+# `compare_matches` picks its ★ wording from `widest[0]['gap']` alone, so one
+# report can only ever render ONE of the two forms. Both are covered here by
+# rendering twice — that is the only way to execute both branches.
+BRANCH_FIXTURES = {
+    'wide': {
+        # widest gap 11.0 -> the `if widest[0]['gap'] > 3` branch
+        'm_wide': _match('A vs B', 0.200, 0.090),
+        # a narrow runner-up keeps the ⚠️ block populated as well
+        'm_narrow': _match('C vs D', 0.090, 0.088),
+    },
+    'narrow': {
+        # widest gap 0.2 -> the `else` (分歧过大) branch
+        'm_narrow': _match('C vs D', 0.090, 0.088),
+    },
+}
+
+
+@pytest.mark.parametrize('branch', ['wide', 'narrow'])
+def test_summary_lines_carry_no_selection_guidance(
+    monkeypatch: pytest.MonkeyPatch, branch: str,
+) -> None:
+    """Ruling 1: keep the wording, purely as a risk statement.
+
+    Every summary line must be free of 首选 / 次选 / 双选 / 强推 / 推荐 — no pick
+    guidance of any kind. "不做推荐" is the one allowed use of 推荐: it withholds
+    a recommendation rather than making one, so it is stripped before scanning.
+
+    Parametrized because the ★ line's wording depends on `widest[0]['gap']`;
+    a single fixture reaches only one branch (the original bug here).
+    """
+    app = _load_app()
+    body = _render(monkeypatch, app, BRANCH_FIXTURES[branch])
 
     lines = _summary_lines(body)
     assert lines, f'no summary lines found in: {body}'
+    star = _star_line(body)
+    assert star, f'the ★ risk line is missing from: {body}'
+
+    # the two branches must actually be distinguishable, so a future edit cannot
+    # silently collapse them onto one path
+    if branch == 'wide':
+        assert f'前二比分差距{WIDE_GAP_PP:.1f}个百分点' in star, star
+        assert '分歧过大' not in star, star
+    else:
+        assert '分歧过大' in star, star
+        assert f'差距仅{NARROW_GAP_PP:.1f}个百分点' in star, star
+        assert '前二比分差距' not in star, star
+
     for line in lines:
-        # strip the allowed negation before scanning
         probe = line.replace('不做推荐', '').replace('不做任何选择建议', '')
         for banned in BANNED_PICK_WORDS:
             assert banned not in probe, f'{banned} appears in summary line: {line!r}'
@@ -182,6 +236,20 @@ def test_summary_lines_carry_no_selection_guidance(monkeypatch: pytest.MonkeyPat
     assert '风险提示' in body
     assert '分歧' in body
     assert '不做推荐' in body
+
+
+def test_the_two_branches_render_different_star_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the branch split itself: the wide and narrow fixtures must not
+    produce the same ★ wording, otherwise the parametrization above is a no-op."""
+    app = _load_app()
+    wide = _star_line(_render(monkeypatch, app, BRANCH_FIXTURES['wide']))
+    narrow = _star_line(_render(monkeypatch, app, BRANCH_FIXTURES['narrow']))
+    assert wide and narrow
+    assert wide != narrow, f'both branches rendered {wide!r} — fixture is wrong'
+    assert f'{WIDE_GAP_PP:.1f}个百分点' in wide
+    assert '分歧过大' in narrow
 
 
 def test_comparison_report_never_offers_two_directions_for_one_match(
