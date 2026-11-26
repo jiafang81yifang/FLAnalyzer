@@ -225,8 +225,19 @@ class DeepSeekAnalyzer:
     """Deterministic analyzer/formatter surface used by app_v84_hermes."""
 
     @staticmethod
-    def _classify_score_wdl(score: Any) -> str:
-        return _score_wdl(score)
+    def _classify_score_wdl(score: Any) -> tuple[str, str]:
+        """Score → `(normalised_score, wdl_direction)`.
+
+        Every call site in `app_v84_hermes` reads index `[1]` for the direction
+        (`胜`/`平`/`负`, `''` when the score cannot be classified), and 12 of them
+        sit inside `try/except` blocks that log and then carry on. Returning a
+        bare string made all 12 raise `IndexError` into those handlers, so the
+        direction-lock filters silently kept everything: a match locked to 负
+        still answered 胜. The 2-tuple shape is the contract those sites were
+        written against; the normalised score is returned in slot `[0]` so the
+        pair is useful rather than a duplicated label.
+        """
+        return _norm_score(score), _score_wdl(score)
 
     @staticmethod
     def _is_tg_match_title_line(line: Any) -> bool:
@@ -996,7 +1007,46 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {'available': False, 'direction': ''}
+        """Return the direction lock carried by a payload, if it carries one.
+
+        Every filter in `app_v84_hermes` (`filter_scores_to_direction_lock`,
+        `lock_probability_cluster`, and ~15 `.get('direction')` sites) calls this
+        first and gives up when `locked` is falsy. The previous body ignored its
+        arguments and always returned `{'available': False, 'direction': ''}`, so
+        every direction lock was inert: a match locked to 负 still answered 胜.
+
+        Only the explicit lock is read back — `{'direction_lock': {'locked',
+        'direction', 'scores'}}`, the exact structure the app writes into its own
+        records. Deriving a direction from `wdl_discrete_vector` /
+        `mkt_short_wdl_matrix` would need a threshold that no spec defines, so
+        that case reports `no_derivation_rule` instead of picking one.
+        """
+        payload = args[0] if args else kwargs.get('payload')
+        if not isinstance(payload, dict):
+            return {'available': False, 'locked': False, 'direction': '',
+                    'scores': [], 'reason': 'payload_not_a_dict'}
+        lock = payload.get('direction_lock')
+        if isinstance(lock, dict) and lock.get('locked'):
+            direction = str(lock.get('direction') or '')
+            if direction not in ('胜', '平', '负'):
+                return {'available': False, 'locked': False, 'direction': '',
+                        'scores': [],
+                        'reason': f'direction_not_wdl:{direction or "empty"}'}
+            scores = [str(s).replace('：', '-').replace(':', '-').strip()
+                      for s in (lock.get('scores') or []) if str(s or '').strip()]
+            return {
+                'available': True,
+                'locked': True,
+                'direction': direction,
+                'scores': [s for s in scores if _score_wdl(s) == direction],
+                'source': str(lock.get('source') or 'payload'),
+            }
+        if payload.get('wdl_discrete_vector') or payload.get('mkt_short_wdl_matrix'):
+            # No explicit lock, and no documented rule to derive one from these.
+            return {'available': False, 'locked': False, 'direction': '',
+                    'scores': [], 'reason': 'no_derivation_rule'}
+        return {'available': False, 'locked': False, 'direction': '', 'scores': [],
+                'reason': 'no_lock_in_payload'}
 
     @staticmethod
     def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1258,8 +1308,55 @@ class DeepSeekAnalyzer:
         return str(text or '')
 
     @staticmethod
-    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:
-        return _norm_score(first), _norm_score(second)
+    @staticmethod
+    def snap_score_pair(first: Any, second: Any = None,
+                        lock_payload: Any = None) -> tuple[str, str]:
+        """Normalise a two-score pair and snap it into the direction lock.
+
+        Every caller in `app_v84_hermes` passes the direction-lock payload as a
+        third positional argument (14 sites) and then diffs the result against
+        the input to log a 🔒 line. The signature accepted only two, so all of
+        them raised `TypeError` into their `except`, and the direction lock never
+        took effect anywhere: a match locked to 负 still answered 胜.
+
+        The lock state is already inside the payload that `lookup_direction_lock_payload`
+        returns (`{'direction_lock': {'locked', 'direction', 'scores'}}`), so no
+        threshold is needed here — the allowed scores come from the payload.
+        A score already in the locked direction keeps its position; a score
+        outside it is replaced by the best unused locked score, and removed when
+        the lock has no spare. Without a lock the pair is only normalised.
+        """
+        out = [_norm_score(first), _norm_score(second)]
+        if not isinstance(lock_payload, dict):
+            return out[0], out[1]
+        lock = lock_payload.get('direction_lock')
+        if not isinstance(lock, dict) or not lock.get('locked'):
+            return out[0], out[1]
+        direction = str(lock.get('direction') or '')
+        if direction not in ('胜', '平', '负'):
+            return out[0], out[1]
+        allowed = [_norm_score(s) for s in (lock.get('scores') or []) if str(s or '').strip()]
+        allowed = [s for s in allowed if _score_wdl(s) == direction]
+
+        snapped: list[str] = []
+        for token in out:
+            if not token:
+                continue
+            if _score_wdl(token) == direction:
+                snapped.append(token)
+                continue
+            # outside the lock: take the first still-unused locked score
+            spare = next((s for s in allowed if s not in snapped), '')
+            if spare:
+                snapped.append(spare)
+        # a lock with no usable scores must not empty the answer: keep the input
+        if allowed and not snapped:
+            snapped = allowed[:2]
+        if not allowed:
+            # nothing to snap to; still drop scores that contradict the lock
+            snapped = [t for t in out if t and _score_wdl(t) == direction]
+        snapped = list(dict.fromkeys(snapped))
+        return (snapped[0] if snapped else ''), (snapped[1] if len(snapped) > 1 else '')
 
     @staticmethod
     def strip_judgment_tg_suppressed_sections(text: Any) -> str:

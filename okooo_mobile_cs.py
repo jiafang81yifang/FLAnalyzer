@@ -7,6 +7,7 @@ reachable service data, so app_v84_hermes can run without optional private code.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -554,8 +555,20 @@ def build_score_market_heat_ranking(
             odd_f = float(odd) if odd is not None else 0.0
         except (TypeError, ValueError):
             odd_f = 0.0
+        # NaN 会穿过所有比较（NaN > 1 为 False，但 NaN 会原样写进 avg_odds），
+        # ±inf 会变成 1/inf=0 的「合法」热度。两者都不是赔率，按「未形成」处理：
+        # 记为 0.0 并带 rejected 原因，绝不把 NaN 留在数值字段里。
+        reject = ''
+        if not math.isfinite(odd_f):
+            reject = 'odds_not_finite'
+            odd_f = 0.0
+        elif odd_f < 0:
+            reject = 'odds_negative'
+            odd_f = 0.0
         enriched = enriched_by_score.get(score_key)
         row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}
+        if reject:
+            row['odds_rejected'] = reject
         # avg_odds 是赔率的同义词：合法市均闸门按 avg_odds 数「可用的行」，
         # 只发 odds 会让真市均被判非法。
         row['avg_odds'] = odd_f
