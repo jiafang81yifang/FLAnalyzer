@@ -424,6 +424,64 @@ class DeepSeekAnalyzer:
         return lines
 
     @staticmethod
+    def resolve_cs31_provenance(source: Any = None, payload: Any = None) -> dict[str, Any]:
+        """31 池逐键出处：记录 → payload → 从 books_avg 反推 → 空。
+
+        返回 {'provenance': {option: desktop_cs|jc_official}, 'source': ...}，
+        source ∈ {'recorded', 'derived', None}。把来源一起交出去，是为了让表头
+        能写明「记录的」还是「反推的」——同一场比赛不该有两个说不清来历的答案。
+
+        老记录（`cs31_*` 还没进合并白名单时写的）里没有出处表，但它一定留着
+        `correct_score_books_avg` —— 原始 25 键市均页。那 25 键就是真正的市均
+        覆盖集，所以「在这 25 键里 = desktop_cs，其余 = jc_official」反推出来的表
+        与 merge_cs31 存的完全一致（四份真实抓包上逐键相等，不只是数目相等）。
+        不反推的话，老比赛上阶段2会把已合并的 31 键整表当成市均，市短又回到
+        22/19/21/19 那个错答案——同一场比赛两个答案。
+
+        显式出处永远优先；反推只在拿不到显式出处时兜底，且绝不静默。
+        """
+        def _from(mapping: Any) -> dict[str, str]:
+            out: dict[str, str] = {}
+            if isinstance(mapping, dict):
+                for score, src in mapping.items():
+                    key = _norm_score(score)
+                    label = str(src or '').strip()
+                    if key and label and key in set(JCZQ_ALL_OPTIONS):
+                        out[key] = label
+            return out
+
+        src_obj = source if isinstance(source, dict) else {}
+        pay_obj = payload if isinstance(payload, dict) else {}
+        for holder in (src_obj, pay_obj):
+            found = _from(holder.get('cs31_provenance') if isinstance(holder, dict) else None)
+            if found:
+                return {'provenance': found, 'source': 'recorded'}
+        for holder in (src_obj, pay_obj):
+            books = holder.get('correct_score_books_avg') if isinstance(holder, dict) else None
+            if not isinstance(books, dict) or not books:
+                continue
+            page_keys: set[str] = set()
+            for score, odd in books.items():
+                key = _norm_score(score)
+                raw = odd.get('odds') if isinstance(odd, dict) else odd
+                try:
+                    value = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    value = None
+                if key and value is not None and value > 1:
+                    page_keys.add(key)
+            if not page_keys:
+                continue
+            return {
+                'provenance': {
+                    option: ('desktop_cs' if option in page_keys else 'jc_official')
+                    for option in JCZQ_ALL_OPTIONS
+                },
+                'source': 'derived',
+            }
+        return {'provenance': {}, 'source': None}
+
+    @staticmethod
     def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:
         """收集合法比分赔率：市均优先，竞彩官方31比分补缺。
 
@@ -530,6 +588,8 @@ class DeepSeekAnalyzer:
         # 否则 31 行全标 desktop_cs、市短还会拿竞彩去比竞彩。
         _prov_raw = kwargs.get('market_provenance')
         _prov: dict[str, str] = {}
+        # 出处是记录的、还是从 books_avg 反推的？读者有权分清。
+        _prov_kind = str(kwargs.get('market_provenance_source') or 'recorded')
         if isinstance(_prov_raw, dict):
             for score, src in _prov_raw.items():
                 key = _norm_score(score)
@@ -685,6 +745,7 @@ class DeepSeekAnalyzer:
             'jc_pct_sum': jc_pct_sum,
             'cs31_provenance': _prov_out,
             'cs31_counts': _counts_out,
+            'cs31_provenance_source': _prov_kind if _prov_out else '',
             'cs31_extras': _extras,
             'cs31_complete': bool(full_rows) and all(r.get('formed') for r in full_rows),
             'system_prejudge': {},
@@ -874,6 +935,10 @@ class DeepSeekAnalyzer:
         lines.append(
             '  汇总: ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items()) if k != '-')
             + f' | 共{len(rows)}项'
+            # 出处是从 books_avg 反推的（老记录没有 cs31_provenance）时必须写明，
+            # 否则读者分不清「记录的」和「推断的」两种 22+9。
+            + (' | 出处:反推(老记录无cs31_provenance)'
+               if str(p.get('cs31_provenance_source') or '') == 'derived' else '')
         )
         extras = p.get('cs31_extras') if isinstance(p.get('cs31_extras'), dict) else {}
         if extras:

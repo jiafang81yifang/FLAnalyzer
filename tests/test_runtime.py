@@ -2135,15 +2135,21 @@ def _record_shape(mid: str) -> dict[str, Any]:
     }
 
 
-def _pack_from_record(mid: str = '1347776') -> Any:
-    """The production route: record -> _collect_legal_cs_market_odds -> pack."""
-    rec = _record_shape(mid)
+def _pack_from_record(mid: str = '1347776', record: Any = None) -> Any:
+    """The production route: record -> provenance -> collector -> pack.
+
+    Pass `record=` to build from a different record shape (e.g. one written by
+    an older build that never stored `cs31_provenance`).
+    """
+    rec = record if isinstance(record, dict) else _record_shape(mid)
     extra = pipe_mod.DeepSeekAnalyzer._collect_legal_cs_market_odds(rec, [])
+    prov = pipe_mod.DeepSeekAnalyzer.resolve_cs31_provenance(rec, {})
     return pipe_mod.DeepSeekAnalyzer.build_theo_mkt_31_pack(
         [], lam_home=1.45, lam_away=1.10,
         jc_score_odds=rec['jc_score_odds'],
         extra_market_odds=extra,
-        market_provenance=rec.get('cs31_provenance'),
+        market_provenance=prov['provenance'] or None,
+        market_provenance_source=prov['source'] or '',
     )
 
 
@@ -2270,6 +2276,127 @@ def test_merged_record_table_renders_22_9_and_keeps_the_extras() -> None:
     note = next((ln for ln in lines if '附注' in ln), '')
     for extra in ('4-3', '3-4', '4-4'):
         assert extra in note, (extra, note)
+
+
+def test_old_record_derives_the_same_provenance_as_merge_cs31() -> None:
+    """D13d: a record written by a PREVIOUS build has no cs31_provenance.
+
+    The old allow-list dropped it, which is exactly what round 10 fixed. Those
+    records still hold `correct_score_books_avg` (the raw 25-key 市均 page), so
+    the true 市均 key set is recoverable. This pins that the derived map equals
+    merge_cs31's stored map KEY FOR KEY, not merely in count.
+
+    Revert tested: removing the books_avg branch from resolve_cs31_provenance ->
+    source becomes None and provenance {} for the old shape; this fails.
+    """
+    for mid in ('1347776', '1347778', '1347775', '1347780'):
+        full = _record_shape(mid)
+        old = {k: v for k, v in full.items() if not k.startswith('cs31_')}
+        derived = pipe_mod.DeepSeekAnalyzer.resolve_cs31_provenance(old, {})
+        assert derived['source'] == 'derived', derived['source']
+        assert derived['provenance'] == full['cs31_provenance'], mid
+        n_desk = sum(1 for v in derived['provenance'].values() if v == 'desktop_cs')
+        assert n_desk == 22, (mid, n_desk)
+
+
+def test_explicit_provenance_beats_the_derivation() -> None:
+    """The fallback must never be preferred over a stored map.
+
+    Revert tested: swapping the two loops in resolve_cs31_provenance (derive
+    first) -> the deliberately inverted stored map is ignored and this fails.
+    """
+    full = _record_shape('1347776')
+    inverted = {
+        k: ('jc_official' if v == 'desktop_cs' else 'desktop_cs')
+        for k, v in full['cs31_provenance'].items()
+    }
+    record_with_both = dict(full)
+    record_with_both['cs31_provenance'] = inverted
+    got = pipe_mod.DeepSeekAnalyzer.resolve_cs31_provenance(record_with_both, {})
+    assert got['source'] == 'recorded', got['source']
+    assert got['provenance'] == inverted
+
+    # payload-level provenance is also explicit, and must win over derivation
+    old = {k: v for k, v in full.items() if not k.startswith('cs31_')}
+    from_payload = pipe_mod.DeepSeekAnalyzer.resolve_cs31_provenance(
+        old, {'cs31_provenance': inverted})
+    assert from_payload['source'] == 'recorded', from_payload['source']
+    assert from_payload['provenance'] == inverted
+
+
+def test_old_record_short_matrix_matches_the_raw_page_answer() -> None:
+    """D13d acceptance: on the old shape 市短 must still be 13/11/14/11.
+
+    Before the fallback it was 22/19/21/19 — the whole round-10 fix was
+    invisible on any match scraped by an older build.
+
+    Revert tested: reverting the fallback alone -> 22/19/21/19 and this fails.
+    """
+    expected = {'1347776': 13, '1347778': 11, '1347775': 14, '1347780': 11}
+    for mid, want in expected.items():
+        old = {k: v for k, v in _record_shape(mid).items() if not k.startswith('cs31_')}
+        pack = _pack_from_record(mid, record=old)
+        matrix = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+        assert len(matrix['rows']) == want, (mid, len(matrix['rows']))
+        jc_rows = [
+            r for r in matrix['rows']
+            if str(r.get('source') or '') in ('jc_official', 'jc_score_odds')
+        ]
+        assert jc_rows == [], (mid, jc_rows)
+
+
+def test_old_record_table_labels_nine_and_says_it_inferred_them() -> None:
+    """The user-visible acceptance on the old shape, plus the honesty marker.
+
+    A reader must be able to tell an inferred split from a recorded one.
+
+    Revert tested: dropping the market_provenance_source plumbing -> the 汇总
+    line loses `出处:反推` and this fails (and with the fallback gone, the split
+    itself reads desktop_cs=31).
+    """
+    for mid in ('1347776', '1347778', '1347775', '1347780'):
+        old = {k: v for k, v in _record_shape(mid).items() if not k.startswith('cs31_')}
+        pack = _pack_from_record(mid, record=old)
+        assert pack['cs31_counts'] == {'desktop_cs': 22, 'jc_official': 9}, (mid, pack['cs31_counts'])
+        assert pack['cs31_provenance_source'] == 'derived', mid
+        nine = [
+            r for r in pack['rows'] if r['score'] in JC31_NINE
+        ]
+        assert len(nine) == 9
+        for row in nine:
+            assert row['market_source'] == 'jc_official', (mid, row['score'], row['market_source'])
+            assert row['delta_same_source'] is True, (mid, row['score'])
+
+        lines = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+        summary = next(ln for ln in lines if '汇总' in ln)
+        assert 'desktop_cs=22' in summary and 'jc_official=9' in summary, summary
+        assert '出处:反推' in summary, summary
+        note = next((ln for ln in lines if '附注' in ln), '')
+        for extra in ('4-3', '3-4', '4-4'):
+            assert extra in note, (extra, note)
+
+
+def test_recorded_provenance_is_not_labelled_as_derived() -> None:
+    """The honesty marker must not appear when the split really was recorded.
+
+    Revert tested: always appending the marker -> the a611106 shape gains
+    `出处:反推` and this fails.
+    """
+    pack = _pack_from_record('1347776')
+    assert pack['cs31_provenance_source'] == 'recorded'
+    lines = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
+    summary = next(ln for ln in lines if '汇总' in ln)
+    assert '出处:反推' not in summary, summary
+
+
+def test_no_provenance_and_no_books_invents_nothing() -> None:
+    """Level 3: with neither an explicit map nor books_avg, stay empty.
+
+    Revert tested: fabricating a default split when both are missing -> source
+    stops being None and this fails.
+    """
+    got = pipe_mod.DeepSeekAnalyzer.resolve_cs31_provenance({}, {})
+    assert got == {'provenance': {}, 'source': None}, got
 
 
 def test_every_fixture_declares_its_source() -> None:
