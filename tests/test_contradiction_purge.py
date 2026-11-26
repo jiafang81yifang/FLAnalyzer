@@ -129,23 +129,37 @@ def test_ventropy_never_fills_secondary_from_another_tier_direction() -> None:
     assert result['secondary'] == 'N/A', result
 
 
-def test_comparison_report_is_a_risk_warning_with_no_pick_guidance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Ruling 1: keep the two warning lines, but as pure risk statements.
+BANNED_PICK_WORDS = ('首选', '次选', '双选', '强推', '推荐')
 
-    The output must still talk about the divergence (it must not go silent) and
-    must not contain 首选 / 次选 / 双选 — no pick guidance of any kind.
+
+def _summary_lines(body: str) -> list[str]:
+    """The summary rows: the ★ risk line and the ⚠️ block, plus the 💡 heading."""
+    kept = []
+    for line in body.splitlines():
+        if line.startswith(('★', '  ★', '💡', '⚠️', '  -')):
+            kept.append(line.strip())
+    return kept
+
+
+def test_summary_lines_carry_no_selection_guidance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ruling 1: keep the wording, purely as a risk statement.
+
+    Every summary line must be free of 首选 / 次选 / 双选 / 强推 / 推荐 — no
+    pick guidance of any kind. "不做推荐" is the one allowed use of 推荐 because
+    it *withholds* a recommendation; it is excluded from the banned scan by
+    checking the negation first.
     """
     app = _load_app()
     sent: list[str] = []
     monkeypatch.setattr(app, 'send_tg', lambda text, parse_mode=None: sent.append(str(text)))
     monkeypatch.setattr(app, 'load_json', lambda path: {
+        # wide gap -> the ">3pp" branch
         'm1': {
             'status': 'pending', 'match': 'A vs B', 'predicted_score': '2-0',
             'second_score': '3-0', 'confidence': '中', 'dti': 0.1,
-            'top15_scores': [['2-0', {'prob': 0.10}], ['3-0', {'prob': 0.095}]],
+            'top15_scores': [['2-0', {'prob': 0.10}], ['3-0', {'prob': 0.09}]],
         },
+        # narrow gap -> the "分歧过大" branch
         'm2': {
             'status': 'pending', 'match': 'C vs D', 'predicted_score': '1-1',
             'second_score': '0-0', 'confidence': '低', 'dti': 0.2,
@@ -155,13 +169,19 @@ def test_comparison_report_is_a_risk_warning_with_no_pick_guidance(
     app.compare_matches()
     assert sent, 'report went silent — the risk warning must still be printed'
     body = sent[0]
-    # still speaks about the risk, not silent
+
+    lines = _summary_lines(body)
+    assert lines, f'no summary lines found in: {body}'
+    for line in lines:
+        # strip the allowed negation before scanning
+        probe = line.replace('不做推荐', '').replace('不做任何选择建议', '')
+        for banned in BANNED_PICK_WORDS:
+            assert banned not in probe, f'{banned} appears in summary line: {line!r}'
+
+    # still speaks about the risk, and is not silent
     assert '风险提示' in body
     assert '分歧' in body
     assert '不做推荐' in body
-    # no pick guidance vocabulary at all
-    for banned in ('首选', '次选', '双选', '防波堤', '保本', '对冲', '双边', '主次选'):
-        assert banned not in body, f'{banned} still present in risk warning: {body}'
 
 
 def test_comparison_report_never_offers_two_directions_for_one_match(

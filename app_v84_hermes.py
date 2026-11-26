@@ -43495,7 +43495,8 @@ def compare_matches():
     widest = comparison[:3]
 
     text = "🔍 【多场分歧风险提示】\n\n"
-    text += "📊 分歧最大的3场：\n\n"
+    # 第一块只是把「前二比分差距」从大到小排出来，是事实陈述，不是挑选建议。
+    text += "📊 按前二比分差距排序（前3场）：\n\n"
     for i, c in enumerate(widest):
         text += (f"{'🥇🥈🥉'[i]} {c['match']}\n"
                  f"   方向: {c['direction']}\n"
@@ -43503,14 +43504,19 @@ def compare_matches():
                  f"   {'杯赛: ' + c['cup_mode'] if c['cup_mode'] != '常规' else ''}\n\n")
 
     text += "━━━━━━━━━━━━━━━━━━\n"
-    text += "💡 分歧过大，不做推荐。\n"
+    text += "💡 风险提示（不做任何选择建议）：\n"
+    # 只报分歧幅度，不给选择指引：不写「强推」，也不写「两个都能选」。
+    if widest[0]['gap'] > 3:
+        text += f"  ★ {widest[0]['match']}：前二比分差距{widest[0]['gap']:.1f}个百分点，不做推荐。\n"
+    else:
+        text += f"  ★ 分歧过大，不做推荐：{widest[0]['match']}（差距仅{widest[0]['gap']:.1f}个百分点）\n"
 
-    # 第二块按分歧**最小**排序：这才是「最不确定」的那几场，也不会跟上面重复。
+    # 第二块取差距最小的几场：前二比分贴得最近＝最不确定，分歧最大。
     comparison.sort(key=lambda x: x['gap'])
-    least_certain = comparison[:2]
-    text += "\n⚠️ 分歧最小的场次（纯风险提示，不做推荐）：\n"
-    for c in least_certain:
-        text += f"  - {c['match']} | 分歧{c['gap']:.1f}个百分点 | {c['direction']}\n"
+    uncertain = comparison[:2]
+    text += "\n⚠️ 分歧最大的场次（不做推荐）：\n"
+    for c in uncertain:
+        text += f"  - {c['match']} | 前二比分差距{c['gap']:.1f}个百分点，不做推荐\n"
 
     send_tg(text)
 
