@@ -322,10 +322,24 @@ class DeepSeekAnalyzer:
         if not rows:
             return [head, f"  未形成（{m.get('reason') or '没有市均高于竞彩的选项'}）"]
         lines = [head, f"  输入={m.get('source') or '市均×竞彩31比分'} 项数={len(rows)}"]
+
+        def _pct_text(value: Any) -> str:
+            """市均/竞彩/差三列都不许把缺失写成 0：缺失就写「-」。"""
+            try:
+                return f'{float(value):.2f}'
+            except (TypeError, ValueError):
+                return '-'
+
+        def _gap_text(value: Any) -> str:
+            try:
+                return f'{float(value):+.2f}'
+            except (TypeError, ValueError):
+                return '-'
+
         for r in rows:
             lines.append(
-                f"  {str(r.get('score', '?'))!s:<5} 市均{float(r.get('market_pct') or 0):.2f}% "
-                f"竞彩{r.get('jc_pct', 0):.2f}% 差{r.get('gap_pct', 0):+.2f}pp"
+                f"  {str(r.get('score', '?'))!s:<5} 市均{_pct_text(r.get('market_pct'))}% "
+                f"竞彩{_pct_text(r.get('jc_pct'))}% 差{_gap_text(r.get('gap_pct'))}pp"
             )
         counts = m.get('counts')
         counts = counts if isinstance(counts, dict) else {}
@@ -407,13 +421,26 @@ class DeepSeekAnalyzer:
             label = _score_wdl(score)
             if label in counts:
                 counts[label] += 1
+
+            def _num_text(value: Any, fmt: str) -> str:
+                """缺失就是缺失：不再把 None 写成 0.00 / +0.00。"""
+                try:
+                    return format(float(value), fmt)
+                except (TypeError, ValueError):
+                    return '-'
+
+            market_txt = _num_text(r.get('market'), '.2f')
+            theory_txt = _num_text(r.get('theory'), '.2f')
+            _market_v = r.get('market')
+            _theory_v = r.get('theory')
             try:
-                market = float(r.get('market') or 0)
-                theory = float(r.get('theory') or 0)
+                if _market_v is None or _theory_v is None:
+                    raise TypeError('missing market/theory')
+                delta_txt = f"{float(_market_v) - float(_theory_v):+.2f}pp"
             except (TypeError, ValueError):
-                market = theory = 0.0
+                delta_txt = '-'
             lines.append(
-                f"  {str(score)!s:<5} 市均{market:.2f}% 理论{theory:.2f}% Δ{market - theory:+.2f}pp"
+                f"  {str(score)!s:<5} 市均{market_txt}% 理论{theory_txt}% Δ{delta_txt}"
             )
         total = sum(counts.values()) or 1
         lines.append(
@@ -825,11 +852,18 @@ class DeepSeekAnalyzer:
             if label not in counts:
                 continue
             counts[label] += 1
-            try:
-                gap = float(row.get('mkt_minus_jc') or row.get('delta') or 0.0)
-            except (TypeError, ValueError):
-                gap = 0.0
-            discrete[score] = round(gap, 4)
+            # 差值缺失时不写 0.0（0.0 是「确实没有偏差」这个真实结论，不能借用）。
+            gap_raw = row.get('mkt_minus_jc')
+            if gap_raw is None:
+                gap_raw = row.get('delta')
+            gap: float | None = None
+            if gap_raw is not None:
+                try:
+                    gap = float(gap_raw)
+                except (TypeError, ValueError):
+                    gap = None
+            if gap is not None and math.isfinite(gap):
+                discrete[score] = round(gap, 4)
         total = sum(counts.values())
         return {
             'available': total > 0,
