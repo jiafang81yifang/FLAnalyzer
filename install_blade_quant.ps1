@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 8945de9 = 比较指令方向唯一性 + 超范围整数赔率兜底(不抛OverflowError)
-$PinCommit = '8945de9759ee76e730dac80f476a02c92a56bae8'
+# e8c3be5 = 首/次候选方向收口(落盘+报告) + 报告面方向一致性扫描
+$PinCommit = 'e8c3be587f669ce6eb9166418b195b39ff6c8ffd'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
