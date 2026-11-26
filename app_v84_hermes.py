@@ -32107,19 +32107,29 @@ def collect_report_analysis_facts(scope):
 
 
 def apply_dual_scores_to_record(record, first_score, second_score, second_reason=''):
-    """把终裁双比分写进一条记录。**这是唯一写入这两个键的地方。**
+    """把终裁双比分写进一条记录。**这是唯一写入这三个键的地方。**
 
-    写入是权威的：每次调用都覆盖 `predicted_score`/`first_score`、`second_score`
-    与 `second_score_absent_reason`，包括清空的那些情况。否则上一场的值会活过
-    这一次分析，报告就会拿旧比分拼出一个不存在的方向冲突：
+    写入分两种，别混：
 
-        run1 跨向 → second_score=''          reason='direction_mismatch'
-        run2 干净 → second_score='3-0'       reason='direction_mismatch'  ← reason 残留
-                    渲染：候选A 2-0｜候选B 3-0｜方向 胜｜候选B 因方向不一致未形成
+    1. **权威清空（无条件）**：`second_score` 与 `second_score_absent_reason`
+       每次调用都赋值，空值也写。否则上一场的值会活过这一次分析，报告就会拿
+       旧比分拼出一个不存在的方向冲突：
 
-        run1 干净 → second_score='3-0'
-        run2 正文只有一个比分 → 两个分支都不进 → second_score='3-0' 原样留住
-                    渲染：候选A 1-1｜候选B 3-0｜两候选方向不一致   ← 旧比分伪造的冲突
+           run1 跨向 → second_score=''          reason='direction_mismatch'
+           run2 干净 → second_score='3-0'       reason='direction_mismatch'  ← reason 残留
+                       渲染：候选A 2-0｜候选B 3-0｜方向 胜｜候选B 因方向不一致未形成
+
+           run1 干净 → second_score='3-0'
+           run2 正文只有一个比分 → 两个分支都不进 → second_score='3-0' 原样留住
+                       渲染：候选A 1-1｜候选B 3-0｜两候选方向不一致   ← 旧比分伪造的冲突
+
+    2. **解析出比分时才覆盖**：`first_score` / `predicted_score` 只在
+       `first_score` 非空时写入。这是**既有语义**，本函数沿用：同一条 `fid`
+       的记录，正文没解析出比分时保留上一次的值，不把已有结论清成空。
+       所以 `first_score=''` 的调用**不会**清掉 `predicted_score` —— 需要清空
+       请由调用方显式处理，本函数不替它决定。
+
+    `dual_direction_check` 跟随 reason：有 reason 就写，没有就 pop。
 
     返回实际写入的字段，供调用方/测试断言。
     """

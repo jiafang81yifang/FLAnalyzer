@@ -535,6 +535,30 @@ def test_dual_score_write_clears_a_previous_second_candidate() -> None:
     assert '候选B 未形成' in verdict, verdict
 
 
+def test_dual_score_write_keeps_an_earlier_first_score() -> None:
+    """`first_score=''` must NOT clear `predicted_score` — that is the existing contract.
+
+    The docstring used to claim every key was overwritten "including the empty
+    cases", which this behaviour contradicts. The distinction matters: an
+    analysis whose text yielded no score keeps the previous conclusion for the
+    same `fid`, while the second candidate and its reason are always
+    authoritative. Pinned here so nobody "fixes" the writer to match the old
+    wording and starts erasing real conclusions.
+    """
+    record: dict[str, object] = {
+        'first_score': '2-0', 'predicted_score': '2-0',
+        'second_score': '3-0', 'second_score_absent_reason': '',
+    }
+    app.apply_dual_scores_to_record(record, '', '', '')
+
+    assert record['predicted_score'] == '2-0', (
+        f'an empty parse must keep the earlier conclusion, got {record["predicted_score"]!r}'
+    )
+    assert record['first_score'] == '2-0'
+    assert record['second_score'] == '', 'the second candidate is always authoritative'
+    assert record['second_score_absent_reason'] == '', 'the reason is always authoritative'
+
+
 def test_dual_score_write_is_the_one_the_emitter_uses() -> None:
     """The emitter must call the same function the sweep probes.
 
