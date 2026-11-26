@@ -486,6 +486,76 @@ def test_verdict_explains_an_absent_second_candidate() -> None:
     assert '方向不一致' in text, text
 
 
+def test_dual_score_write_clears_a_previous_reason() -> None:
+    """A clean pair after a cross-direction run must not inherit its reason.
+
+    Without an authoritative write the record kept
+    `second_score_absent_reason='direction_mismatch'` and the report rendered
+    `候选A 2-0｜候选B 3-0｜方向 胜｜候选B 因方向不一致未形成` — three clauses
+    contradicting each other.
+    """
+    record: dict[str, object] = {}
+    app.apply_dual_scores_to_record(record, '2-0', '', 'direction_mismatch')
+    assert record['second_score'] == ''
+    assert record['second_score_absent_reason'] == 'direction_mismatch'
+
+    app.apply_dual_scores_to_record(record, '2-0', '3-0', '')
+    assert record['second_score'] == '3-0'
+    assert record['second_score_absent_reason'] == '', (
+        f'a clean pair must clear the reason, got {record["second_score_absent_reason"]!r}'
+    )
+
+    verdict = _verdict({**COMMON, 'predicted_score': '2-0', 'second_score': '3-0',
+                        'second_score_absent_reason': record['second_score_absent_reason']})
+    assert '方向 胜' in verdict, verdict
+    assert '因方向不一致未形成' not in verdict, (
+        f'a same-direction pair must not be called a conflict: {verdict}'
+    )
+
+
+def test_dual_score_write_clears_a_previous_second_candidate() -> None:
+    """A single-score run after a clean pair must not leave the old candidate.
+
+    Keeping it rendered `候选A 1-1｜候选B 3-0｜两候选方向不一致` — a conflict
+    fabricated from the *previous* match's score.
+    """
+    record: dict[str, object] = {}
+    app.apply_dual_scores_to_record(record, '1-1', '3-0', '')
+    assert record['second_score'] == '3-0'
+
+    app.apply_dual_scores_to_record(record, '1-1', '', '')
+    assert record['second_score'] == '', (
+        f'the previous candidate survived a single-score run: {record["second_score"]!r}'
+    )
+    assert record['second_score_absent_reason'] == ''
+
+    verdict = _verdict({**COMMON, 'predicted_score': '1-1', 'second_score': '',
+                        'second_score_absent_reason': ''})
+    assert '方向不一致' not in verdict, f'no conflict exists here: {verdict}'
+    assert '候选B 未形成' in verdict, verdict
+
+
+def test_dual_score_write_is_the_one_the_emitter_uses() -> None:
+    """The emitter must call the same function the sweep probes.
+
+    Otherwise the invariant measures a copy and deleting the real write leaves
+    every gate green — which is exactly what happened last round.
+    """
+    source = Path(str(app.__file__)).read_text(encoding='utf-8')
+    assert 'apply_dual_scores_to_record(' in source, 'the named writer is gone'
+    lines = source.splitlines()
+    call_blocks = []
+    for index, line in enumerate(lines):
+        if 'apply_dual_scores_to_record(' in line and not line.strip().startswith('def '):
+            # the call may span several lines; take the whole call window
+            call_blocks.append('\n'.join(lines[index:index + 5]))
+    assert call_blocks, 'nothing calls apply_dual_scores_to_record'
+    # the emitter's call must pass the parsed pair, not literals
+    assert any('first_score' in block and 'second_score' in block for block in call_blocks), (
+        f'the emitter call does not pass the parsed pair: {call_blocks}'
+    )
+
+
 def test_report_surface_scan_catches_direction_contradictions() -> None:
     """The scanner must judge direction, not just wording.
 
@@ -508,6 +578,17 @@ def test_report_surface_scan_catches_direction_contradictions() -> None:
                  '候选A 2-0｜候选B 1-2｜两候选方向不一致（2-0为胜，1-2为负），'
                  '不能作为同一注的两个候选；此处不给出单一候选', fake3)
     assert not fake3[0][1], f'a stated conflict is clean: {fake3}'
+
+    # A same-direction pair that the surface nonetheless calls a conflict.
+    # Unreachable once the record write is authoritative, but the scanner must
+    # still see it — otherwise a regression there is invisible again.
+    fake4: list[tuple[str, dict[str, int]]] = []
+    scan._record('probe4',
+                 '候选A 2-0｜候选B 3-0｜方向 胜｜置信度 中偏高（70.0%）｜候选B 因方向不一致未形成',
+                 fake4)
+    assert 'self_contradicting_conflict_claim' in fake4[0][1], (
+        f'a same-direction pair claiming a conflict must be dirty: {fake4}'
+    )
 
 
 # --------------------------------------------------------------------------
@@ -547,6 +628,12 @@ def test_sweep_is_green_and_not_vacuous() -> None:
         # and its same-direction branch must actually be exercised
         ('landing_path_checked', 400),
         ('landing_same_direction', 1200),
+        # the record must have been written by the real writer, and the report
+        # rendered from that record — separate counters so `extract_dual` alone
+        # cannot satisfy them
+        ('landing_record_written', 2000),
+        ('landing_record_same_direction', 1200),
+        ('landing_report_rendered', 2000),
     ):
         assert coverage.counts[name] >= floor, (
             f'{name}={coverage.counts[name]} < {floor}: the sweep went vacuous. '

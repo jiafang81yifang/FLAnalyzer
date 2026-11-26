@@ -1152,7 +1152,6 @@ class DeepSeekAnalyzer:
         return {'available': False, 'in_hot8': False}
 
     @staticmethod
-    @staticmethod
     def extract_dual_scores_from_judgment_text(text: Any,
                                                lock_payload: Any = None) -> dict[str, Any]:
         """从研判正文抽①②两个比分，并保证这两个候选同向。

@@ -701,10 +701,11 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
         coverage.hit('overflow_ok')
 
     # ---- I11: the landing path must not store a cross-direction pair ----
-    # `extract_dual_scores_from_judgment_text` is the only place that writes
-    # `predicted_score`/`second_score`, so this checks the pair it produces and
-    # what the report then says about it. A pair of opposite directions must
-    # never survive to the record.
+    # This drives the REAL write path: `extract_dual` parses the text, then
+    # `apply_dual_scores_to_record` writes the record exactly as the emitter
+    # does, then the report is rendered from that record. The previous version
+    # handed the report a hand-built dict, so the write function was never
+    # executed and deleting it left every gate green.
     coverage.hit('landing_path_checked')
     landing_cases = (
         ('cross_no_lock', '①2-0 ②1-2', None),
@@ -715,6 +716,7 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
         ('same', '①2-1 ②1-0', None),
         ('draw_pair', '①1-1 ②2-2', None),
     )
+    record: dict[str, Any] = {}
     for label, text, lock in landing_cases:
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -743,23 +745,63 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
             fail('I11-landing-absent-without-reason',
                  f'{label}: second empty with reason={reason!r}')
 
-        # the report must not then contradict the candidates it renders
+        # ---- the real write, into a record reused across cases ----
+        # Reusing one record across the five cases is deliberate: it is the
+        # only way a value left behind by an earlier analysis can be observed.
+        writer = getattr(app, 'apply_dual_scores_to_record', None)
+        if writer is None:
+            # An older build has no such function; say so once instead of
+            # pretending the landing path was covered.
+            fail('I11-landing-writer-absent',
+                 'app.apply_dual_scores_to_record is missing; the write path cannot be probed')
+            continue
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                writer(record, first, second, reason)
+        except Exception as exc:  # noqa: BLE001 - the writer must not raise
+            fail('I11-landing-writer-raised', f'{label}: {type(exc).__name__}: {exc}')
+            continue
+        coverage.hit('landing_record_written')
+        rec_first = str(record.get('predicted_score') or '')
+        rec_second = str(record.get('second_score') or '')
+        rec_reason = str(record.get('second_score_absent_reason') or '')
+        # the record must carry exactly this analysis's pair, never a leftover
+        if rec_first != first:
+            fail('I11-record-stale-first',
+                 f'{label}: record predicted_score={rec_first!r} but this analysis parsed {first!r}')
+        if rec_second != second:
+            fail('I11-record-stale-second',
+                 f'{label}: record second_score={rec_second!r} but this analysis parsed {second!r}')
+        if rec_reason != reason:
+            fail('I11-record-stale-reason',
+                 f'{label}: record reason={rec_reason!r} but this analysis produced {reason!r}')
+        rd1, rd2 = pipe._score_wdl(rec_first), pipe._score_wdl(rec_second)
+        if rec_second and rd1 and rd2 and rd1 != rd2:
+            fail('I11-record-cross-direction',
+                 f'{label}: record holds {rec_first}({rd1}) / {rec_second}({rd2})')
+        elif rec_second:
+            coverage.hit('landing_record_same_direction')
+
+        # the report is rendered FROM THE RECORD, not from a hand-built dict
         common = {'match': 'A vs B', 'correct_score_available': True,
-                  'mobile_market_ready': True, 'predicted_score': first,
-                  'second_score': second}
-        if reason:
-            common['second_score_absent_reason'] = reason
+                  'mobile_market_ready': True, 'predicted_score': rec_first,
+                  'second_score': rec_second,
+                  'second_score_absent_reason': rec_reason}
         if lock:
             common['direction_lock'] = lock['direction_lock']
         with contextlib.redirect_stdout(io.StringIO()):
             report = app.build_unified_analysis_report(common, source='sweep')
         verdict = str(next((s.get('verdict') for s in (report.get('sections') or [])
                             if s.get('key') == 'verdict'), ''))
+        coverage.hit('landing_report_rendered')
         stated = re.search(r'方向\s*([胜平负])', verdict)
-        dirs = [d for d in (d1, d2) if d]
+        dirs = [d for d in (rd1, rd2) if d]
         if stated and dirs and stated.group(1) not in dirs:
             fail('I11-report-direction-contradicts',
-                 f'{label}: verdict says 方向{stated.group(1)} but candidates are {dirs}')
+                 f'{label}: verdict says 方向{stated.group(1)} but record holds {dirs}')
+        if rec_second and rd1 and rd2 and rd1 == rd2 and '因方向不一致未形成' in verdict:
+            fail('I11-report-contradicts-own-record',
+                 f'{label}: same-direction record {rec_first}/{rec_second} rendered as a conflict')
 
     return failures
 
@@ -902,6 +944,20 @@ def _cluster(failures: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
             key = 'I11 第二候选为空但没有方向校验原因'
         elif invariant == 'I11-report-direction-contradicts':
             key = 'I11 报告陈述的方向与候选矛盾'
+        elif invariant == 'I11-record-stale-second':
+            key = 'I11 落盘记录残留上一场的 second_score'
+        elif invariant == 'I11-record-stale-reason':
+            key = 'I11 落盘记录残留上一场的 second_score_absent_reason'
+        elif invariant == 'I11-record-stale-first':
+            key = 'I11 落盘记录残留上一场的 predicted_score'
+        elif invariant == 'I11-record-cross-direction':
+            key = 'I11 落盘记录存下了跨方向的候选对'
+        elif invariant == 'I11-report-contradicts-own-record':
+            key = 'I11 报告与自己落盘的记录矛盾'
+        elif invariant == 'I11-landing-writer-absent':
+            key = 'I11 落盘写入函数缺失，落盘路径未覆盖'
+        elif invariant == 'I11-landing-writer-raised':
+            key = 'I11 落盘写入函数抛异常'
         else:
             key = f'{invariant} {detail[:48]}'
         grouped[key].append(failure)

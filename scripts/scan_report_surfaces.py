@@ -91,6 +91,11 @@ def _direction_issues(name: str, text: str) -> dict[str, int]:
                 if stated and stated.group(1) != first:
                     issues['stated_direction_contradicts_pair'] = (
                         issues.get('stated_direction_contradicts_pair', 0) + 1)
+                # The pair agrees, so any claim that it conflicts is false.
+                if '方向不一致' in line and ('候选B 因方向不一致未形成' in line
+                                            or '不能作为同一注' in line):
+                    issues['self_contradicting_conflict_claim'] = (
+                        issues.get('self_contradicting_conflict_claim', 0) + 1)
     return issues
 
 
