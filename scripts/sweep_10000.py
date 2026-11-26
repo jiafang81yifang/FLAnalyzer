@@ -12,12 +12,15 @@ Dimensions (sampled independently per case, so the sample is not a grid):
   lambda home/away   0.15 .. 4.5 continuous, five regimes (balanced / home-heavy /
                      away-heavy / both-high / both-low)
   odds               normal / stretched / compressed / missing keys /
-                     0 / negative / huge / non-numeric / NaN / inf
+                     0 / negative / huge (incl. 10**400 int literals) /
+                     non-numeric / NaN / inf
   league             known / unknown / '' / None / wrong type
   direction lock     none / 胜 / 平 / 负 / locked to a direction absent from pool
   heat ranking       normal / empty / duplicate / unknown / NaN / negative /
                      zero / non-numeric
   pool length        31 / 15 / 0 / 1 / duplicates / the JC-31 producer
+  /比较 surface      same-direction / cross-direction / mixed / no data /
+                     unclassifiable / single candidate
 
 Invariants asserted per case (each violation is recorded as one defect):
 
@@ -29,6 +32,10 @@ Invariants asserted per case (each violation is recorded as one defect):
   I6  probability conservation against the row's declared theory source
   I7  determinism: two runs of the same input are byte-identical
   I8  a locked direction that exists in the pool is actually honoured
+  I9  the `/比较` output carries no banned wording and never names a single
+      pick when its two candidates belong to different directions
+  I10 an over-range integer literal (json.loads can produce one) must not raise
+      and must not put a non-finite value into a numeric field
 
 Tolerances: percentages are carried through `round(x, 4)`, i.e. one half-step is
 5e-5 pp per row. `CONSERVATION_TOL_PCT` is 31 half-steps (~3.1e-3 pp), derived
@@ -94,6 +101,11 @@ LOCK_SHAPES = ('none', 'home', 'draw', 'away', 'absent_direction')
 HEAT_SHAPES = ('normal', 'empty', 'duplicate', 'unknown',
                'nan', 'negative', 'zero', 'text')
 POOL_SHAPES = ('31', '15', '0', '1', 'duplicate', 'jc31')
+# `compare_matches` reads two candidate scores per match out of history. The
+# shapes below decide whether those two candidates share a direction, which is
+# exactly what the report surface must never blur.
+COMPARE_SHAPES = ('same_direction', 'cross_direction', 'mixed', 'no_data',
+                  'unclassifiable', 'single_candidate')
 
 
 # --------------------------------------------------------------------------
@@ -155,7 +167,13 @@ def _build_odds(prob_dict: dict[str, float], shape: str, rng: random.Random) -> 
         return odds
     if shape == 'huge':
         for score in rng.sample(sorted(odds), k=max(1, len(odds) // 4)):
-            odds[score] = rng.choice((1e6, 1e9, 1e12))
+            # Include raw ints: `float(10**400)` raises OverflowError while
+            # `float('1e400')` yields inf, so a float-only fixture never reaches
+            # the int→float conversion in the parsers.
+            odds[score] = rng.choice((
+                1e6, 1e9, 1e12,
+                10 ** 400, -(10 ** 400), str(10 ** 400),
+            ))
         return odds
     if shape == 'text':
         for score in rng.sample(sorted(odds), k=max(1, len(odds) // 4)):
@@ -214,19 +232,35 @@ def _build_lock(shape: str, pool_scores: list[str]) -> dict[str, Any]:
                                           if pipe._score_wdl(s) == direction][:3]}}
 
 
+def _finite_odd(value: Any) -> float | None:
+    """A usable odds value, or None. Mirrors the production guard.
+
+    `float()` raises OverflowError for an int literal too large for a double,
+    and the sweep feeds exactly those in the `huge` shape, so the harness has to
+    handle it the same way the app does — otherwise the harness reports its own
+    bug as an app defect.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
 def _enrich_pool(ranked: list[tuple[str, dict[str, Any]]],
                  odds: dict[str, Any], limit: int | None) -> list[dict[str, Any]]:
     """Exactly the `_pool15_enriched` construction from `analyze_match`."""
-    usable = [v for v in odds.values() if isinstance(v, (int, float)) and v > 0
-              and math.isfinite(float(v))]
-    total_inv = sum(1.0 / float(v) for v in usable)
+    usable = [n for n in (_finite_odd(v) for v in odds.values()) if n is not None]
+    total_inv = sum(1.0 / n for n in usable)
     rows = []
     for score, info in (ranked[:limit] if limit is not None else ranked):
         theory = float(info['prob']) * 100.0
         market = 0.0
-        odd = odds.get(score)
-        if isinstance(odd, (int, float)) and float(odd) > 0 and total_inv > 0:
-            market = (1.0 / float(odd)) / total_inv * 100.0
+        odd = _finite_odd(odds.get(score))
+        if odd is not None and total_inv > 0:
+            market = (1.0 / odd) / total_inv * 100.0
         rows.append({
             'score': score, 'theory': theory, 'market': market,
             'theory_prob': theory, 'market_prob': market,
@@ -234,6 +268,68 @@ def _enrich_pool(ranked: list[tuple[str, dict[str, Any]]],
             'weighted': theory, 'delta': market - theory,
         })
     return rows
+
+
+def _build_compare_history(shape: str, rng: random.Random,
+                           pool: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build a `match_history` payload in the shape `compare_matches` reads.
+
+    Each record carries `predicted_score` / `second_score` plus the
+    `top15_scores` list the probabilities come from. `compare_matches` reports
+    on those two candidates, so the shapes below vary only their directions.
+    """
+    same = [('2-1', '1-0'), ('3-1', '2-0'), ('1-1', '2-2'), ('0-1', '0-2')]
+    cross = [('1-0', '0-1'), ('2-0', '1-2'), ('1-1', '2-0'), ('0-3', '3-0')]
+    junk = [('?', '1-0'), ('', '0-1'), ('未形成', '2-1')]
+
+    def record(name: str, first: str, second: str, p1: float, p2: float) -> dict[str, Any]:
+        return {
+            'status': 'pending', 'match': name,
+            'predicted_score': first, 'second_score': second,
+            'confidence': rng.choice(('high', 'mid', 'low')),
+            'dti': round(rng.uniform(0.0, 1.0), 2),
+            'cup_mode': '常规',
+            'top15_scores': [(first, {'prob': p1}), (second, {'prob': p2})],
+        }
+
+    if shape == 'no_data':
+        return {}
+    if shape == 'single_candidate':
+        # fewer than two candidates: the function must report "no data", not crash
+        return {'m1': {'status': 'pending', 'match': 'A vs B',
+                       'predicted_score': '1-0', 'second_score': '',
+                       'top15_scores': [('1-0', {'prob': 0.2})]}}
+    if shape == 'unclassifiable':
+        return {
+            'm1': record('A vs B', *junk[0], 0.20, 0.10),
+            'm2': record('C vs D', *junk[1], 0.15, 0.12),
+        }
+    if shape == 'cross_direction':
+        return {
+            'm1': record('A vs B', *cross[0], 0.20, 0.10),
+            'm2': record('C vs D', *cross[1], 0.18, 0.12),
+        }
+    if shape == 'same_direction':
+        return {
+            'm1': record('A vs B', *same[0], 0.20, 0.10),
+            'm2': record('C vs D', *same[1], 0.18, 0.12),
+        }
+    if shape == 'mixed':
+        return {
+            'm1': record('A vs B', *same[0], 0.20, 0.10),
+            'm2': record('C vs D', *cross[1], 0.18, 0.12),
+        }
+    raise AssertionError(shape)
+
+
+def _run_compare(history: dict[str, Any]) -> str:
+    """Call `compare_matches` with history/send_tg stubbed; return what it sent."""
+    from unittest import mock
+    sent: list[str] = []
+    with mock.patch.object(app, 'load_json', return_value=history), \
+         mock.patch.object(app, 'send_tg', side_effect=lambda t, *a, **k: sent.append(t)):
+        app.compare_matches()
+    return '\n'.join(sent)
 
 
 def _pool_for(shape: str, ranked: list[tuple[str, dict[str, Any]]],
@@ -367,6 +463,8 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
         )
         heat = okooo.build_score_market_heat_ranking(_build_heat(case['heat'], case['rng']))
         lock = _build_lock(case['lock'], [row['score'] for row in pool])
+        # the report surface the operator types `/比较` for
+        compare_text = _run_compare(_build_compare_history(case['compare'], case['rng'], pool))
         ventropy = app.run_ventropy_pipeline(
             ranked, pool, case['league'], {}, direction_lock_payload=lock,
         )
@@ -544,6 +642,60 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
                     fail('I8-lock-ignored',
                          f'lock={locked_direction} but ventropy {label}={value}({got})')
 
+    # ---- I9: the `/比较` report surface must obey direction uniqueness ----
+    # This is a user-facing report, so it gets the same rule as every other
+    # surface: no banned wording, and never a single pick when the two
+    # candidates it reports on belong to different directions.
+    coverage.hit('compare_surface_checked')
+    if case.get('compare'):
+        coverage.hit('compare_' + str(case['compare']))
+    for word in BANNED_WORDS:
+        if word in compare_text:
+            fail('I9-compare-banned-word', f'compare output carries {word!r}')
+    if '⚠️ 两候选方向不一致' in compare_text:
+        coverage.hit('compare_reported_cross_direction')
+        # the conflict must be surfaced as a fact, and no single pick offered
+        if '不给出单一候选' not in compare_text:
+            fail('I9-compare-single-pick',
+                 'cross-direction reported without refusing a single pick')
+        if '→' in compare_text:
+            fail('I9-compare-single-pick',
+                 'cross-direction output still names one candidate with an arrow')
+    if '方向一致' in compare_text or '方向未形成' in compare_text:
+        coverage.hit('compare_reported_same_direction')
+
+    # ---- I10: an over-range integer literal must be handled, not crash ----
+    # `json.loads` turns a 400-digit scrape field into an int, and `float()` on it
+    # raises OverflowError (not ValueError), which the parsers did not catch.
+    # The three entry points below are the ones that reach that conversion.
+    coverage.hit('overflow_probe_checked')
+    over = 10 ** 400
+    for label, call, allow in (
+        ('heat(int)', lambda: okooo.build_score_market_heat_ranking(
+            {'1:0': over, '0:0': over}), ('market',)),
+        ('pack(int)', lambda: pipe.DeepSeekAnalyzer.build_theo_mkt_31_pack(
+            [], lam_home=1.4, lam_away=1.1, jc_score_odds={'1-0': over}),
+         _DOCUMENTED_MISSING['pack']),
+        ('rows(int)', lambda: app.build_pool31_option_rows(
+            [], odds_correct_score={'1-0': over},
+            lam_home=1.5, lam_away=1.1), _DOCUMENTED_MISSING['rows']),
+    ):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                produced = call()
+        except Exception as exc:  # noqa: BLE001 - I10 is exactly "must not raise"
+            fail('I10-overflow-uncaught', f'{label}: {type(exc).__name__}: {exc}')
+            continue
+        leaks = _numeric_leaks(produced, allow)
+        if leaks:
+            fail('I10-overflow-nonfinite', f'{label}: {leaks[:3]}')
+        if label.startswith('heat'):
+            probed = produced.get('ranking') or []
+            if not any(r.get('odds_rejected') for r in probed):
+                fail('I10-overflow-unlabelled',
+                     f'heat accepted an over-range int without a rejection reason: {probed[:1]}')
+        coverage.hit('overflow_ok')
+
     return failures
 
 
@@ -589,6 +741,7 @@ def _make_case(index: int, rng: random.Random) -> dict[str, Any]:
         'lock': rng.choice(LOCK_SHAPES),
         'heat': rng.choice(HEAT_SHAPES),
         'pool': rng.choice(POOL_SHAPES),
+        'compare': rng.choice(COMPARE_SHAPES),
         'pool_expected': 0,  # filled after the pool shape is known
     }
 
@@ -631,7 +784,7 @@ def _describe(case: dict[str, Any]) -> str:
     return (f'seed={case["seed"]} lam=({case["lam_h"]},{case["lam_a"]}) '
             f'regime={case["regime"]} odds={case["odds"]} '
             f'league={league!r} lock={case["lock"]} heat={case["heat"]} '
-            f'pool={case["pool"]}')
+            f'pool={case["pool"]} compare={case["compare"]}')
 
 
 # --------------------------------------------------------------------------
@@ -668,6 +821,16 @@ def _cluster(failures: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
             key = 'I7 同一输入两次结果不同'
         elif invariant == 'I5-banned-word':
             key = 'I5 禁用词命中'
+        elif invariant == 'I9-compare-banned-word':
+            key = 'I9 /比较 输出命中禁用词'
+        elif invariant == 'I9-compare-single-pick':
+            key = 'I9 /比较 在跨方向时仍给出单一候选'
+        elif invariant == 'I10-overflow-uncaught':
+            key = 'I10 超范围整数赔率抛 OverflowError'
+        elif invariant == 'I10-overflow-nonfinite':
+            key = 'I10 超范围整数赔率把非有限值写进数值字段'
+        elif invariant == 'I10-overflow-unlabelled':
+            key = 'I10 超范围整数赔率未记录拒绝原因'
         else:
             key = f'{invariant} {detail[:48]}'
         grouped[key].append(failure)

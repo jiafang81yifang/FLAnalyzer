@@ -537,6 +537,10 @@ class DeepSeekAnalyzer:
         def _f(value: Any) -> float | None:
             try:
                 number = float(value)
+            except OverflowError:
+                # An int literal too large for a double (json.loads can produce
+                # one) is not a usable number; treat it as absent, never crash.
+                return None
             except (TypeError, ValueError):
                 return None
             return number if math.isfinite(number) else None
@@ -789,6 +793,9 @@ class DeepSeekAnalyzer:
         def _num(value: Any) -> float | None:
             try:
                 number = float(value)
+            except OverflowError:
+                # see `build_theo_mkt_31_pack._f`: an over-range int is absent, not fatal
+                return None
             except (TypeError, ValueError):
                 return None
             return number
@@ -1307,7 +1314,6 @@ class DeepSeekAnalyzer:
     def sanitize_six_market_tg_text(text: Any) -> str:
         return str(text or '')
 
-    @staticmethod
     @staticmethod
     def snap_score_pair(first: Any, second: Any = None,
                         lock_payload: Any = None) -> tuple[str, str]:

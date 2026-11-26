@@ -548,21 +548,29 @@ def build_score_market_heat_ranking(
         if not score_key or score_key.lower() == 'none' or score_key in seen:
             continue
         seen.add(score_key)
+        # `float()` raises OverflowError — not ValueError — for an int literal
+        # too large for a double (e.g. a 400-digit number that `json.loads`
+        # happily produced from a broken scrape field). Catching only
+        # (TypeError, ValueError) let that escape to the caller. The value is
+        # unrepresentable, so it lands in the same bucket as NaN/inf.
+        reject = ''
         try:
             odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw
             if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):
                 odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')
             odd_f = float(odd) if odd is not None else 0.0
+        except OverflowError:
+            reject = 'odds_not_finite'
+            odd_f = 0.0
         except (TypeError, ValueError):
             odd_f = 0.0
         # NaN 会穿过所有比较（NaN > 1 为 False，但 NaN 会原样写进 avg_odds），
         # ±inf 会变成 1/inf=0 的「合法」热度。两者都不是赔率，按「未形成」处理：
         # 记为 0.0 并带 rejected 原因，绝不把 NaN 留在数值字段里。
-        reject = ''
-        if not math.isfinite(odd_f):
+        if not reject and not math.isfinite(odd_f):
             reject = 'odds_not_finite'
             odd_f = 0.0
-        elif odd_f < 0:
+        elif not reject and odd_f < 0:
             reject = 'odds_negative'
             odd_f = 0.0
         enriched = enriched_by_score.get(score_key)
