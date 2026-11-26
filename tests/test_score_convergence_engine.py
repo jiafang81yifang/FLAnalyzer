@@ -1029,6 +1029,190 @@ def test_score_matrix_from_pack_preserves_provenance_semantics() -> None:
     assert matrix['pos_rows'] == [{'score': '1-0'}]
 
 
+# =========================================================================== #
+# 生产形态回归：结构化输入优先，渲染文本只作兜底
+# =========================================================================== #
+def _production_pack() -> dict:
+    """用真实 build_theo_mkt_31_pack 造一份 31/31 齐备的包（不手工编行）。"""
+    import blade_deepseek_pipeline as pipe_mod
+
+    analyzer = pipe_mod.DeepSeekAnalyzer
+    jc = {s: 8.0 + i for i, s in enumerate(pipe_mod.JCZQ_ALL_OPTIONS)}
+    page = {s: 9.0 + i for i, s in enumerate(pipe_mod.JCZQ_ALL_OPTIONS[:22])}
+    return analyzer.build_theo_mkt_31_pack(
+        [],
+        extra_market_odds=page,
+        jc_score_odds=jc,
+        lam_home=1.45,
+        lam_away=1.10,
+        market_provenance={s: 'desktop_cs' for s in pipe_mod.JCZQ_ALL_OPTIONS[:22]},
+        market_provenance_source='recorded',
+    )
+
+
+def _production_payload(with_structured: bool) -> dict:
+    """生产形态 payload：heat_tg_lines 为空（生产真实情况），市短专表只有「条数」。
+
+    手算 heat_ranking 方向分布（4 行）：
+        1-0 -> 主胜, 2-1 -> 主胜, 1-1 -> 平, 0-0 -> 平
+        => {'胜': 2, '平': 2, '负': 0}
+    """
+    import blade_deepseek_pipeline as pipe_mod
+
+    pack = _production_pack()
+    assert pack['formed_count'] == 31, pack['formed_count']
+    over_lines = pipe_mod.DeepSeekAnalyzer.format_mkt_over_theo_tg_lines(pack)
+    # 真实 formatter 只给两行、没有胜平负计数
+    assert over_lines == ['📉【市热超理论专表】', f"  条数: {pack['pos_count']}"], over_lines
+
+    payload = {
+        'odds_1x2': {'home': 1.60, 'draw': 4.00, 'away': 5.50},
+        'lam_home': 1.45,
+        'lam_away': 1.10,
+        'ou_line': 2.5,
+        'ou_over_odds': 1.90,
+        'ou_under_odds': 1.90,
+        'theo_mkt_31_pack': pack,
+        'heat_tg_lines': [],                 # 生产真实情况：从未被填充
+        'mkt_over_theo_tg_lines': over_lines,  # 生产真实情况：无计数
+        'asian_handicap': -0.75,
+        'half_time_1x2': {'home': 2.10, 'draw': 2.30, 'away': 5.00},
+        'half_time_ou_line': 1.0,
+        'ou_open_line': 2.25,
+        'league_rank_home': 2,
+        'league_rank_away': 12,
+        'borsa_signals_count': 5,
+        'immutable_factor_total': 5,
+    }
+    if with_structured:
+        short_mx = pipe_mod.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+        payload['heat_ranking'] = [
+            {'score': '1-0', 'odds': 6.50, 'heat': 0.1538},
+            {'score': '2-1', 'odds': 7.40, 'heat': 0.1351},
+            {'score': '1-1', 'odds': 7.34, 'heat': 0.1362},
+            {'score': '0-0', 'odds': 9.00, 'heat': 0.1111},
+        ]
+        payload['short_wdl_counts'] = short_mx['counts']
+        payload['short_rows'] = short_mx['rows']
+    return payload
+
+
+def test_production_shape_payload_locks_two_scores() -> None:
+    """生产形态回归：heat_tg_lines 为空 + 市短专表只有条数，仍必须锁定 2 个比分。
+
+    This is the defect that shipped: the engine parsed rendered text as its ONLY
+    path, so a real production payload aborted Step4 every time. With structured
+    inputs (heat_ranking / short_wdl_counts) the run must succeed.
+    """
+    out = engine.run_score_convergence(_production_payload(with_structured=True))
+
+    assert out['status'] == 'ok', (out['aborted_steps'], out['abort_reasons'])
+    assert out['aborted_steps'] == []
+    assert len(out['locked_scores']) == 2
+    assert out['locked_scores'][0]['score'] != out['locked_scores'][1]['score']
+    assert out['direction'] == 'H'
+    assert {s['bucket'] for s in out['locked_scores']} == {'home'}
+    # 输入确实是生产形态：热量行空、市短专表无计数
+    assert out['audit_snapshot']['inputs']['heat_tg_lines'] == []
+    assert out['audit_snapshot']['inputs']['mkt_over_theo_tg_lines'] == [
+        '📉【市热超理论专表】', f"  条数: {_production_pack()['pos_count']}",
+    ]
+
+
+def test_production_shape_without_structured_inputs_aborts_naming_both_fields() -> None:
+    """同样的生产 payload 但没有任何结构化输入 -> 明确中止，且两个字段都点名。"""
+    out = engine.run_score_convergence(_production_payload(with_structured=False))
+
+    assert out['status'] == 'aborted'
+    assert out['locked_scores'] == []
+    assert 'step4_linkage' in out['aborted_steps']
+    assert 'step6_lock' in out['aborted_steps']
+    fields = ' '.join(m.get('field') or '' for m in out['missing'])
+    assert 'heat_ranking' in fields
+    assert 'short_rows' in fields
+    # 两个原因都必须写清楚，不许只说「未形成」
+    assert out['heat_source_path'] == 'none'
+    assert out['short_source_path'] == 'none'
+
+
+def test_source_paths_report_the_path_actually_used() -> None:
+    """heat_source_path / short_source_path 如实报告取数路径。"""
+    # 1) ranking / rows 优先
+    out_ranked = engine.run_score_convergence(_production_payload(with_structured=True))
+    assert out_ranked['heat_source_path'] == 'ranking'
+    assert out_ranked['short_source_path'] == 'ranking'
+
+    # 2) 只有 counts（无 ranking/rows）-> counts
+    payload = _production_payload(with_structured=True)
+    payload.pop('heat_ranking')
+    payload.pop('short_rows')
+    payload['heat_wdl_counts'] = {'胜': 2, '平': 2, '负': 0}
+    out_counts = engine.run_score_convergence(payload)
+    assert out_counts['heat_source_path'] == 'counts'
+    assert out_counts['short_source_path'] == 'counts'
+    assert out_counts['status'] == 'ok'
+
+    # 3) 只有渲染文本 -> lines
+    payload2 = _production_payload(with_structured=False)
+    payload2['heat_tg_lines'] = ['🔥【市热矩阵】', '  胜平负: 胜=9(56.2%) 平=4(25.0%) 负=3(18.8%)']
+    payload2['mkt_over_theo_tg_lines'] = ['📊【市短矩阵】', '  胜平负: 胜=5(55.6%) 平=2(22.2%) 负=2(22.2%)']
+    out_lines = engine.run_score_convergence(payload2)
+    assert out_lines['heat_source_path'] == 'lines'
+    assert out_lines['short_source_path'] == 'lines'
+    assert out_lines['status'] == 'ok'
+
+    # 4) 全无 -> none
+    payload3 = _production_payload(with_structured=False)
+    out_none = engine.run_score_convergence(payload3)
+    assert out_none['heat_source_path'] == 'none'
+    assert out_none['short_source_path'] == 'none'
+
+
+def test_ranking_derived_counts_match_hand_computed_split() -> None:
+    """ranking 计数必须等于手算方向分布（常量写死在测试里）。"""
+    ranking = [
+        {'score': '1-0', 'odds': 6.50},
+        {'score': '2-1', 'odds': 7.40},
+        {'score': '1-1', 'odds': 7.34},
+        {'score': '0-0', 'odds': 9.00},
+    ]
+    # 手算：主胜 1-0, 2-1 = 2；平局 1-1, 0-0 = 2；客胜 0
+    got = engine._bucket_counts_from_ranking(ranking)
+    assert got['counts'] == {'胜': 2, '平': 2, '负': 0}
+    assert got['rows_used'] == 4
+    assert got['available'] is True
+
+    # 聚合桶也要能归位：胜其它 -> 胜，平其他 -> 平，负其它 -> 负
+    agg = engine._bucket_counts_from_ranking([
+        {'score': '胜其它'}, {'score': '平其它'}, {'score': '平其他'}, {'score': '负其它'},
+    ])
+    assert agg['counts'] == {'胜': 1, '平': 2, '负': 1}
+
+    # 无法解析的比分被跳过并记录，不硬塞进任何方向
+    bad = engine._bucket_counts_from_ranking([{'score': '1-0'}, {'score': '???'}])
+    assert bad['counts'] == {'胜': 1, '平': 0, '负': 0}
+    assert bad['skipped'] == ['???']
+
+
+def test_ranking_limit_keeps_top8_only() -> None:
+    """heat_ranking 只数前 8 行（市热榜口径）。"""
+    ranking = [{'score': '1-0'} for _ in range(10)]
+    got = engine._bucket_counts_from_ranking(ranking, limit=8)
+    assert got['rows_used'] == 8
+    assert got['counts'] == {'胜': 8, '平': 0, '负': 0}
+
+
+def test_structured_counts_reject_missing_or_bad_values() -> None:
+    """结构化 counts 缺项/非整数/全 0 都判 invalid，不补 0 猜数。"""
+    assert engine._counts_from_structured({'胜': 1, '平': 2})['available'] is False
+    assert engine._counts_from_structured({'胜': -1, '平': 2, '负': 3})['available'] is False
+    assert engine._counts_from_structured({'胜': 1.5, '平': 2, '负': 3})['available'] is False
+    assert engine._counts_from_structured({'胜': 0, '平': 0, '负': 0})['available'] is False
+    assert engine._counts_from_structured({'胜': 3, '平': 0, '负': 1}) == {
+        'available': True, 'counts': {'胜': 3, '平': 0, '负': 1},
+    }
+
+
 def test_engine_consumes_score_matrix_input_directly() -> None:
     """传入 pack 作为 score_matrix -> Step3/6 真的吃 31 项（不再是摆设）。"""
     pack = {
@@ -1083,3 +1267,80 @@ def test_module_returns_plain_dicts_and_lists_only() -> None:
         raise AssertionError(f'{path} 是 {type(node)}，不是纯 dict/list/标量')
 
     walk(out)
+
+
+# =========================================================================== #
+# app 接线：生产形态调用点必须真的把结构化输入传下去
+# =========================================================================== #
+def test_app_wiring_passes_structured_inputs_and_locks_two_scores() -> None:
+    """build_six_step_convergence_section 在生产形态下必须锁定 2 个比分。
+
+    这是「测试形状与生产形状不一致」缺陷的接线级回归：heat_tg_lines 为空、
+    市短专表只有条数，唯一可用的是 score_market_heat.ranking 与 31 pack。
+    """
+    import importlib
+
+    import blade_deepseek_pipeline as pipe_mod
+
+    app = importlib.import_module('app_v84_hermes')
+    pack = _production_pack()
+
+    rec = {
+        'lam_h': 1.45,
+        'lam_a': 1.10,
+        'ou_line': 2.5,
+        'asian_handicap': -0.75,
+        'score_market_heat': {
+            'available': True,
+            'ranking': [
+                {'score': '1-0', 'odds': 6.50},
+                {'score': '2-1', 'odds': 7.40},
+                {'score': '1-1', 'odds': 7.34},
+                {'score': '0-0', 'odds': 9.00},
+            ],
+        },
+        'six_market_mobile': {
+            'ou_over_water': 1.90, 'ou_under_water': 1.90, 'ou_start_line': 2.25,
+        },
+        'half_time_1x2': {'home': 2.10, 'draw': 2.30, 'away': 5.00},
+        'half_time_ou_line': 1.0,
+        'league_rank_home': 2,
+        'league_rank_away': 12,
+        'borsa_signals_count': 5,
+        'immutable_factor_total': 5,
+    }
+    payload = {
+        'odds_1x2': {'home': 1.60, 'draw': 4.00, 'away': 5.50},
+        'theo_mkt_31_pack': pack,
+    }
+    # 生产真实情况：bundle 里两个文本字段都是空/无计数
+    bundle = {
+        'heat_tg_lines': [],
+        'mkt_over_theo_tg_lines': pipe_mod.DeepSeekAnalyzer.format_mkt_over_theo_tg_lines(pack),
+    }
+    lines = app.build_six_step_convergence_section(rec, bundle=bundle, ds_payload=payload)
+    text = '\n'.join(lines)
+    result = rec.get('six_step_convergence') or {}
+
+    assert result.get('status') == 'ok', text
+    assert len(result.get('locked_scores') or []) == 2
+    assert result['heat_source_path'] == 'ranking'
+    assert result['short_source_path'] in ('ranking', 'counts')
+    assert '锁定2个比分: 主选' in text
+    assert '次选' in text
+
+
+def test_app_wiring_reports_missing_reasons_instead_of_bare_unformed() -> None:
+    """接线层中止时，段内必须写出具体缺失字段，而不是裸「未形成」。"""
+    import importlib
+
+    app = importlib.import_module('app_v84_hermes')
+    rec = {'lam_h': 1.45, 'lam_a': 1.10, 'ou_line': 2.5, 'asian_handicap': -0.75}
+    lines = app.build_six_step_convergence_section(rec, bundle={}, ds_payload={})
+    text = '\n'.join(lines)
+    assert '🧭【六步收敛】' in text
+    assert '中止' in text
+    assert '缺失' in text or '异常' in text
+    for line in text.splitlines():
+        if '未形成' in line:
+            assert '（' in line, f'裸「未形成」不允许: {line}'

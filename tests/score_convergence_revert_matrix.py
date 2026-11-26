@@ -185,6 +185,15 @@ CASES: list[tuple[str, Path, str, str, str]] = [
         """    if vote.get('available'):""",
         'test_pairwise_tie_is_not_draw_evidence_and_aborts_step1',
     ),
+    (
+        'G16 Step4 结构化输入优先（生产形态回归）',
+        MODULE,
+        """    heat = _wdl_signal(payload, 'heat', log)
+    short = _wdl_signal(payload, 'short', log)""",
+        """    heat = _normalize_signal_counts(_parse_heat_lines(payload.get('heat_tg_lines')))
+    short = _normalize_signal_counts(_parse_short_lines(payload.get('mkt_over_theo_tg_lines')))""",
+        'test_production_shape_payload_locks_two_scores',
+    ),
 ]
 
 

@@ -56,6 +56,7 @@ _CN_TO_DIRECTION = {'胜': 'H', '平': 'D', '负': 'A'}
 _DIRECTION_TO_CN = {'H': '胜', 'D': '平', 'A': '负'}
 _DIRECTION_CN = {'H': '主胜', 'D': '平局', 'A': '客胜'}
 _BUCKET_OF_DIRECTION = {'H': 'home', 'D': 'draw', 'A': 'away'}
+_DIRECTION_OF_BUCKET = {'home': 'H', 'draw': 'D', 'away': 'A'}
 _OU_CN = {'OVER': '大球', 'UNDER': '小球'}
 
 # 盘口枚举：唯一的一份中英文别名映射。
@@ -1607,6 +1608,150 @@ def lowest_odds_draw_check(
     return out
 
 
+def _bucket_counts_from_ranking(ranking: Any, limit: Any = None) -> dict[str, Any]:
+    """从市热/市短榜单按赛果方向计数（结构化输入优先路径）。
+
+    ``ranking`` 每行需带 ``score``；``odds``/``heat`` 可选（本函数只数方向）。
+    聚合桶（胜其它/平其它/负其它 及别名写法）按前缀归入对应方向。
+    ``limit`` 给出时只取前 N 行（市热榜惯用前 8）。
+    """
+    rows = ranking if isinstance(ranking, (list, tuple)) else []
+    if limit is not None:
+        rows = rows[:int(limit)]
+    counts: dict[str, int] = {'胜': 0, '平': 0, '负': 0}
+    skipped: list[str] = []
+    used = 0
+    for item in rows:
+        if isinstance(item, dict):
+            score = item.get('score') or item.get('name') or ''
+        elif isinstance(item, (list, tuple)) and item:
+            score = item[0]
+        else:
+            continue
+        score_key = _cs_key(score)
+        bucket = _score_bucket(score_key)
+        if bucket not in ('home', 'draw', 'away'):
+            skipped.append(str(score))
+            continue
+        counts[_DIRECTION_TO_CN[_DIRECTION_OF_BUCKET[bucket]]] += 1
+        used += 1
+    return {
+        'available': used > 0,
+        'counts': counts,
+        'rows_used': used,
+        'skipped': skipped,
+        'total': used,
+    }
+
+
+def _counts_from_structured(value: Any) -> dict[str, Any]:
+    """校验并归一调用方给的 ``{胜,平,负}`` 计数（不补 0、不猜缺项）。"""
+    if not isinstance(value, dict):
+        return {'available': False, 'reason': '不是 {胜,平,负} 字典'}
+    counts: dict[str, int] = {}
+    for label in ('胜', '平', '负'):
+        number = _finite(value.get(label))
+        if number is None or number < 0 or not float(number).is_integer():
+            return {'available': False, 'reason': f'{label} 缺失或非非负整数: {value.get(label)!r}'}
+        counts[label] = int(number)
+    if sum(counts.values()) <= 0:
+        return {'available': False, 'reason': '三项计数合计为 0（无有效信号）'}
+    return {'available': True, 'counts': counts}
+
+
+def _normalize_signal_counts(signal: dict[str, Any]) -> dict[str, Any]:
+    """给方向信号补上 dominant / dominant_cn / total（统一口径）。"""
+    out = dict(signal)
+    counts = out.get('counts') or {}
+    if not counts:
+        out.setdefault('dominant', '')
+        out.setdefault('dominant_cn', '')
+        out.setdefault('total', 0)
+        return out
+    dominant_cn = max(counts, key=lambda k: counts[k])
+    out['dominant_cn'] = dominant_cn
+    out['dominant'] = _CN_TO_DIRECTION[dominant_cn]
+    out['total'] = sum(counts.values())
+    return out
+
+
+def _wdl_signal(payload: dict[str, Any], kind: str, log: AuditLog) -> dict[str, Any]:
+    """市热/市短的方向信号：结构化优先，渲染文本仅作兼容兜底。
+
+    优先级（``kind='heat'``）：
+      1. ``heat_ranking`` —— 由现有 ranking 逐行按方向计数（首选：数字来自数据本身）；
+      2. ``heat_wdl_counts`` —— 调用方已算好的 {胜,平,负}；
+      3. ``heat_tg_lines`` —— 旧调用方的渲染文本（正则解析，可能解析不出）；
+    ``kind='short'`` 对应 ``short_rows`` / ``short_wdl_counts`` / ``mkt_over_theo_tg_lines``。
+    三条都不可用时返回 available=False + 明确原因，绝不编造计数。
+    """
+    if kind == 'heat':
+        ranking_key, counts_key, lines_key, parser = (
+            'heat_ranking', 'heat_wdl_counts', 'heat_tg_lines', _parse_heat_lines,
+        )
+        limit = 8
+    else:
+        ranking_key, counts_key, lines_key, parser = (
+            'short_rows', 'short_wdl_counts', 'mkt_over_theo_tg_lines', _parse_short_lines,
+        )
+        limit = None
+    tried: list[str] = []
+
+    ranking = payload.get(ranking_key)
+    if isinstance(ranking, (list, tuple)) and ranking:
+        from_ranking = _bucket_counts_from_ranking(ranking, limit=limit)
+        if from_ranking['available']:
+            log.add('LINKAGE', f'{kind.upper()}_FROM_RANKING', {
+                'rows_used': from_ranking['rows_used'], 'counts': from_ranking['counts'],
+            })
+            return _normalize_signal_counts({
+                'available': True,
+                'source_path': 'ranking',
+                'counts': from_ranking['counts'],
+                'total': from_ranking['total'],
+                'rows_used': from_ranking['rows_used'],
+                'skipped': from_ranking['skipped'],
+            })
+        tried.append(f'{ranking_key}(无可用比分行)')
+
+    structured = _counts_from_structured(payload.get(counts_key))
+    if structured['available']:
+        log.add('LINKAGE', f'{kind.upper()}_FROM_COUNTS', {'counts': structured['counts']})
+        total = sum(structured['counts'].values())
+        return _normalize_signal_counts({
+            'available': True,
+            'source_path': 'counts',
+            'counts': structured['counts'],
+            'total': total,
+            'rows_used': total,
+            'skipped': [],
+        })
+    if payload.get(counts_key) is not None:
+        tried.append(f'{counts_key}({structured["reason"]})')
+
+    parsed = parser(payload.get(lines_key))
+    if parsed.get('available'):
+        log.add('LINKAGE', f'{kind.upper()}_FROM_LINES', {'counts': parsed.get('counts')})
+        return _normalize_signal_counts({
+            'available': True,
+            'source_path': 'lines',
+            'counts': parsed['counts'],
+            'total': parsed.get('total', sum(parsed['counts'].values())),
+            'rows_used': parsed.get('total', sum(parsed['counts'].values())),
+            'skipped': [],
+        })
+    tried.append(f'{lines_key}({parsed.get("reason") or "无可解析计数"})')
+
+    return {
+        'available': False,
+        'source_path': 'none',
+        'counts': {},
+        'total': 0,
+        'reason': '；'.join(tried) or f'{kind} 无结构化输入且无渲染文本',
+        'tried': tried,
+    }
+
+
 def step4_linkage(
     payload: dict[str, Any],
     step1: dict[str, Any],
@@ -1624,6 +1769,8 @@ def step4_linkage(
         'linkage_weight': 1.0,
         'heat': {'available': False},
         'short': {'available': False},
+        'heat_source_path': 'none',
+        'short_source_path': 'none',
         'lowest_odds_check': {},
         'macro_conf_mod': 0.0,
         'macro_veto': VETO_NONE,
@@ -1638,14 +1785,18 @@ def step4_linkage(
         result.update({'status': 'aborted', 'reason': _ERROR_TEXT['upstream_aborted']})
         return result
 
-    heat = _parse_heat_lines(payload.get('heat_tg_lines'))
-    short = _parse_short_lines(payload.get('mkt_over_theo_tg_lines'))
+    heat = _wdl_signal(payload, 'heat', log)
+    short = _wdl_signal(payload, 'short', log)
     result['heat'] = heat
     result['short'] = short
+    result['heat_source_path'] = heat.get('source_path', 'none')
+    result['short_source_path'] = short.get('source_path', 'none')
     if not heat.get('available'):
-        result['missing'].append({'field': 'heat_tg_lines', 'reason': heat.get('reason')})
+        result['missing'].append({'field': 'heat_ranking/heat_wdl_counts/heat_tg_lines',
+                                  'reason': heat.get('reason')})
     if not short.get('available'):
-        result['missing'].append({'field': 'mkt_over_theo_tg_lines', 'reason': short.get('reason')})
+        result['missing'].append({'field': 'short_rows/short_wdl_counts/mkt_over_theo_tg_lines',
+                                  'reason': short.get('reason')})
 
     normalized = normalize_handicap_line(payload.get('asian_handicap'))
     if not normalized.get('valid'):
@@ -2266,6 +2417,8 @@ def run_score_convergence(payload: Any = None, **kwargs: Any) -> dict[str, Any]:
         'candidate_count': len(step3.get('candidates') or []),
         'consistency_score': step5.get('total_score'),
         'conflict_count': len(step5.get('conflicts') or []),
+        'heat_source_path': step4.get('heat_source_path', 'none'),
+        'short_source_path': step4.get('short_source_path', 'none'),
         'aborted_steps': aborted,
         'abort_reasons': {name: steps[name].get('reason') for name in aborted},
         'missing': _collect(('missing',), steps),
