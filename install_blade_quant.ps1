@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# f891bec = 装饰器门禁 + 落盘写入权威化 + 遍历覆盖真实落盘路径
-$PinCommit = 'f891bec4debf89fc2f9db429b141c72f2f2fc9cc'
+# 299fb3f = 落盘写入 docstring 与行为对齐 + 钉子测试
+$PinCommit = '299fb3f2561c9182b86d96039c837ce0f6045228'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
