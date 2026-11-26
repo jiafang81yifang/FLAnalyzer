@@ -1152,15 +1152,52 @@ class DeepSeekAnalyzer:
         return {'available': False, 'in_hot8': False}
 
     @staticmethod
-    def extract_dual_scores_from_judgment_text(text: Any) -> dict[str, Any]:
-        """从研判正文抽①②两个比分。调用方按 dict 取值，所以这里固定返回 dict。"""
+    @staticmethod
+    def extract_dual_scores_from_judgment_text(text: Any,
+                                               lock_payload: Any = None) -> dict[str, Any]:
+        """从研判正文抽①②两个比分，并保证这两个候选同向。
+
+        正文里的两个比分是**同一注**的候选，必须同方向。旧实现只用正则取前两个
+        比分，于是一对反方向比分（如 2-0 与 1-2）会被当成同一注存进
+        `predicted_score`/`second_score`，再被报告面并列渲染。
+
+        收口规则（不新写方向判定，复用模块级唯一实现 `_score_wdl`）：
+          1. 两候选同向 → 原样保留；
+          2. 不同向 → 若方向锁里有该方向的**另一个**比分，用它替换第二个候选
+             （只从锁里取，绝不发明比分）；
+          3. 仍不能同向 → 只留第一个，第二个置空并记 `direction_mismatch`。
+
+        `second_reason` 只在第二个候缺失或被替换时给出，调用方据此决定渲染
+        「未形成」还是落盘。
+        """
         found = re.findall(r'\d+\s*[-:]\s*\d+', str(text or ''))
         first = _norm_score(found[0]) if found else ''
         second = _norm_score(found[1]) if len(found) > 1 else ''
+        reason = ''
+        if first and second:
+            first_dir = _score_wdl(first)
+            second_dir = _score_wdl(second)
+            if first_dir and second_dir and first_dir != second_dir:
+                replacement = ''
+                lock = lock_payload.get('direction_lock') if isinstance(lock_payload, dict) else None
+                if isinstance(lock, dict) and lock.get('locked') \
+                        and str(lock.get('direction') or '') == first_dir:
+                    for candidate in (lock.get('scores') or []):
+                        token = _norm_score(candidate)
+                        if token and token != first and _score_wdl(token) == first_dir:
+                            replacement = token
+                            break
+                if replacement:
+                    second = replacement
+                    reason = 'direction_mismatch_snapped_to_lock'
+                else:
+                    second = ''
+                    reason = 'direction_mismatch'
         return {
             'available': bool(first),
             'first': first,
             'second': second,
+            'second_reason': reason,
             'scores': [_norm_score(s) for s in found[:4]],
         }
 

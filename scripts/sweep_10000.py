@@ -36,6 +36,9 @@ Invariants asserted per case (each violation is recorded as one defect):
       pick when its two candidates belong to different directions
   I10 an over-range integer literal (json.loads can produce one) must not raise
       and must not put a non-finite value into a numeric field
+  I11 the landing path (`extract_dual` → record → report) must never store a
+      pair of opposite directions, and the report must not state a direction
+      that contradicts the candidates it renders
 
 Tolerances: percentages are carried through `round(x, 4)`, i.e. one half-step is
 5e-5 pp per row. `CONSERVATION_TOL_PCT` is 31 half-steps (~3.1e-3 pp), derived
@@ -60,6 +63,7 @@ import io
 import json
 import math
 import random
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -696,6 +700,67 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
                      f'heat accepted an over-range int without a rejection reason: {probed[:1]}')
         coverage.hit('overflow_ok')
 
+    # ---- I11: the landing path must not store a cross-direction pair ----
+    # `extract_dual_scores_from_judgment_text` is the only place that writes
+    # `predicted_score`/`second_score`, so this checks the pair it produces and
+    # what the report then says about it. A pair of opposite directions must
+    # never survive to the record.
+    coverage.hit('landing_path_checked')
+    landing_cases = (
+        ('cross_no_lock', '①2-0 ②1-2', None),
+        ('cross_with_lock', '①2-0 ②1-2',
+         {'direction_lock': {'locked': True, 'direction': '胜', 'scores': ['2-0', '3-0']}}),
+        ('cross_with_other_lock', '①2-0 ②1-2',
+         {'direction_lock': {'locked': True, 'direction': '负', 'scores': ['0-1']}}),
+        ('same', '①2-1 ②1-0', None),
+        ('draw_pair', '①1-1 ②2-2', None),
+    )
+    for label, text, lock in landing_cases:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                extracted = pipe.DeepSeekAnalyzer.extract_dual_scores_from_judgment_text(text, lock)
+        except TypeError:
+            # An older build accepts only the text argument. Retry without the
+            # lock so the invariant still measures what that build stores,
+            # instead of aborting the whole case on a signature difference.
+            with contextlib.redirect_stdout(io.StringIO()):
+                extracted = pipe.DeepSeekAnalyzer.extract_dual_scores_from_judgment_text(text)
+        if not isinstance(extracted, dict):
+            continue
+        first = str(extracted.get('first') or '')
+        second = str(extracted.get('second') or '')
+        reason = str(extracted.get('second_reason') or '')
+        d1, d2 = pipe._score_wdl(first), pipe._score_wdl(second)
+        if second:
+            if d1 and d2 and d1 != d2:
+                fail('I11-landing-cross-direction',
+                     f'{label}: stored pair {first}({d1}) / {second}({d2})')
+            else:
+                coverage.hit('landing_same_direction')
+        elif first and reason != 'direction_mismatch' and '②' in text:
+            # an absent second is only legitimate when the direction check
+            # removed it (or the text carried just one score)
+            fail('I11-landing-absent-without-reason',
+                 f'{label}: second empty with reason={reason!r}')
+
+        # the report must not then contradict the candidates it renders
+        common = {'match': 'A vs B', 'correct_score_available': True,
+                  'mobile_market_ready': True, 'predicted_score': first,
+                  'second_score': second}
+        if reason:
+            common['second_score_absent_reason'] = reason
+        if lock:
+            common['direction_lock'] = lock['direction_lock']
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = app.build_unified_analysis_report(common, source='sweep')
+        verdict = str(next((s.get('verdict') for s in (report.get('sections') or [])
+                            if s.get('key') == 'verdict'), ''))
+        stated = re.search(r'方向\s*([胜平负])', verdict)
+        dirs = [d for d in (d1, d2) if d]
+        if stated and dirs and stated.group(1) not in dirs:
+            fail('I11-report-direction-contradicts',
+                 f'{label}: verdict says 方向{stated.group(1)} but candidates are {dirs}')
+
     return failures
 
 
@@ -831,6 +896,12 @@ def _cluster(failures: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
             key = 'I10 超范围整数赔率把非有限值写进数值字段'
         elif invariant == 'I10-overflow-unlabelled':
             key = 'I10 超范围整数赔率未记录拒绝原因'
+        elif invariant == 'I11-landing-cross-direction':
+            key = 'I11 落盘路径存下了跨方向的候选对'
+        elif invariant == 'I11-landing-absent-without-reason':
+            key = 'I11 第二候选为空但没有方向校验原因'
+        elif invariant == 'I11-report-direction-contradicts':
+            key = 'I11 报告陈述的方向与候选矛盾'
         else:
             key = f'{invariant} {detail[:48]}'
         grouped[key].append(failure)

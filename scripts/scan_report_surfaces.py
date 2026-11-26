@@ -1,9 +1,17 @@
-"""Scan every user-facing report surface for direction-choice wording.
+"""Scan every user-facing report surface for direction-choice wording AND for
+direction consistency between the candidates a surface renders.
 
-The rule is direction uniqueness: no surface may emit 首选/次选/双选/强推/推荐
-(`不做推荐` is the only permitted use). This script drives the surfaces that
-render text and scans their real output, plus the string literals the app
-sends to Telegram.
+Two independent rules, both violations counted as dirty:
+
+  1. wording — no surface may emit 首选/次选/双选/强推/推荐 (`不做推荐` is the
+     only permitted use);
+  2. direction consistency — where a surface renders a candidate **pair**,
+     the two candidates must be classifiable and share one direction; and any
+     direction the surface states must agree with those candidates. A surface
+     that prints "候选A 2-0｜候选B 1-2" (主胜 + 客胜) or "候选A 2-0｜方向 负" is
+     dirty even though it contains no banned word.
+
+Rule 2 exists because a wording-only scan called that output clean once already.
 
 Usage:
     python scripts/scan_report_surfaces.py
@@ -44,8 +52,53 @@ def _hits(text: str) -> dict[str, int]:
     return out
 
 
+# A surface renders a candidate pair when both slots are present. The slot
+# labels are the ones the reports actually use; `未形成` means "no second
+# candidate", which is the correct outcome rather than a conflict.
+_SCORE = r'[0-9]+\s*[-:]\s*[0-9]+'
+_PAIR_PATTERNS = (
+    re.compile(rf'候选A\s*({_SCORE})[\s\S]{{0,60}}?候选B\s*({_SCORE})'),
+    re.compile(rf'①\s*({_SCORE})[\s\S]{{0,60}}?②\s*({_SCORE})'),
+)
+# `方向 X` stated near the pair.
+_DIRECTION_STATED = re.compile(r'方向\s*([胜平负])')
+
+
+def _direction_issues(name: str, text: str) -> dict[str, int]:
+    """Count direction inconsistencies on a rendered surface.
+
+    Only surfaces that actually render a candidate pair are judged; a surface
+    with no pair has nothing to contradict, so it contributes zero.
+    """
+    issues: dict[str, int] = {}
+    pairs = 0
+    for line in text.splitlines():
+        for pattern in _PAIR_PATTERNS:
+            for match in pattern.finditer(line):
+                pairs += 1
+                first = pipe._score_wdl(match.group(1))
+                second = pipe._score_wdl(match.group(2))
+                if not first or not second:
+                    continue
+                if first != second:
+                    # a conflict is only clean if the surface says so and
+                    # refuses to name one of them
+                    if '方向不一致' in line and '不给出单一候选' in text:
+                        continue
+                    issues['pair_cross_direction'] = issues.get('pair_cross_direction', 0) + 1
+                    continue
+                stated = _DIRECTION_STATED.search(line)
+                if stated and stated.group(1) != first:
+                    issues['stated_direction_contradicts_pair'] = (
+                        issues.get('stated_direction_contradicts_pair', 0) + 1)
+    return issues
+
+
 def _record(name: str, text: str, results: list[tuple[str, dict[str, int]]]) -> None:
-    results.append((name, _hits(text)))
+    dirty = _hits(text)
+    for key, count in _direction_issues(name, text).items():
+        dirty[key] = dirty.get(key, 0) + count
+    results.append((name, dirty))
 
 
 def _compare_history(shape: str) -> dict[str, dict[str, object]]:
@@ -103,15 +156,26 @@ def scan() -> list[tuple[str, dict[str, int]]]:
     _record('theo_mkt_31_tg', tg, results)
     _record('ventropy_log', str(ventropy.get('log') or ''), results)
 
-    # 4. the unified analysis report
-    try:
-        report = app.build_unified_analysis_report(
-            {'match': 'A vs B', 'lam_h': 1.45, 'lam_a': 1.1,
-             'odds_1x2': {'home': 2.1, 'draw': 3.4, 'away': 3.2}},
-        )
-        _record('unified_report', json.dumps(report, ensure_ascii=False, default=str), results)
-    except TypeError:
-        _record('unified_report', '', results)
+    # 4. the unified analysis report, across the candidate shapes that matter.
+    #    `cross_*` render a pair whose members disagree, which is exactly the
+    #    case a wording-only scan called clean.
+    _record('unified_report', _unified_verdict_text(
+        {'match': 'A vs B', 'lam_h': 1.45, 'lam_a': 1.1,
+         'odds_1x2': {'home': 2.1, 'draw': 3.4, 'away': 3.2}}),
+        results)
+    common = {'match': 'A vs B', 'lam_h': 1.45, 'lam_a': 1.1,
+              'correct_score_available': True, 'mobile_market_ready': True}
+    for label, extra in (
+        ('unified_cross', {'predicted_score': '2-0', 'second_score': '1-2'}),
+        ('unified_cross_lock', {'predicted_score': '2-0', 'second_score': '1-2',
+                                'direction_lock': {'locked': True, 'direction': '胜'}}),
+        ('unified_lock_conflict', {'predicted_score': '2-0', 'second_score': '3-0',
+                                   'direction_lock': {'locked': True, 'direction': '负'}}),
+        ('unified_same', {'predicted_score': '2-1', 'second_score': '1-0'}),
+        ('unified_second_absent', {'predicted_score': '2-1', 'second_score': '',
+                                   'second_score_absent_reason': 'direction_mismatch'}),
+    ):
+        _record(label, _unified_verdict_text({**common, **extra}), results)
 
     # 5. the post-match review report (`report_text` is sent to Telegram when the
     #    flash writer returns nothing, so it is a real surface)
@@ -132,6 +196,16 @@ def scan() -> list[tuple[str, dict[str, int]]]:
     if help_text:
         _record('help_text', help_text, results)
     return results
+
+
+def _unified_verdict_text(data: dict[str, Any]) -> str:
+    """The unified report's rendered text, flattened for scanning.
+
+    The verdict section is the one that states a direction alongside the
+    candidate pair, so it is the surface that rule 2 is about.
+    """
+    report = app.build_unified_analysis_report(data, source='scan')
+    return json.dumps(report, ensure_ascii=False, default=str)
 
 
 def _review_report_text() -> str:

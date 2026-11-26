@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import re
 import sys
 from pathlib import Path
 from unittest import mock
@@ -405,6 +406,111 @@ def test_negative_over_range_int_is_handled() -> None:
 
 
 # --------------------------------------------------------------------------
+# D9: no surface may store or render a pair of opposite directions
+# --------------------------------------------------------------------------
+def test_extract_dual_rejects_a_cross_direction_pair() -> None:
+    """`extract_dual` used to regex out the first two scores with no direction check."""
+    got = pipe.DeepSeekAnalyzer.extract_dual_scores_from_judgment_text('①2-0 ②1-2')
+    assert got['first'] == '2-0'
+    assert got['second'] == '', f'a cross-direction second must be dropped, got {got["second"]!r}'
+    assert got['second_reason'] == 'direction_mismatch', got
+
+
+def test_extract_dual_snaps_to_a_locked_spare_when_one_exists() -> None:
+    """When the lock carries a same-direction alternative, use it — never invent one."""
+    lock = {'direction_lock': {'locked': True, 'direction': '胜', 'scores': ['2-0', '3-0']}}
+    got = pipe.DeepSeekAnalyzer.extract_dual_scores_from_judgment_text('①2-0 ②1-2', lock)
+    assert got['first'] == '2-0'
+    assert got['second'] == '3-0', f'expected the locked spare, got {got["second"]!r}'
+    assert got['second_reason'] == 'direction_mismatch_snapped_to_lock'
+
+
+def test_extract_dual_ignores_a_lock_that_points_the_other_way() -> None:
+    lock = {'direction_lock': {'locked': True, 'direction': '负', 'scores': ['0-1']}}
+    got = pipe.DeepSeekAnalyzer.extract_dual_scores_from_judgment_text('①2-0 ②1-2', lock)
+    assert got['second'] == '', 'a lock pointing away from the first candidate offers no spare'
+    assert got['second_reason'] == 'direction_mismatch'
+
+
+def test_extract_dual_keeps_a_same_direction_pair() -> None:
+    got = pipe.DeepSeekAnalyzer.extract_dual_scores_from_judgment_text('①2-1 ②1-0')
+    assert (got['first'], got['second']) == ('2-1', '1-0')
+    assert got['second_reason'] == '', 'a valid pair must not be marked'
+
+
+def _verdict(data: dict[str, object]) -> str:
+    report = app.build_unified_analysis_report(data, source='test')
+    return str(next(s.get('verdict') for s in report['sections'] if s['key'] == 'verdict'))
+
+
+COMMON = {'match': 'A vs B', 'lam_h': 1.45, 'lam_a': 1.1,
+          'correct_score_available': True, 'mobile_market_ready': True}
+
+
+def test_verdict_states_a_conflict_instead_of_naming_a_direction() -> None:
+    """It used to print `候选A 2-0｜候选B 1-2｜方向 未形成` — a pair with no verdict."""
+    text = _verdict({**COMMON, 'predicted_score': '2-0', 'second_score': '1-2'})
+    assert '方向不一致' in text, text
+    assert '不给出单一候选' in text, text
+    assert not re.search(r'方向\s*[胜平负]', text), (
+        f'a contradictory pair must not state a direction: {text}'
+    )
+
+
+def test_verdict_does_not_let_a_lock_contradict_the_candidates() -> None:
+    """The lock used to overwrite `direction`, yielding `候选A 2-0｜方向 负`."""
+    text = _verdict({**COMMON, 'predicted_score': '2-0', 'second_score': '3-0',
+                     'direction_lock': {'locked': True, 'direction': '负'}})
+    stated = re.search(r'方向\s*([胜平负])', text)
+    assert stated, f'the verdict should still state the candidates’ own direction: {text}'
+    assert stated.group(1) == '胜', (
+        f'a 主胜 pair must not be labelled 方向{stated.group(1)}: {text}'
+    )
+    assert '与候选方向' in text and '不一致' in text, (
+        f'the lock conflict must be stated explicitly: {text}'
+    )
+
+
+def test_verdict_reports_a_cross_pair_even_with_a_agreeing_lock() -> None:
+    text = _verdict({**COMMON, 'predicted_score': '2-0', 'second_score': '1-2',
+                     'direction_lock': {'locked': True, 'direction': '胜'}})
+    assert '方向不一致' in text, text
+    assert '不给出单一候选' in text, text
+    assert not re.search(r'方向\s*[胜平负]', text), text
+
+
+def test_verdict_explains_an_absent_second_candidate() -> None:
+    text = _verdict({**COMMON, 'predicted_score': '2-1', 'second_score': '',
+                     'second_score_absent_reason': 'direction_mismatch'})
+    assert '候选B 未形成' in text, text
+    assert '方向不一致' in text, text
+
+
+def test_report_surface_scan_catches_direction_contradictions() -> None:
+    """The scanner must judge direction, not just wording.
+
+    Feeding it a surface that is wording-clean but renders a contradictory pair
+    has to come back dirty — that is the gap the wording-only scan left.
+    """
+    scan = importlib.import_module('scripts.scan_report_surfaces')
+    fake: list[tuple[str, dict[str, int]]] = []
+    scan._record('probe',
+                 '候选A 2-0｜候选B 1-2｜方向 未形成｜置信度 中偏高（70.0%）', fake)
+    assert fake and fake[0][1], 'a cross-direction pair with no conflict statement must be dirty'
+    assert 'pair_cross_direction' in fake[0][1], fake
+
+    fake2: list[tuple[str, dict[str, int]]] = []
+    scan._record('probe2', '候选A 2-0｜候选B 3-0｜方向 负｜置信度 中偏高（70.0%）', fake2)
+    assert 'stated_direction_contradicts_pair' in fake2[0][1], fake2
+
+    fake3: list[tuple[str, dict[str, int]]] = []
+    scan._record('probe3',
+                 '候选A 2-0｜候选B 1-2｜两候选方向不一致（2-0为胜，1-2为负），'
+                 '不能作为同一注的两个候选；此处不给出单一候选', fake3)
+    assert not fake3[0][1], f'a stated conflict is clean: {fake3}'
+
+
+# --------------------------------------------------------------------------
 # The sweep itself must be green and must not be vacuous
 # --------------------------------------------------------------------------
 def test_sweep_is_green_and_not_vacuous() -> None:
@@ -437,6 +543,10 @@ def test_sweep_is_green_and_not_vacuous() -> None:
         # the over-range-int probe runs once per case
         ('overflow_probe_checked', 400),
         ('overflow_ok', 1200),
+        # the landing path (`extract_dual` -> record -> report) runs per case,
+        # and its same-direction branch must actually be exercised
+        ('landing_path_checked', 400),
+        ('landing_same_direction', 1200),
     ):
         assert coverage.counts[name] >= floor, (
             f'{name}={coverage.counts[name]} < {floor}: the sweep went vacuous. '
