@@ -321,15 +321,16 @@ class UnifiedOddsEvaluator:
         report["effective_payout_with_push"] = round(effective_payout, 6)
         # 走水盘口的凯利只是近似：f* = ev/(o-1) 假定只有“赢/输”两种结果，
         # 而含走水的精确解是 ev/((o-1)*(p_win+p_loss))，即再除以未走水概率。
-        # 因此 push 概率越大，这里的 full_kelly 越**低估**真实最优仓位。必须显式
-        # 说明，不能让调用方以为它在 push_prob>0 时仍然精确。
+        # 因此 push 概率越大，这里的 full_kelly 越**低估**真实最优仓位：
+        # full_kelly * 1/(1-push_prob) 才等于增长最优仓位。必须显式说明，
+        # 不能让调用方以为它在 push_prob>0 时仍然精确。
         if kelly_info is not None and (push_prob > 0.0 or true_push_prob > 0.0):
             report["kelly_note"] = (
-                "full_kelly/scaled_kelly 按 ev/(odds-1) 计算，隐含“只有赢/输两种结果”，"
-                "未除以未走水概率 (p_win+p_loss)；含走水的精确凯利为 "
-                "ev/((odds-1)*(p_win+p_loss))，故本盘口 "
-                f"push_prob={round(push_prob, 6)}、true_push_prob={round(true_push_prob, 6)} 时"
-                "该凯利仓位是近似值（偏低估真实最优仓位），仅供仓位上限参考。"
+                "push_prob>0 时 ev/(o-1) 低估真实最优仓位，精确解需除以 (1-push_prob)（即未走水概率 "
+                "p_win+p_loss）：精确 f* = ev/((odds-1)*(p_win+p_loss))，"
+                "full_kelly * 1/(1-push_prob) 才等于增长最优仓位。"
+                f"本盘口 push_prob={round(push_prob, 6)}、true_push_prob={round(true_push_prob, 6)}，"
+                "故此处 full_kelly/scaled_kelly 为近似值（偏低估），仅供仓位上限参考。"
             )
         return report
 

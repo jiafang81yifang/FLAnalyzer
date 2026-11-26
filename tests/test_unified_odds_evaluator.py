@@ -117,6 +117,60 @@ def test_payout_and_margin_match_hand_computed_values(odds, payout, margin) -> N
     assert report['overround'] == pytest.approx(1.0 / report['payout_rate'], rel=1e-6)
 
 
+@pytest.mark.parametrize(
+    ('odds', 'overround', 'payout', 'margin', 'fair'),
+    [
+        # Exact fractions, written out so the reference numbers are auditable
+        # without floating point. Each is the reduced form of
+        # overround=sum(1/o), payout=1/overround, margin=1-payout, fair_i=(1/o_i)/overround.
+        (
+            CN_1X2,
+            Fraction(133, 117),   # 2/3 + 5/18 + 5/26
+            Fraction(117, 133),   # = 0.8796992481...
+            Fraction(16, 133),    # = 0.1203007519...
+            [Fraction(78, 133), Fraction(65, 266), Fraction(45, 266)],
+        ),
+        (
+            INTL_1X2,
+            Fraction(47228, 44659),   # 20/37 + 20/71 + 4/17
+            Fraction(44659, 47228),   # = 0.9456043025...
+            Fraction(2569, 47228),    # = 0.0543956975...
+            [Fraction(6035, 11807), Fraction(3145, 11807), Fraction(2627, 11807)],
+        ),
+        (
+            CN_OU,
+            Fraction(347, 301),    # 25/43 + 4/7
+            Fraction(301, 347),    # = 0.8674351585...
+            Fraction(46, 347),     # = 0.1325648415...
+            [Fraction(175, 347), Fraction(172, 347)],
+        ),
+        (
+            INTL_OU,
+            Fraction(7720, 7449),  # 20/39 + 100/191
+            Fraction(7449, 7720),  # = 0.9648963731...
+            Fraction(271, 7720),   # = 0.0351036269...
+            [Fraction(191, 386), Fraction(195, 386)],
+        ),
+    ],
+)
+def test_every_reported_value_is_the_exact_fraction_rounded(odds, overround, payout, margin, fair) -> None:
+    """The report's 6-dp numbers must be exactly these fractions rounded."""
+    ev = UnifiedOddsEvaluator()
+    if len(odds) == 3:
+        report = ev.evaluate_1x2('m', 'CN', odds)
+    else:
+        report = ev.evaluate_two_way('m', 'CN', 'OU', odds, ('OVER', 'UNDER'), line=2.5)
+
+    assert report['overround'] == round(float(overround), 6)
+    assert report['payout_rate'] == round(float(payout), 6)
+    assert report['margin_rate'] == round(float(margin), 6)
+    assert report['fair_probs_no_vig'] == [round(float(f), 6) for f in fair]
+    # payout + margin are exactly 1 by construction, not merely close.
+    assert payout + margin == 1
+    assert payout == 1 / overround
+    assert sum(fair) == 1
+
+
 def test_ev_matches_hand_computed_values() -> None:
     ev = demo_evaluator()
     cn = ev.evaluate_1x2('m', 'CN', CN_1X2, true_probs=(0.68, 0.19, 0.13))
@@ -147,12 +201,16 @@ def test_demo_margin_spreads_are_below_floor_and_yield_zero_picks() -> None:
 
     by_type = {c['market_type']: c for c in comparisons}
 
-    # 1X2: 0.120301 - 0.054396 = 0.065905, below the 0.15 floor.
-    # (The spec's reference block says 0.065912 and a CN margin of .120308; both
-    # are rounding drift -- the exact values are 0.065905 and 0.120301.)
+    # 1X2: 16/133 - 2569/47228 = 413971/6281324 = 0.065905..., below the 0.15 floor.
+    # The exact fraction is the audit trail: 117/133 = .879699 payout for CN, and
+    # the spread is a MARGIN difference, not a payout difference (which would be
+    # its negation, -0.065905).
     assert by_type['1X2']['cn_margin_rate'] == pytest.approx(0.120301, abs=1e-9)
     assert by_type['1X2']['intl_margin_rate'] == pytest.approx(0.054396, abs=1e-9)
     assert by_type['1X2']['margin_diff_cn_minus_intl'] == pytest.approx(0.065905, abs=1e-6)
+    assert by_type['1X2']['margin_diff_cn_minus_intl'] == pytest.approx(
+        float(Fraction(413971, 6281324)), abs=5e-7
+    )
 
     # OU: 0.132565 - 0.035104 = 0.097461, also below the floor.
     assert by_type['OU']['margin_diff_cn_minus_intl'] == pytest.approx(0.097461, abs=1e-6)
@@ -411,6 +469,60 @@ def test_kelly_note_present_and_numbers_unchanged_with_push() -> None:
     exact_kelly = ev_a / (b * (0.50 + 0.40))
     assert exact_kelly == pytest.approx(0.151515, abs=1e-6)
     assert exact_kelly > report['kelly_stakes'][0]['full_kelly']
+
+
+def _numeric_growth_argmax(p_win: float, p_loss: float, p_push: float, odds: float) -> float:
+    """f maximizing E[log(1+f*X)] for a win/loss/push bet, searched numerically.
+
+    Deliberately does not use any closed form: this is the independent oracle the
+    implemented Kelly figure is checked against.
+    """
+    b = odds - 1.0
+    best_f, best_g = 0.0, -math.inf
+    steps = 200_000
+    for i in range(1, steps):
+        f = i / steps / (1.0 / 0.5)  # scan f in (0, 0.5)
+        growth = p_win * math.log(1.0 + f * b) + p_loss * math.log(1.0 - f) + p_push * math.log(1.0)
+        if growth > best_g:
+            best_g, best_f = growth, f
+    return best_f
+
+
+def test_full_kelly_times_push_correction_equals_numerically_maximized_fraction() -> None:
+    """full_kelly * 1/(1-push_prob) must reproduce the growth-optimal fraction.
+
+    The implementation reports ev/(o-1); the exact growth optimum divides that by
+    the no-push mass (p_win+p_loss) = 1-push_prob. This asserts the relation the
+    kelly_note now states, against a numerically maximized fraction rather than
+    against a second closed form.
+    """
+    push = 0.10
+    p_win, p_loss = 0.50, 0.40
+    odds = 2.10
+    assert p_win + p_loss + push == pytest.approx(1.0, abs=1e-12)
+
+    report = UnifiedOddsEvaluator().evaluate_two_way(
+        'M', 'INTL', 'AH', (odds, 1.80), ('AH_HOME', 'AH_AWAY'), line=-0.5,
+        true_probs=(p_win, p_loss), push_prob=push, true_push_prob=push,
+    )
+    reported = report['kelly_stakes'][0]['full_kelly']
+    # Hand-computed: ev = .5*1.10 - .4 = .15 ; .15/1.10 = 3/22 = 0.13636...
+    assert reported == pytest.approx(3 / 22, abs=1e-6)
+
+    corrected = reported * 1.0 / (1.0 - push)
+    # 3/22 * 10/9 = 5/33 = 0.151515...
+    assert corrected == pytest.approx(5 / 33, abs=1e-5)
+
+    numeric = _numeric_growth_argmax(p_win, p_loss, push, odds)
+    assert numeric == pytest.approx(5 / 33, abs=2e-3)
+    assert corrected == pytest.approx(numeric, abs=2e-3)
+
+    # And the uncorrected figure is genuinely below the optimum, so the note's
+    # direction ("understates") is correct.
+    assert reported < numeric
+    # The note must actually say so, and cite the divisor.
+    assert '低估' in report['kelly_note']
+    assert '1-push_prob' in report['kelly_note']
 
 
 def test_kelly_note_follows_the_push_into_ev_picks() -> None:
