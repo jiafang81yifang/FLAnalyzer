@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
-$PinCommit = '7e87590d7ee8134149e9b9f2f5ef2e18834c0b03'
+# 69301c1 = 31项比分/15战术池/最低前8均差三套矩阵 + 单文件注册（installer 从该 commit 取 app）
+$PinCommit = '69301c1e34dc76694d68fbc08a21951c4f44a0a4'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
