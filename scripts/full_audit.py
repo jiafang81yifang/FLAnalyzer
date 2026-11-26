@@ -34,6 +34,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'score_matrices',
 ]
 
 APP = 'app_v84_hermes.py'
