@@ -30,7 +30,8 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
-$PinCommit = '7e87590d7ee8134149e9b9f2f5ef2e18834c0b03'
+# 7e0d128 = 四道护栏 + 五阶段清算(已定义的两个阶段)作为纯函数落到 market_guardrails.py
+$PinCommit = '7e0d12895597205b39b2c0bef1a1047bdf8b0ab6'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
