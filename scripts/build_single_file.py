@@ -23,6 +23,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'score_convergence_engine',
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
 END = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'

@@ -34,6 +34,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'score_convergence_engine',
 ]
 
 APP = 'app_v84_hermes.py'
@@ -133,10 +134,15 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
         marker = f'"{module}"'
         audit.record(f'embed:{module}', marker in block, 'module not referenced in embedded payload')
         first_line = source.read_text(encoding='utf-8').lstrip().splitlines()[0]
-        escaped = json.dumps(first_line)[1:-1]
+        # 构建器用 ensure_ascii=False 写出内嵌块，非 ASCII 首行（中文 docstring）
+        # 在块里是原样 UTF-8；两种转义形式都接受，避免只有 ASCII 首行才能过检。
+        escaped_forms = {
+            json.dumps(first_line)[1:-1],
+            json.dumps(first_line, ensure_ascii=False)[1:-1],
+        }
         audit.record(
             f'embed-in-sync:{module}',
-            escaped in block,
+            any(form in block for form in escaped_forms),
             'embedded copy is stale; run scripts/build_single_file.py',
         )
 
@@ -267,6 +273,7 @@ def audit_modules(audit: Audit, root: Path) -> None:
         'blade_deepseek_pipeline': ['strip_match_features_from_method'],
         'ProductionRunnerBridge': [],
         'blade_monitor_panel': [],
+        'score_convergence_engine': ['run_score_convergence', 'format_convergence_tg_lines'],
     }
     for module, names in expectations.items():
         try:
