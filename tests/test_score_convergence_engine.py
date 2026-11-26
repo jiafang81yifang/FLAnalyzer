@@ -1344,3 +1344,22 @@ def test_app_wiring_reports_missing_reasons_instead_of_bare_unformed() -> None:
     for line in text.splitlines():
         if '未形成' in line:
             assert '（' in line, f'裸「未形成」不允许: {line}'
+
+
+def test_heat_ranking_also_feeds_the_lowest_odds_check() -> None:
+    """heat_ranking 必须同时喂 Step4 的方向计数和最低赔检查（同一个数据源）。
+
+    否则会出现「方向计数说市热可用、最低赔检查却说 heat_top8 缺失」的自相矛盾，
+    段内还会多报一条假的缺失。
+    """
+    payload = _production_payload(with_structured=True)
+    out = engine.run_score_convergence(payload)
+
+    assert out['heat_source_path'] == 'ranking'
+    lowest = out['step4']['lowest_odds_check']
+    assert lowest['status'] == 'ok', lowest
+    # 手算：榜单里赔率最低的是 1-0 @6.50（其余 7.40 / 7.34 / 9.00）
+    assert lowest['lowest_score'] == '1-0'
+    assert lowest['lowest_bucket'] == 'home'
+    # 不应再报 heat_top8 缺失
+    assert not [m for m in out['missing'] if m.get('field') == 'heat_top8']

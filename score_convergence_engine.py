@@ -1525,14 +1525,24 @@ def _parse_short_lines(lines: Any) -> dict[str, Any]:
 
 
 def _heat_top8_rows(payload: dict[str, Any]) -> dict[str, Any]:
-    """取热榜前 8（``heat_top8`` 或 score_market_heat.ranking），只读已有数据。"""
-    raw = payload.get('heat_top8')
+    """取热榜前 8（``heat_top8`` / ``heat_ranking`` / score_market_heat.ranking）。
+
+    三个键都是同一份市热数据的不同落盘位置；按顺序取第一个可用的，
+    不重算热度，也不编造赔率。
+    """
+    raw = None
+    for key in ('heat_top8', 'heat_ranking'):
+        candidate = payload.get(key)
+        if isinstance(candidate, (list, tuple)) and candidate:
+            raw = candidate
+            break
     if raw is None:
         block = payload.get('score_market_heat')
         if isinstance(block, dict):
             raw = block.get('ranking')
     if not isinstance(raw, (list, tuple)) or not raw:
-        return {'available': False, 'reason': 'heat 榜为空或缺失（heat_top8）', 'rows': []}
+        return {'available': False,
+                'reason': 'heat 榜为空或缺失（heat_top8/heat_ranking 均无）', 'rows': []}
     rows: list[dict[str, Any]] = []
     for item in raw[:8]:
         if isinstance(item, dict):
