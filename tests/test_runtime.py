@@ -2399,6 +2399,105 @@ def test_no_provenance_and_no_books_invents_nothing() -> None:
     assert got == {'provenance': {}, 'source': None}, got
 
 
+def test_recorded_and_derived_counts_agree_for_any_jc_subset() -> None:
+    """D13e: the two paths disagreed on 汇总 counts when jc was incomplete.
+
+    The derived map labels all 31 options by coverage, so rows with NO odds at
+    all were still counted as jc_official; the recorded map only contains what
+    merge_cs31 actually produced. Same capture, two count lines (7 vs 9 on
+    1347776 minus 5-2/胜其它), even though every row was individually correct.
+
+    The paired assertion compares the recorded run against the derived run for
+    the same capture — deliberately NOT against a hardcoded number, so it cannot
+    be satisfied by both sides being wrong the same way. The hardcoded
+    expectations after it pin the real values so the pair cannot drift together.
+
+    Revert tested: dropping the `if market is None` guard -> minus_one,
+    minus_two, minus_home_block, minus_draw_block and empty all disagree.
+    """
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes())
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(fh.read()))
+    full = okooo.parse_jczq_score_odds(text, '1347776')['odds']
+
+    subsets = {
+        'full31': dict(full),
+        'minus_one': {k: v for k, v in full.items() if k != '5-2'},
+        'minus_two': {k: v for k, v in full.items() if k not in ('5-2', '胜其它')},
+        'minus_home_block': {
+            k: v for k, v in full.items() if k not in ('5-0', '5-1', '5-2', '胜其它')},
+        'minus_draw_block': {k: v for k, v in full.items() if k not in ('3-3', '平其它')},
+        'empty': {},
+    }
+    # independent expectations, so a paired pass cannot hide both sides failing
+    expected_jc = {
+        'full31': 9, 'minus_one': 8, 'minus_two': 7,
+        'minus_home_block': 5, 'minus_draw_block': 8, 'empty': 0,
+    }
+
+    for name, jc in subsets.items():
+        merged = okooo.merge_cs31(page['page_avg'], page['books_avg'], jc)
+        base = {
+            'correct_score_page_avg': merged['scores'],
+            'correct_score_books_avg': page['books_avg'],
+            'correct_score_jc_official': jc,
+            'jc_score_odds': jc,
+        }
+        recorded_rec = dict(base)
+        recorded_rec.update({
+            'cs31_provenance': merged['provenance'],
+            'cs31_counts': merged['counts'],
+            'cs31_extras': merged['extras'],
+            'cs31_complete': merged['complete'],
+        })
+        recorded = _pack_from_record('1347776', record=recorded_rec)
+        derived = _pack_from_record('1347776', record=base)
+
+        assert recorded['cs31_counts'] == derived['cs31_counts'], (
+            name, recorded['cs31_counts'], derived['cs31_counts'])
+        assert recorded['cs31_counts'].get('jc_official', 0) == expected_jc[name], (
+            name, recorded['cs31_counts'], expected_jc[name])
+
+        # and the rendered line must read the same in both shapes
+        rec_line = next(
+            ln for ln in pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(recorded)
+            if '汇总' in ln)
+        der_line = next(
+            ln for ln in pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(derived)
+            if '汇总' in ln)
+        assert f'jc_official={expected_jc[name]}' in rec_line or expected_jc[name] == 0, rec_line
+        assert rec_line.replace(' | 出处:反推(老记录无cs31_provenance)', '') == der_line.replace(
+            ' | 出处:反推(老记录无cs31_provenance)', ''), (name, rec_line, der_line)
+
+
+def test_empty_market_rows_carry_no_source_or_count() -> None:
+    """The mechanism: an unlabelled-but-empty row must not be stamped/counted.
+
+    Revert tested: removing the `if market is None` guard -> the two jc options
+    with no odds come back labelled and counted.
+    """
+    text = okooo.decode_okooo_html((FIXTURES / 'okooo_jczq_oddsdata_20slots.html').read_bytes())
+    with (FIXTURES / 'okooo_desktop_cs_1347776.html').open('rb') as fh:
+        page = okooo._parse_cs_datatable(okooo.decode_okooo_html(fh.read()))
+    full = okooo.parse_jczq_score_odds(text, '1347776')['odds']
+    jc = {k: v for k, v in full.items() if k not in ('5-2', '胜其它')}
+    merged = okooo.merge_cs31(page['page_avg'], page['books_avg'], jc)
+    rec = {
+        'correct_score_page_avg': merged['scores'],
+        'correct_score_books_avg': page['books_avg'],
+        'correct_score_jc_official': jc,
+        'jc_score_odds': jc,
+    }
+    pack = _pack_from_record('1347776', record=rec)  # derived path labels all 31
+    empty = [r for r in pack['rows'] if r.get('market') is None]
+    assert empty, 'fixture must leave at least one row without a market value'
+    for row in empty:
+        assert not row.get('market_source'), (row['score'], row.get('market_source'))
+        assert row.get('delta_same_source') is False, row['score']
+    counted = sum(pack['cs31_counts'].values())
+    assert counted == 31 - len(empty), (pack['cs31_counts'], len(empty))
+
+
 def test_every_fixture_declares_its_source() -> None:
     manifest = json.loads((FIXTURES / 'FIXTURE_SOURCES.json').read_text(encoding='utf-8'))
     files = {p.name for p in FIXTURES.iterdir() if p.is_file() and p.name != 'FIXTURE_SOURCES.json'}

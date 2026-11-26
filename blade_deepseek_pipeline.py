@@ -676,7 +676,15 @@ class DeepSeekAnalyzer:
             row['formed'] = theory is not None and market is not None
             # 市场取自竞彩时 Δ 恒为 0，是「同源」而不是「真的没偏差」。
             # 出处缺失时退回原来的推断，保证老调用点行为不变。
-            if _prov:
+            if market is None:
+                # 没有市场值的行不带出处，也不参与汇总计数。
+                # 反推出的出处表把 31 项全部标了方向（按覆盖推导），而记录的出处表
+                # 只有真正从 merge_cs31 出来的项；不在这里收口，同一场比赛的两条路径
+                # 会打出 jc_official=9 与 jc_official=7 两个汇总——行本身都是对的，
+                # 只有计数在骗人。
+                row['market_source'] = ''
+                row['delta_same_source'] = False
+            elif _prov:
                 row['market_source'] = _prov_label(option) or row.get('market_source') or ''
                 row['delta_same_source'] = _prov_is_jc(option)
             else:
