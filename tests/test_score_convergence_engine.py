@@ -175,6 +175,55 @@ def test_iron_law1_no_hedge_symmetry_for_away_direction() -> None:
     assert out['locked_scores'][0]['score'] != out['locked_scores'][1]['score']
 
 
+def test_assert_locked_contract_rejects_length_not_two() -> None:
+    """结构性断言：不是恰好 2 条就抛 locked_scores_length（不静默裁剪）。"""
+    with pytest.raises(engine.ConvergenceContractError) as excinfo:
+        engine.assert_locked_contract('H', [{'score': '2-1'}])
+    assert excinfo.value.code == 'locked_scores_length'
+    with pytest.raises(engine.ConvergenceContractError):
+        engine.assert_locked_contract('H', [{'score': '2-1'}, {'score': '3-0'}, {'score': '4-0'}])
+
+
+def test_assert_locked_contract_rejects_duplicate_scores() -> None:
+    """结构性断言：①==② 抛 locked_scores_identical。"""
+    with pytest.raises(engine.ConvergenceContractError) as excinfo:
+        engine.assert_locked_contract('H', [{'score': '2-1'}, {'score': '2-1'}])
+    assert excinfo.value.code == 'locked_scores_identical'
+
+
+def test_assert_locked_contract_rejects_hedge_across_directions() -> None:
+    """结构性断言：H 方向里混进客胜比分 -> hedge_direction_in_locked。"""
+    with pytest.raises(engine.ConvergenceContractError) as excinfo:
+        engine.assert_locked_contract('H', [{'score': '2-1'}, {'score': '0-1'}])
+    assert excinfo.value.code == 'hedge_direction_in_locked'
+    # 同时：A 方向混进主胜比分
+    with pytest.raises(engine.ConvergenceContractError) as excinfo_a:
+        engine.assert_locked_contract('A', [{'score': '0-1'}, {'score': '2-1'}])
+    assert excinfo_a.value.code == 'hedge_direction_in_locked'
+    # 平局方向里混进主胜 -> 普通越界码
+    with pytest.raises(engine.ConvergenceContractError) as excinfo_d:
+        engine.assert_locked_contract('D', [{'score': '1-1'}, {'score': '2-1'}])
+    assert excinfo_d.value.code == 'locked_score_against_direction'
+
+
+def test_assert_locked_contract_accepts_a_valid_pair() -> None:
+    """两个同向、互不相同的比分应原样通过。"""
+    pair = [{'score': '2-1'}, {'score': '3-0'}]
+    assert engine.assert_locked_contract('H', pair) == pair
+    # 空列表（中止路径）不抛错
+    assert engine.assert_locked_contract('H', []) == []
+
+
+def test_clamp_conf_mod_bounds_extremes() -> None:
+    """clamp_conf_mod 在极值输入下仍落在 [-0.5, +0.5]。"""
+    assert engine.clamp_conf_mod(9.0) == 0.5
+    assert engine.clamp_conf_mod(-9.0) == -0.5
+    assert engine.clamp_conf_mod(0.3) == pytest.approx(0.3)
+    assert engine.clamp_conf_mod(-0.35) == pytest.approx(-0.35)
+    assert engine.clamp_conf_mod(None) == 0.0
+    assert engine.clamp_conf_mod('abc') == 0.0
+
+
 def test_no_double_choice_or_hedge_keys_in_result() -> None:
     """结果字典不得出现 stake/budget/allocation/对冲 任何键或字样。"""
     out = engine.run_score_convergence(base_payload())

@@ -1363,7 +1363,7 @@ def macro_handicap_verdict(payload: dict[str, Any], step1: dict[str, Any], log: 
             veto, conf = VETO_STRONG_FADE, -0.40
 
     result['veto_action'] = veto
-    result['conf_mod'] = max(-0.5, min(0.5, conf))
+    result['conf_mod'] = clamp_conf_mod(conf)
     if not aligned:
         result['conflicts'].append({
             'code': 'HANDICAP_AGAINST_STEP1',
@@ -2150,6 +2150,45 @@ def live_event_log(payload: dict[str, Any], regular_time_only: bool = REGULAR_TI
 # --------------------------------------------------------------------------- #
 # 入口：一次调用走完六步
 # --------------------------------------------------------------------------- #
+def clamp_conf_mod(value: Any) -> float:
+    """宏观修正量 clamp 到 [-0.5, +0.5]（附加契约 §1.14）。非数值返回 0.0。"""
+    number = _finite(value)
+    if number is None:
+        return 0.0
+    return max(-0.5, min(0.5, number))
+
+
+def assert_locked_contract(direction: str, locked: Any) -> list[dict[str, Any]]:
+    """铁律 1 的结构性断言：恰 2 条、互不相同、同向（不跨 H/A、不对冲）。
+
+    这是对 ``locked_scores`` 的最后一道闸门，独立于 Step6 的实现：
+    任何上游 bug 让结果越界，都在这里抛 ``ConvergenceContractError``，
+    绝不静默裁剪后当成成功。
+
+    同向检查同时覆盖「禁止对冲」：H 方向里出现客胜比分即
+    ``hedge_direction_in_locked``，反之亦然。
+    """
+    items = [item for item in (locked or []) if isinstance(item, dict)]
+    if not items:
+        return items
+    if len(items) != 2:
+        raise ConvergenceContractError('locked_scores_length', len(items))
+    if items[0].get('score') == items[1].get('score'):
+        raise ConvergenceContractError('locked_scores_identical', items[0].get('score'))
+    expected_bucket = _BUCKET_OF_DIRECTION[direction]
+    forbidden = {'H': 'away', 'A': 'home'}.get(direction, '')
+    for item in items:
+        bucket = _score_bucket(item.get('score'))
+        if bucket != expected_bucket:
+            code = (
+                'hedge_direction_in_locked'
+                if forbidden and bucket == forbidden
+                else 'locked_score_against_direction'
+            )
+            raise ConvergenceContractError(code, item.get('score'))
+    return items
+
+
 def run_score_convergence(payload: Any = None, **kwargs: Any) -> dict[str, Any]:
     """六步收敛入口。
 
@@ -2212,17 +2251,8 @@ def run_score_convergence(payload: Any = None, **kwargs: Any) -> dict[str, Any]:
     # 铁律 1：没有 Step1/Step2 结论，或任一步 aborted，绝不产出 locked_scores。
     if aborted or not direction or not ou_path:
         locked = []
-    # 铁律 1：禁止同时含 H 与 A。
-    if direction in ('H', 'A'):
-        forbidden = 'A' if direction == 'H' else 'H'
-        for item in locked:
-            if _score_bucket(item['score']) == _BUCKET_OF_DIRECTION[forbidden]:
-                raise ConvergenceContractError('hedge_direction_in_locked', item)
-    if locked and len(locked) != 2:
-        raise ConvergenceContractError('locked_scores_length', len(locked))
-    # 铁律 1：两个锁定比分必须不同（历史实现的 pool[0] 重复填充会让 ①==②）。
-    if len(locked) == 2 and locked[0]['score'] == locked[1]['score']:
-        raise ConvergenceContractError('locked_scores_identical', locked[0]['score'])
+    if locked and direction:
+        locked = assert_locked_contract(direction, locked)
 
     result: dict[str, Any] = {
         'available': bool(direction) and bool(ou_path) and len(locked) == 2,
