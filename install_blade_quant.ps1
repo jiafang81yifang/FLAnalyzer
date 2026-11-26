@@ -29,8 +29,9 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
-$PinCommit = '7e87590d7ee8134149e9b9f2f5ef2e18834c0b03'
+# 093e7c7 = 内置六步比分收敛引擎（score_convergence_engine，含31项完备树/宏观裁决/
+#           全方向预判），TG 新增「六步收敛」段；app sha256 cd446147…ae999f，已过全套审计
+$PinCommit = '093e7c7c3f93287cd241e1b037bac2ab70f197ae'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
