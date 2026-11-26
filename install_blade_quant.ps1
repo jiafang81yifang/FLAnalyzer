@@ -31,7 +31,8 @@ try {
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 057c455 = 统一赔率评估器 unified_odds_evaluator.py（含 CN/INTL 同场按名对齐、
 #           走水凯利修正说明、保本概率别名）+ 单文件内嵌同步
-$PinCommit = '057c4552df4c46613e448e3bc0e40246d689fa52'
+# ce23836 = 说明 EV 为何不含走水项（push*0 精确为 0，只有凯利用 1/(1-push_prob)）
+$PinCommit = 'ce23836403f20a3f60822fedc4339787e160ff72'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
