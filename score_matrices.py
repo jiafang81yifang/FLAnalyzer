@@ -210,19 +210,24 @@ def _parse_odds(val: Any, label: str) -> float:
     与 convergence_arbitrator._to_float 接受同一类输入（``float(value)`` 能解析的
     数值与字符串），但**没有** ``default`` 参数：那个实现失败时返回 2.5，
     正是本模块禁止的静默兜底。
+
+    超出 float 表示范围的整数（如 ``10**400``）会让 ``float()`` 抛 ``OverflowError``，
+    而不是 ``ValueError``。数据问题一律是 MatrixIntegrityError，所以连同
+    ``decimal.InvalidOperation`` 一起在此收口，绝不让数值域异常漏给调用方。
     """
     if isinstance(val, bool) or val is None:
         raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率缺失或非法: {val!r}")
-    if isinstance(val, (int, float, str)):
-        try:
-            num = float(val)
-        except (TypeError, ValueError) as exc:
-            raise MatrixIntegrityError(
-                f"[矩阵熔断] '{label}' 赔率无法解析为数值: {val!r}"
-            ) from exc
-    else:
+    if not isinstance(val, (int, float, str)):
         raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率类型非法: {type(val).__name__}")
-    if not math.isfinite(num):
+    try:
+        num = float(val)
+        # 放在同一个 try 里：转换和有限性判定任何一步的数值域异常都统一收口。
+        finite = math.isfinite(num)
+    except (TypeError, ValueError, OverflowError, InvalidOperation) as exc:
+        raise MatrixIntegrityError(
+            f"[矩阵熔断] '{label}' 赔率无法解析为有限数值（溢出或非数值）: {val!r}"
+        ) from exc
+    if not finite:
         raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率数值非法: {num!r}")
     if num <= 1.0:
         raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率必须 > 1.0: {num!r}")

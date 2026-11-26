@@ -336,6 +336,63 @@ def test_d3_missing_odds_key_raises_without_default() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# D3 补充：超出 float 范围的整数必须收口成 MatrixIntegrityError
+# --------------------------------------------------------------------------- #
+# 10**400 大到 float() 抛 OverflowError（不是 ValueError）。断言消息里的
+# 「溢出」二字，证明真的走到了新增的 overflow 分支，而不是被后面的
+# `num <= 1.0` 提前拦下 —— 那条消息是「必须 > 1.0」，与这里不同。
+OVERFLOW_MESSAGE = '溢出'
+
+
+def test_d3_huge_int_market_odds_raise_matrix_error_not_overflow() -> None:
+    market = dict(CANON_MARKET)
+    jc = {k: dict(v) for k, v in CANON_JC.items()}
+    market['1-0'] = 10**400
+    with pytest.raises(sm.MatrixIntegrityError) as excinfo:
+        sm.build_score_matrices('M_OVF_MARKET', market, jc)
+    assert OVERFLOW_MESSAGE in str(excinfo.value), str(excinfo.value)
+    assert 'market_avg_scores.1-0' in str(excinfo.value)
+
+
+def test_d3_huge_int_jc_odds_raise_matrix_error_not_overflow() -> None:
+    market = dict(CANON_MARKET)
+    jc = {k: dict(v) for k, v in CANON_JC.items()}
+    jc['1-0'] = {'odds': 10**400, 'heat_seats': 1}
+    with pytest.raises(sm.MatrixIntegrityError) as excinfo:
+        sm.build_score_matrices('M_OVF_JC', market, jc)
+    assert OVERFLOW_MESSAGE in str(excinfo.value), str(excinfo.value)
+    assert 'jc_scores_data.1-0.odds' in str(excinfo.value)
+
+
+@pytest.mark.parametrize('huge', [2**1024, 10**400, -(10**400)])
+def test_d3_huge_int_magnitudes_never_leak_overflow(huge: int) -> None:
+    market = dict(CANON_MARKET)
+    jc = {k: dict(v) for k, v in CANON_JC.items()}
+    market['1-0'] = huge
+    with pytest.raises(sm.MatrixIntegrityError) as excinfo:
+        sm.build_score_matrices('M_OVF_MAG', market, jc)
+    assert not isinstance(excinfo.value, OverflowError)
+
+
+def test_d3_parse_odds_directly_guards_overflow() -> None:
+    """直接打 _parse_odds：转换与有限性检查都不许把 OverflowError 漏出去。"""
+    with pytest.raises(sm.MatrixIntegrityError) as excinfo:
+        sm._parse_odds(10**400, 'direct.label')
+    assert OVERFLOW_MESSAGE in str(excinfo.value)
+    assert 'direct.label' in str(excinfo.value)
+
+
+def test_d3_oversized_decimal_string_still_routes_through_isfinite() -> None:
+    """'1e400' 解析成 inf：走的是有限性分支，消息是「数值非法」而非「溢出」。"""
+    market = dict(CANON_MARKET)
+    jc = {k: dict(v) for k, v in CANON_JC.items()}
+    market['1-0'] = '1e400'
+    with pytest.raises(sm.MatrixIntegrityError) as excinfo:
+        sm.build_score_matrices('M_INF_STR', market, jc)
+    assert '数值非法' in str(excinfo.value), str(excinfo.value)
+
+
+# --------------------------------------------------------------------------- #
 # D4 heat_seats 接受 1.0 / "1"，但拒绝小数与非数字
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize('value,expected', [(1, 1), (1.0, 1), ('7', 7), ('7.0', 7), ('  4 ', 4), (0.0, 0)])
