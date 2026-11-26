@@ -5,6 +5,7 @@ ignored-modules=
     blade_monitor_panel,
     convergence_arbitrator,
     msvcrt,
+    market_guardrails,
     odds_fallback,
     odds_index_math,
     okooo_mobile_cs,

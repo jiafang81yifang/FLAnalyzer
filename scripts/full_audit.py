@@ -34,6 +34,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'market_guardrails',
 ]
 
 APP = 'app_v84_hermes.py'
@@ -133,10 +134,15 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
         marker = f'"{module}"'
         audit.record(f'embed:{module}', marker in block, 'module not referenced in embedded payload')
         first_line = source.read_text(encoding='utf-8').lstrip().splitlines()[0]
-        escaped = json.dumps(first_line)[1:-1]
+        # build_single_file.py serialises with ensure_ascii=False, so the payload
+        # holds real CJK characters. Decoding the needle with the json default
+        # (ensure_ascii=True, i.e. \uXXXX) can never match a file whose first line
+        # is not pure ASCII. Check both spellings so the probe keeps working for
+        # ASCII first lines and stops false-alarming on CJK ones.
+        needles = {json.dumps(first_line, ensure_ascii=False)[1:-1], json.dumps(first_line)[1:-1]}
         audit.record(
             f'embed-in-sync:{module}',
-            escaped in block,
+            any(needle in block for needle in needles),
             'embedded copy is stale; run scripts/build_single_file.py',
         )
 
@@ -267,6 +273,22 @@ def audit_modules(audit: Audit, root: Path) -> None:
         'blade_deepseek_pipeline': ['strip_match_features_from_method'],
         'ProductionRunnerBridge': [],
         'blade_monitor_panel': [],
+        'market_guardrails': [
+            'evaluate_market_guardrails',
+            'guardrail_1_macro_dominance',
+            'guardrail_2_neighborhood',
+            'guardrail_2_even_match',
+            'guardrail_3_inducing_trap',
+            'guardrail_4_confidence_decay',
+            'stage1_min_abs_diff_lock',
+            'stage2_true_protection',
+            'overkill_protocol',
+            'resolve_league_pressure',
+            'is_high_entropy_league',
+            'check_single_direction',
+            'home_away_abs_ratio',
+            'channel_neighborhood_ratio',
+        ],
     }
     for module, names in expectations.items():
         try:

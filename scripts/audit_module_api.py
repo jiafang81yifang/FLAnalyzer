@@ -26,6 +26,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'market_guardrails',
 ]
 
 APP = 'app_v84_hermes.py'
