@@ -1,7 +1,8 @@
 """Small convergence arbitration helpers.
 
-缺数即缺：本模块不再为任何缺失/非法的盘口线编造数值。取不到盘口线时
-`ou_from_scores` 返回空串并把原因写进 `missing`，绝不按 2.5 硬算大小球。
+缺数即缺：本模块不再为任何缺失/非法的盘口线编造数值。`_to_float` 没有
+default 形参，取不到数就是 None；`ou_from_scores` / `resolve_cores` 遇到
+缺失盘口线时返回缺失状态并中止该项结论，绝不按 2.5 硬算大小球。
 """
 from __future__ import annotations
 
@@ -11,17 +12,19 @@ from typing import Any
 _MIN_LINE = 0.0
 
 
-def _to_float(value: Any, default: float | None = None) -> float | None:
-    """数值转换；缺值/非数一律回 default（默认 None = 显式缺失）。
+def _to_float(value: Any) -> float | None:
+    """数值化；缺值/非数一律返回 None（显式缺失）。
 
-    历史实现对每个缺失数字都返回 2.5，任何调用点都拿不到「这个数是假的」的信号。
+    本函数**没有** default 形参：连「传一个兜底值」这条路都不存在。
+    历史实现带一个 default 形参、缺省值写死 2.5，于是每个缺失数字都变成 2.5，
+    调用点拿不到「这个数是假的」的任何信号，只能照着假盘口线出结论。
     """
     if value is None:
-        return default
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return default
+        return None
     return number
 
 
@@ -153,14 +156,27 @@ def resolve_direction_value(scores: Any, *args: Any, **kwargs: Any) -> str:
 
 
 def resolve_cores(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """汇总比分方向与大小球。
+
+    大小球这一路过去是 `ou_from_scores(scores)` —— 永远不带盘口线，于是
+    永远走 `_to_float(None) -> 2.5` 的兜底，给出一个没有任何盘口依据的
+    「大/小」。现在：调用方可以用 `ou_line=` 显式给线；不给线就如实返回
+    `ou_available=False` + `ou_missing=['ou_line']` + 空 `ou`，不再编造。
+    """
     scores = []
     for item in args:
         if isinstance(item, (list, tuple)):
             scores.extend(item)
+    ou_line = kwargs.get('ou_line')
+    ou_detail = ou_verdict(scores, ou_line)
     return {
         'available': True,
         'direction': resolve_direction(scores),
-        'ou': ou_from_scores(scores),
+        'ou': str(ou_detail['verdict']),
+        'ou_available': bool(ou_detail['available']),
+        'ou_line': ou_detail['line'],
+        'ou_missing': list(ou_detail['missing']),
+        'ou_reason': str(ou_detail['reason']),
         # 旧调用点读 cover/hedge 两个键；对冲语义已删除，保留空元组只为形状兼容。
         'cover': (),
         'hedge': (),

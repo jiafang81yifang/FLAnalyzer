@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib.util
+import inspect
 import io
 import sys
 from pathlib import Path
@@ -128,8 +129,14 @@ def test_ventropy_never_fills_secondary_from_another_tier_direction() -> None:
     assert result['secondary'] == 'N/A', result
 
 
-def test_no_dual_pick_wording_in_comparison_report(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`compare_matches` used to advise 双选 / 双选或回避 for close matches."""
+def test_comparison_report_is_a_risk_warning_with_no_pick_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ruling 1: keep the two warning lines, but as pure risk statements.
+
+    The output must still talk about the divergence (it must not go silent) and
+    must not contain 首选 / 次选 / 双选 — no pick guidance of any kind.
+    """
     app = _load_app()
     sent: list[str] = []
     monkeypatch.setattr(app, 'send_tg', lambda text, parse_mode=None: sent.append(str(text)))
@@ -138,13 +145,67 @@ def test_no_dual_pick_wording_in_comparison_report(monkeypatch: pytest.MonkeyPat
             'status': 'pending', 'match': 'A vs B', 'predicted_score': '2-0',
             'second_score': '3-0', 'confidence': '中', 'dti': 0.1,
             'top15_scores': [['2-0', {'prob': 0.10}], ['3-0', {'prob': 0.095}]],
-        }
+        },
+        'm2': {
+            'status': 'pending', 'match': 'C vs D', 'predicted_score': '1-1',
+            'second_score': '0-0', 'confidence': '低', 'dti': 0.2,
+            'top15_scores': [['1-1', {'prob': 0.09}], ['0-0', {'prob': 0.088}]],
+        },
     })
     app.compare_matches()
-    assert sent, 'report not emitted'
+    assert sent, 'report went silent — the risk warning must still be printed'
     body = sent[0]
-    for banned in ('双选', '防波堤', '保本', '对冲', '双边', '主次选'):
-        assert banned not in body, f'{banned} still recommended: {body}'
+    # still speaks about the risk, not silent
+    assert '风险提示' in body
+    assert '分歧' in body
+    assert '不做推荐' in body
+    # no pick guidance vocabulary at all
+    for banned in ('首选', '次选', '双选', '防波堤', '保本', '对冲', '双边', '主次选'):
+        assert banned not in body, f'{banned} still present in risk warning: {body}'
+
+
+def test_comparison_report_never_offers_two_directions_for_one_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A match whose two scores straddle 1X2 must report the conflict, not offer both."""
+    app = _load_app()
+    sent: list[str] = []
+    monkeypatch.setattr(app, 'send_tg', lambda text, parse_mode=None: sent.append(str(text)))
+    monkeypatch.setattr(app, 'load_json', lambda path: {
+        'm1': {
+            'status': 'pending', 'match': 'A vs B', 'predicted_score': '2-0',
+            'second_score': '1-1', 'confidence': '中', 'dti': 0.1,
+            'top15_scores': [['2-0', {'prob': 0.10}], ['1-1', {'prob': 0.099}]],
+        },
+    })
+    app.compare_matches()
+    body = sent[0]
+    assert '方向冲突' in body, body
+    assert '不推荐' in body, body
+    # neither direction may be presented as a pick
+    assert '主胜: ' not in body and '平局: ' not in body
+
+
+def test_comparison_report_single_direction_states_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _load_app()
+    sent: list[str] = []
+    monkeypatch.setattr(app, 'send_tg', lambda text, parse_mode=None: sent.append(str(text)))
+    monkeypatch.setattr(app, 'load_json', lambda path: {
+        'm1': {
+            'status': 'pending', 'match': 'A vs B', 'predicted_score': '2-0',
+            'second_score': '3-0', 'confidence': '中', 'dti': 0.1,
+            'top15_scores': [['2-0', {'prob': 0.10}], ['3-0', {'prob': 0.095}]],
+        },
+    })
+    app.compare_matches()
+    body = sent[0]
+    # the single direction is stated the same way in both warning blocks and
+    # never paired with a second direction for the same match
+    assert '方向冲突' not in body, body
+    assert '平局' not in body and '客胜' not in body, body
+    assert '主胜' in body
 
 
 def test_market_defense_secondary_is_never_the_primary_key() -> None:
@@ -166,13 +227,24 @@ def test_market_defense_secondary_is_never_the_primary_key() -> None:
 # B. No silent numeric fabrication
 # =====================================================================
 
-def test_convergence_to_float_has_no_module_wide_2_5_default() -> None:
-    """`_to_float(value, default=2.5)` invented an odds/line for every gap."""
+def test_convergence_to_float_has_no_default_parameter_at_all() -> None:
+    """Ruling 2: the default is deleted, not merely changed to None.
+
+    The signature must accept exactly one argument, so no caller can pass a
+    fallback and silently resurrect the 2.5 behaviour.
+    """
     arb = _module('convergence_arbitrator')
+    assert list(inspect.signature(arb._to_float).parameters) == ['value']
+    # missing value -> missing state, never a number
     assert arb._to_float(None) is None
     assert arb._to_float('not-a-number') is None
+    assert arb._to_float('') is None
+    assert arb._to_float(float('nan')) is None or arb._to_float(float('nan')) != 2.5
+    # a real value still converts
     assert arb._to_float(2.75) == pytest.approx(2.75)
-    assert arb._to_float(None, 1.5) == pytest.approx(1.5)
+    # passing a fallback is a TypeError now, not a silent 2.5
+    with pytest.raises(TypeError):
+        arb._to_float(None, 2.5)
 
 
 def test_ou_verdict_reports_missing_line_instead_of_assuming_2_5() -> None:
@@ -191,6 +263,54 @@ def test_ou_verdict_reports_missing_line_instead_of_assuming_2_5() -> None:
     assert arb.ou_verdict(['1-1', '2-1'], 2.5)['verdict'] == '走'
     assert arb.ou_verdict(['1-1', '2-1'], 2.0)['verdict'] == '大'
     assert arb.ou_verdict(['1-1', '2-1'], 3.0)['verdict'] == '小'
+
+
+def test_missing_line_yields_a_missing_conclusion_not_a_2_5_verdict() -> None:
+    """Ruling 2, the exact case named: no line must never produce 大/小/走.
+
+    Hand-computed: (1-1) + (2-1) averages 2.5 goals. Against the old fabricated
+    line of 2.5 that is a push, i.e. '走' — a settled verdict from an input that
+    was never supplied. Every missing-line shape must instead report missing.
+    """
+    arb = _module('convergence_arbitrator')
+    for missing_line in (None, ''):
+        detail = arb.ou_verdict(['1-1', '2-1'], missing_line)
+        assert detail['available'] is False, f'line={missing_line!r} produced a verdict'
+        assert detail['verdict'] == '', detail
+        assert 'ou_line' in detail['missing'], detail
+        assert detail['line'] is None
+
+    # the compatible entry point must not invent the verdict either
+    assert arb.ou_from_scores(['1-1', '2-1']) == ''
+    assert arb.ou_from_scores(['1-1', '2-1'], None) == ''
+    # and never a 2.5-by-accident verdict through the extra-arg shape
+    assert arb.ou_from_scores('1-1', '2-1', None) == ''
+
+
+def test_resolve_cores_reports_missing_line_instead_of_assuming_2_5() -> None:
+    """`resolve_cores` used to call `ou_from_scores(scores)` with no line at all,
+    so its OU always came from the fabricated 2.5."""
+    arb = _module('convergence_arbitrator')
+    without_line = arb.resolve_cores(['1-1', '2-1'])
+    assert without_line['ou'] == ''
+    assert without_line['ou_available'] is False
+    assert without_line['ou_missing'] == ['ou_line']
+    assert without_line['ou_line'] is None
+
+    with_line = arb.resolve_cores(['1-1', '2-1'], ou_line=2.5)
+    assert with_line['ou'] == '走'
+    assert with_line['ou_available'] is True
+    assert with_line['ou_missing'] == []
+
+
+def test_missing_value_yields_missing_state_not_2_5() -> None:
+    """`_to_float` on absent/garbage values must return None — the old
+    module-wide default returned 2.5 for all of them."""
+    arb = _module('convergence_arbitrator')
+    for missing in (None, '', 'abc', [], {}):
+        assert arb._to_float(missing) is None, f'{missing!r} became a number'
+    # the value that used to be indistinguishable from "missing"
+    assert arb._to_float(2.5) == pytest.approx(2.5)
 
 
 def test_ou_verdict_rejects_a_non_positive_line() -> None:

@@ -21,7 +21,7 @@ revert-verified: restoring the old block turns exactly that test red.
 | A2 | `app_v84_hermes.py` | `run_ventropy_pipeline` | `secondary` fell back to `tier_2[0]` / `classified[1]` with no side check → primary `2-0`(home) + secondary `1-1`(draw). | L1; add. §1.1 | `_same_direction_pick()` scans same-side candidates only; `N/A` when absent, with the reason appended to `log`. | `test_ventropy_secondary_stays_in_the_primary_direction`, `test_ventropy_never_fills_secondary_from_another_tier_direction` |
 | A3 | `app_v84_hermes.py` | `DeviationDrivenEngine.prioritize_allocation` + `evaluate_records` | Split a budget across every TIER row → probe returned **`2-0` 530.41 + `1-1` 469.59** on one match; emitted `bet_amount`/`total_budget`/`allocated_total`. | L1; add. §1.8 | Money allocation deleted. Function only ranks by `score`; no amount, budget or exposure keys anywhere. | `test_allocation_output_has_no_money_fields` |
 | A4 | `app_v84_hermes.py` | `ShannonEntropyEngine.allocate_deviation_driven` | Re-derived `allocation_weight`/`allocation_pct`/`total_exposure` from `bet_amount`. | L1; add. §1.8 | Re-emission deleted; returns rank-only, `allocation_method='deviation_driven_dual_track_rank_only'`. | `test_allocation_output_has_no_money_fields` |
-| A5 | `app_v84_hermes.py` | `compare_matches` (TG) | Printed 「建议双选」 and 「建议双选或回避」 for close matches. | L1 | Rewritten as 「首选集中度」 — states the two scores are one direction and the primary is unchanged. | `test_no_dual_pick_wording_in_comparison_report` |
+| A5 | `app_v84_hermes.py` | `compare_matches` (TG) | Printed 「建议双选」 and 「建议双选或回避」 for close matches. | L1 | **User ruling 1 (final):** the lines are kept, but as pure risk statements — 「分歧过大，不做推荐」 — with no 首选/次选/双选 vocabulary. A match whose two scores straddle 1X2 reports 「方向冲突(...)：不推荐」 instead of offering both. | `test_comparison_report_is_a_risk_warning_with_no_pick_guidance`, `test_comparison_report_never_offers_two_directions_for_one_match` |
 | A6 | `app_v84_hermes.py` | `MarketDefenseInsightAnalyzer.evaluate_trap_risk` | `secondary = picks[1] if len>1 else primary` → the same score used as both picks (one score presented as a pair). | L1; add. §1.7 | `secondary = picks[1] if len>1 else None`. | `test_market_defense_secondary_is_never_the_primary_key` |
 | A7 | `app_v84_hermes.py` | 15→2 `second_score` fallback | `remaining_all` / `sorted_final[1][0]` dropped the direction filter, so the 2nd score could be the opposite 1X2 result. | L1 | All candidate pools passed through `_same_direction_only`; empty string when no same-side 2nd exists. | covered by `test_deviation_prediction_*` + sweep matrix |
 | A8 | `app_v84_hermes.py` | `ScoreOddsAnalyzer` second-score pick | `cold_items.iloc[0]` / `rest.iloc[0]` were not direction-constrained. | L1 | Filtered on `outcome_group == first pick's group`; no fallback to the other side. | covered by full suite (`test_tg_command_dispatcher_offline`) |
@@ -38,7 +38,7 @@ revert-verified: restoring the old block turns exactly that test red.
 
 | # | File | Symbol | What it did | Law | Replaced by | Test |
 |---|---|---|---|---|---|---|
-| B1 | `convergence_arbitrator.py` | `_to_float(value, default=2.5)` | Module-wide default: **every** missing number became `2.5` (odds, line, handicap). | L2; spec §4.3 | `default: float \| None = None`; missing/invalid → `None`. | `test_convergence_to_float_has_no_module_wide_2_5_default` |
+| B1 | `convergence_arbitrator.py` | `_to_float(value, default=2.5)` | Module-wide default: **every** missing number became `2.5` (odds, line, handicap). | L2; spec §4.3 | **User ruling 2 (final):** the `default` parameter is **deleted** — signature is `_to_float(value)`. Missing/invalid → `None`; passing a fallback is now a `TypeError`. `ou_from_scores` / `resolve_cores` return a missing state instead of a 2.5-derived verdict. | `test_convergence_to_float_has_no_default_parameter_at_all`, `test_missing_line_yields_a_missing_conclusion_not_a_2_5_verdict`, `test_resolve_cores_reports_missing_line_instead_of_assuming_2_5`, `test_missing_value_yields_missing_state_not_2_5` |
 | B2 | `convergence_arbitrator.py` | `ou_from_scores` | With no line it used the fabricated 2.5 and returned `'走'` for a 2.5-goal average. | L2 | Delegates to new `ou_verdict()`, which returns `available=False`, `missing=['ou_line']`, `verdict=''`; non-positive line is also `missing`. | `test_ou_verdict_reports_missing_line_instead_of_assuming_2_5`, `test_ou_verdict_rejects_a_non_positive_line` |
 | B3 | `app_v84_hermes.py` | `execute_15to2_matrix` 1X2 precompute | `_safe_odds(Home, 3.0)` / `(Away, 3.0)` / `(Draw, 3.3)` invented a market → `odds_gap=0.0` → 「囚徒困境」 fired on a match with **no odds at all**. | L2 | `_safe_odds(...)` with no default; `_have_1x2` gate; `odds_gap=None` when incomplete; missing names logged and written to `anomaly_payload_out['odds_1x2_missing']`; 4 consumers (囚徒/鹰鸽/混合纳什/odds_gap) gated. | `test_game_theory_does_not_invent_1x2_odds` |
 | B4 | `blade_ml_engine.py` | `_safe_float(value, default=0.0)` | Any missing/non-finite number became `0.0`, indistinguishable from a real 0. | L2 | Default `None`; `math.isfinite` failure → `None`. | `test_ml_safe_float_reports_missing_rather_than_zero` |
@@ -148,13 +148,13 @@ test, restore.
 
 | Block restored | Test(s) | Result |
 |---|---|---|
-| `convergence_arbitrator._to_float(default=2.5)` + old `ou_from_scores` | `test_convergence_to_float_has_no_module_wide_2_5_default`, `test_ou_verdict_reports_missing_line_instead_of_assuming_2_5` | 2 failed |
+| `convergence_arbitrator._to_float(default=2.5)` + old `ou_from_scores` | `test_convergence_to_float_has_no_default_parameter_at_all`, `test_missing_line_yields_a_missing_conclusion_not_a_2_5_verdict`, `test_resolve_cores_reports_missing_line_instead_of_assuming_2_5`, `test_missing_value_yields_missing_state_not_2_5` | 2 failed |
 | `convergence_arbitrator.resolve_direction` `max()` tie | `test_direction_vote_tie_is_unresolved_not_draw`, `test_three_way_tie_is_unresolved_not_draw` | 2 failed |
 | `blade_ml_engine` (`_safe_float` 0.0, λ 1.2/0.9, `2.5`, training fills) | `test_ml_engine_refuses_to_invent_lambdas`, `test_ml_safe_float_reports_missing_rather_than_zero`, `test_ml_predict_reports_unavailable_without_lambda`, `test_ml_training_skips_rows_missing_market_inputs` | 4 failed |
 | `blade_deepseek_pipeline` `or 0` formatting + `or 0.0` gap | `test_market_matrix_renders_missing_as_dash_not_zero`, `test_market_short_matrix_leaves_missing_gap_out_of_the_vector` | 2 failed |
 | `build_prediction_output` `top = allocations[:2]` | `test_deviation_prediction_never_locks_two_opposing_directions`, `test_deviation_prediction_refuses_when_one_direction_only_has_one` | 2 failed |
 | `run_ventropy_pipeline` old `secondary` fallback chain | `test_ventropy_secondary_stays_in_the_primary_direction`, `test_ventropy_never_fills_secondary_from_another_tier_direction` | 2 failed |
-| `compare_matches` 「建议双选」 line | `test_no_dual_pick_wording_in_comparison_report` | 1 failed |
+| `compare_matches` 「建议双选」 lines | `test_comparison_report_is_a_risk_warning_with_no_pick_guidance` | 1 failed |
 | `evaluate_trap_risk` `secondary = ... else primary` | `test_market_defense_secondary_is_never_the_primary_key` | 1 failed |
 | `build_market_inputs` `'其它' in key: continue` | `test_market_defense_keeps_aggregate_buckets_in_the_tree` | 1 failed |
 | `_safe_odds(..., 3.0/3.3)` | `test_game_theory_does_not_invent_1x2_odds` | 1 failed |
@@ -176,3 +176,10 @@ All ten reverts produced red. No revert left a test green.
 `app_v84_hermes.py` sha256: `22ceb07bbe4087206f55ea329d25b732af7775cb850457de21794263c92a6ca8`
 
 Removal counts: **A 11, B 13, C 2, D 1 (guards only — nothing to remove), E 2, F 1 (+2 preventive)**
+
+## User rulings applied after PR #9 was opened
+
+| Ruling | What changed | Before | After |
+|---|---|---|---|
+| 1. 多场汇总表只作风险提示 | `compare_matches` wording | 「★ 首选次选均可：…（差距仅X个百分点，建议双选）」 / 「⚠️ 最不确定的场次（建议双选或回避）：」 | 「💡 分歧过大，不做推荐。」 / 「⚠️ 分歧最小的场次（纯风险提示，不做推荐）：」；同场两方向 → 「方向冲突(主胜/平局)：不推荐」 |
+| 2. `_to_float` 彻底删默认值 | `convergence_arbitrator._to_float` | `_to_float(value, default: float \| None = None)` | `_to_float(value)` — no `default` parameter at all |
