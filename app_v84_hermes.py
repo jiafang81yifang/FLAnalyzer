@@ -3643,6 +3643,38 @@ class DeepClusterPenetrationEngine:
 # ================= 【DeepClusterPenetrationEngine END】 =================
 
 
+# ================= 【幽灵节点注入完整性异常】 =================
+GHOST_INJECTED_NODE_TAG = 'GHOST_INJECTED_NODE'
+
+
+class GhostInjectionIntegrityError(ValueError):
+    """31池关键字段（theory/delta）缺失过半时抛出。
+
+    缺字段的比分不参与排序、记入 skipped；缺失过半说明整池不可信，
+    直接报错，绝不用默认值补齐。
+    """
+
+
+class GhostInjectionResult(list):
+    """注入结果：本体仍是 list（调用点直接当池子用），附带可断言的诊断字段。
+
+    reason 为 'ghost_injected' 表示确实注入；'no_counter_direction_candidate' /
+    'empty_current_pool' / 'empty_full_31_pool' 等表示未注入及其原因。
+    绝不能靠“返回原对象”来暗示未注入。
+    """
+
+    def __init__(self, items=(), reason='', counter_direction='', skipped=None, evicted=None,
+                 injected_scores=None, injected=None):
+        super().__init__(items)
+        self.reason = reason
+        self.counter_direction = counter_direction
+        self.skipped = list(skipped or [])
+        self.evicted = list(evicted or [])
+        self.injected_scores = list(injected_scores or [])
+        # 由构造点传入，注入器自己就填好；不要在 __init__ 里留恒空值让调用点误判。
+        self.injected = list(injected or [])
+
+
 # ================= 【TailEndGhostNodeInjector · 长尾捕获与动态幽灵节点注入引擎】 =================
 class TailEndGhostNodeInjector:
     """
@@ -3669,14 +3701,296 @@ class TailEndGhostNodeInjector:
         except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             return 'neutral'
 
+    _VALID_DIRECTIONS: ClassVar[tuple[str, ...]] = ('home', 'draw', 'away')
+    _CORE_SCORES: ClassVar[tuple[str, ...]] = ('1-0', '2-0', '0-1', '0-2', '1-1')
+
+    @staticmethod
+    def _normalize_score(score):
+        return str(score or '').replace('：', '-').replace(':', '-').strip()
+
+    @staticmethod
+    def _evictable_tail_indices(items, protected_scores, keep_direction=None):
+        """按从尾到头的顺序给出可挤出位置。
+
+        前3名与核心比分永不进入候选；keep_direction 方向的项也不挤——
+        为了补客胜而挤掉已有的客胜只是无效腾挪。
+        """
+        indices = []
+        for idx in range(len(items) - 1, 2, -1):
+            item = items[idx]
+            score = TailEndGhostNodeInjector._normalize_score(
+                item.get('score') if isinstance(item, dict) else ''
+            )
+            if score and score in protected_scores:
+                continue
+            if keep_direction and TailEndGhostNodeInjector._score_direction(score) == keep_direction:
+                continue
+            indices.append(idx)
+        return indices
+
     def inject_ghost_nodes(self, current_pool15, full_31_pool, fissure_payload):
         """
         核心防漏网逻辑：
         - current_pool15: 当前被截断的前15池候选列表
         - full_31_pool: 包含所有31个比分及长尾的全量数据集
         - fissure_payload: 张量裂缝负载（包含宏观方向与对立反方向）
+
+        只从 full_31_pool 里已有的比分中挑选，绝不生成新比分：
+        1. 方向只认 fissure_payload['counter_direction']，缺失/非法就不注入；
+        2. 候选按 theory 降序、并按 full_31_pool 原始下标升序破平；
+        3. 池满时从尾部挤出非保护项（前3名、核心比分不挤），挤出记录写进注入节点 evicted；
+        4. 返回 GhostInjectionResult（list 子类），reason / skipped / evicted 供日志与断言读取。
         """
-        return current_pool15
+        pool = list(current_pool15 or [])
+        full_pool = list(full_31_pool or [])
+        payload = fissure_payload if isinstance(fissure_payload, dict) else {}
+        counter_direction = str(payload.get('counter_direction') or '').strip().lower()
+
+        if not pool:
+            return GhostInjectionResult(pool, reason='empty_current_pool', counter_direction=counter_direction)
+        if not full_pool:
+            return GhostInjectionResult(pool, reason='empty_full_31_pool', counter_direction=counter_direction)
+        if counter_direction not in self._VALID_DIRECTIONS:
+            return GhostInjectionResult(
+                pool, reason='no_counter_direction_candidate', counter_direction=counter_direction
+            )
+
+        skipped = []
+        usable = []
+        jczq_options = set(JCZQ_ALL_OPTIONS)
+        for idx, item in enumerate(full_pool):
+            if not isinstance(item, dict):
+                skipped.append({'score': '', 'index': idx, 'reason': 'missing_record'})
+                continue
+            score = self._normalize_score(item.get('score'))
+            if not score:
+                skipped.append({'score': '', 'index': idx, 'reason': 'missing_score'})
+                continue
+            theory_raw = item.get('theory')
+            delta_raw = item.get('delta')
+            if theory_raw is None or delta_raw is None:
+                skipped.append({
+                    'score': score, 'index': idx,
+                    'reason': 'missing_theory' if theory_raw is None else 'missing_delta',
+                })
+                continue
+            try:
+                theory = float(theory_raw)
+                float(delta_raw)
+            except (TypeError, ValueError):
+                skipped.append({'score': score, 'index': idx, 'reason': 'non_numeric_theory_or_delta'})
+                continue
+            if score not in jczq_options:
+                # 泊松矩阵会产出 36 项，含 3-4/4-4/6-3 等非竞彩比分。
+                # 它们不占 31 池名额（概率并入同方向其它桶），所以不能当注入候选。
+                skipped.append({'score': score, 'index': idx, 'reason': 'non_jczq_score'})
+                continue
+            usable.append({'score': score, 'theory': theory, 'index': idx, 'record': item})
+
+        if len(skipped) * 2 >= len(full_pool):
+            raise GhostInjectionIntegrityError(
+                f'31池关键字段缺失{len(skipped)}/{len(full_pool)}，拒绝用默认值补齐'
+            )
+
+        pool_scores = set()
+        for item in pool:
+            score = self._normalize_score(item.get('score') if isinstance(item, dict) else '')
+            if score:
+                pool_scores.add(score)
+        protected_scores = set(self._CORE_SCORES)
+        for item in pool[:3]:
+            score = self._normalize_score(item.get('score') if isinstance(item, dict) else '')
+            if score:
+                protected_scores.add(score)
+
+        candidates = []
+        seen_in_full = set()
+        for entry in usable:
+            score = entry['score']
+            if score in seen_in_full:
+                skipped.append({'score': score, 'index': entry['index'], 'reason': 'duplicate_in_full_31_pool'})
+                continue
+            seen_in_full.add(score)
+            if self._score_direction(score) != counter_direction:
+                continue
+            if score in pool_scores:
+                continue
+            candidates.append(entry)
+        candidates.sort(key=lambda entry: (-entry['theory'], entry['index']))
+
+        if not candidates:
+            return GhostInjectionResult(
+                pool, reason='no_counter_direction_candidate', counter_direction=counter_direction, skipped=skipped
+            )
+
+        result_items = list(pool)
+        # max_pool_size 是“只许增长”的上限，不是目标长度。
+        # 生产里 current_pool15 实际是 ranked[:31]（31 项），调用点却写死 15；
+        # 若按 15 当目标就会压缩下游池子，所以下限取原池长度。
+        effective_cap = max(int(self.max_pool_size), len(result_items))
+        capacity = max(0, effective_cap - len(result_items))
+        available_slots = capacity + len(
+            self._evictable_tail_indices(result_items, protected_scores, keep_direction=counter_direction)
+        )
+        if available_slots <= 0:
+            for entry in candidates:
+                skipped.append({'score': entry['score'], 'index': entry['index'], 'reason': 'no_evictable_tail_slot'})
+            return GhostInjectionResult(
+                pool, reason='no_evictable_tail_slot', counter_direction=counter_direction, skipped=skipped
+            )
+
+        evictions = []
+        injected_scores = []
+        for entry in candidates:
+            eviction = None
+            if len(result_items) >= effective_cap:
+                evictable = self._evictable_tail_indices(
+                    result_items, protected_scores, keep_direction=counter_direction
+                )
+                if not evictable:
+                    skipped.append({
+                        'score': entry['score'], 'index': entry['index'], 'reason': 'no_evictable_tail_slot',
+                    })
+                    continue
+                position = evictable[0]
+                target = result_items[position]
+                eviction = {
+                    'score': self._normalize_score(target.get('score') if isinstance(target, dict) else ''),
+                    'reason': 'tail_evicted_for_ghost_injection',
+                    'pool_index': position,
+                }
+                del result_items[position]
+                evictions.append(eviction)
+            node = dict(entry['record'])
+            node['score'] = entry['score']
+            node['tag'] = GHOST_INJECTED_NODE_TAG
+            node['ghost_direction'] = counter_direction
+            node['ghost_source_index'] = entry['index']
+            node['evicted'] = [dict(e) for e in evictions]
+            result_items.append(node)
+            injected_scores.append(entry['score'])
+
+        if not injected_scores:
+            return GhostInjectionResult(
+                pool,
+                reason=skipped[-1]['reason'] if skipped else 'no_counter_direction_candidate',
+                counter_direction=counter_direction,
+                skipped=skipped,
+            )
+
+        injected_nodes = [item for item in result_items if item.get('tag') == GHOST_INJECTED_NODE_TAG]
+        # 注入循环里 evictions 是逐步累积的，最后回填一次，
+        # 保证每个注入节点都挂着完整挤出清单（直调注入器也不丢审计）。
+        for node in injected_nodes:
+            node['evicted'] = [dict(e) for e in evictions]
+        return GhostInjectionResult(
+            result_items,
+            reason='ghost_injected',
+            counter_direction=counter_direction,
+            skipped=skipped,
+            evicted=evictions,
+            injected_scores=injected_scores,
+            injected=injected_nodes,
+        )
+
+
+def apply_ghost_node_injection(pool15_enriched, full_31_pool, fissure_payload, history=None, fid='',
+                               extra_lock_payload=None, max_pool_size=15):
+    """裂缝触发后的幽灵节点注入：注入、方向锁收口、日志，一处收口。
+
+    返回 GhostInjectionResult：list 语义就是增强后的池子，injected / reason / evicted
+    供调用点与测试直接读取。不要用对象同一性判断有没有注入。
+    """
+    result = TailEndGhostNodeInjector(max_pool_size=max_pool_size).inject_ghost_nodes(
+        current_pool15=pool15_enriched,
+        full_31_pool=full_31_pool,
+        fissure_payload=fissure_payload,
+    )
+    payload = fissure_payload if isinstance(fissure_payload, dict) else {}
+    injected = result.injected
+    if not injected:
+        print(f"   ℹ️ [幽灵节点注入] 未注入({result.reason or 'no_counter_direction_candidate'})，维持原15池")
+        return result
+
+    pool = list(result)
+    # 方向锁丢弃幽灵节点时，必须把被它挤出的原始项按原顺序放回去，不能净丢池位。
+    original_pool = [item for item in (pool15_enriched or []) if isinstance(item, dict)]
+    try:
+        lock_payload = extra_lock_payload if isinstance(extra_lock_payload, dict) else {}
+        if not lock_payload:
+            lock_payload = lookup_direction_lock_payload(
+                history if isinstance(history, dict) else None,
+                fid,
+                None,
+            )
+        if lock_payload and DeepSeekAnalyzer is not None:
+            lock = DeepSeekAnalyzer.matrix_direction_lock(lock_payload) or {}
+            lock_direction = str(lock.get('direction') or '')
+            if lock_direction not in ('胜', '平', '负'):
+                lock_direction = ''
+            if lock_direction:
+                kept = [
+                    ghost for ghost in injected
+                    if DeepSeekAnalyzer._classify_score_wdl(str(ghost.get('score') or '')) == lock_direction
+                ]
+                dropped = [
+                    str(ghost.get('score') or '')
+                    for ghost in injected
+                    if ghost not in kept
+                ]
+                if dropped:
+                    evicted_by_kept = {
+                        TailEndGhostNodeInjector._normalize_score(entry.get('score'))
+                        for ghost in kept for entry in (ghost.get('evicted') or [])
+                    }
+                    restored_pool = [
+                        item for item in original_pool
+                        if TailEndGhostNodeInjector._normalize_score(item.get('score')) not in evicted_by_kept
+                    ]
+                    restored_pool.extend(kept)
+                    restored_scores = [
+                        TailEndGhostNodeInjector._normalize_score(item.get('score'))
+                        for item in original_pool
+                        if TailEndGhostNodeInjector._normalize_score(item.get('score')) in evicted_by_kept
+                    ]
+                    pool = restored_pool
+                    injected = kept
+                    print(f"   🔒 [方向锁] 幽灵节点丢弃方向外 {dropped} | 归位被挤出的原池项 "
+                          f"{restored_scores or '无'}")
+    except Exception as _gh_lock_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
+        print(f"   ⚠️ [方向锁] 幽灵节点未收口: {_gh_lock_err}")
+
+    result.injected = injected
+    result[:] = pool
+    if not injected:
+        print("   ℹ️ [幽灵节点注入] 裂缝触发但注入项全被方向锁丢弃，保持原15池")
+        return result
+    # evicted 必须等于真实净丢失：注入节点各自都挂着完整挤出清单，
+    # 直接 extend 会重复计数；按 score 去重后再与最终池对账。
+    eviction_reason = {}
+    for ghost in injected:
+        for entry in ghost.get('evicted') or []:
+            key = TailEndGhostNodeInjector._normalize_score(entry.get('score'))
+            if key and key not in eviction_reason:
+                eviction_reason[key] = dict(entry)
+    final_scores = {TailEndGhostNodeInjector._normalize_score(x.get('score')) for x in pool}
+    evicted_all = [
+        record for score, record in eviction_reason.items() if score not in final_scores
+    ]
+    result.evicted = evicted_all
+    result.injected_scores = [str(g.get('score') or '') for g in injected]
+    ghost_scores = ', '.join(str(g.get('score', '?')) for g in injected)
+    evicted_text = ', '.join(
+        f"{e.get('score')}({e.get('reason')})" for e in evicted_all
+    ) or '无'
+    print(
+        f"   👻 [幽灵节点注入] 触发！反向大比分捕获成功 | "
+        f"注入节点={ghost_scores} | "
+        f"反向={payload.get('counter_direction', '?')} | "
+        f"挤出={evicted_text} | "
+        f"增强后池大小={len(result)}"
+    )
+    return result
 # ================= 【TailEndGhostNodeInjector END】 =================
 
 
@@ -6164,6 +6478,12 @@ def build_system_diagnostics(force_tg_check=False):
         'deepseek_key_present': bool(os.environ.get('DEEPSEEK_API_KEY') or os.environ.get('DEEPSEEK_KEY')),
         'telegram_token_present': token_present,
         'telegram_getme': getme,
+        'viscosity': {
+            'source': VISCOSITY_SOURCE_UNAVAILABLE,
+            'applied': False,
+            'multiplier': 1.0,
+            'reason': '协议2粘度乘数公式规格缺失，权重按1.0原样通过；这不是“中性”，是“不可用”。',
+        },
         'proxy': {
             'route': _blade_normalize_okooo_route(os.environ.get("OKOOO_ROUTE") or _CLI_OKOOO_ROUTE or "auto"),
             'url_configured': bool(proxy_url),
@@ -6192,6 +6512,11 @@ def format_system_diagnostics_text(force_tg_check=False):
         f"Proxy route: {proxy.get('route') or 'auto'}",
         f"Proxy reachable: {proxy_reachable if proxy_reachable is not None else 'not_configured'}",
     ]
+    viscosity = _as_dict(diag.get('viscosity'))
+    lines.append(
+        f"Viscosity: source={viscosity.get('source') or VISCOSITY_SOURCE_UNAVAILABLE} "
+        f"applied={bool(viscosity.get('applied'))}"
+    )
     if db.get('error'):
         lines.append(f"DB error: {db.get('error')}")
     return "\n".join(lines)
@@ -20453,6 +20778,9 @@ class RankTrackingMatrix:
 # 【博弈策略专家系统】BettingStrategyExpertSystem
 # 经验固化协议：宏观账本优先，技术拓扑辅助，物理基本面熔断
 # ==========================================================================
+VISCOSITY_SOURCE_UNAVAILABLE = 'unavailable'
+
+
 class BettingStrategyExpertSystem:
     """
      博弈策略专家系统 - 经验固化协议
@@ -20485,12 +20813,26 @@ class BettingStrategyExpertSystem:
 
     @staticmethod
     def protocol_viscosity_anchor(viscosity_level, score):
+        """协议 2: 物理粘滞度锚定
+
+        返回 (multiplier, source)。当前没有定义乘数公式的规格，所以 source 恒为
+        'unavailable'、multiplier 恒为 1.0 —— 调用方必须把 source 带进诊断，
+        让“缺失”可观察，而不是把 1.0 当成“中性”。
+
+        TODO(用户给出粘度公式规格后再实现): 真乘数按 viscosity_level 与 score
+        计算，并把 source 改成公式版本号；在那之前不许写占位公式。
         """
-        协议 2: 物理粘滞度锚定
-        根据比赛基本面强制修正比分概率分布
-        返回: 权重乘数 (>1 增强, =1 不变)
-        """
-        return 1.0
+        return 1.0, VISCOSITY_SOURCE_UNAVAILABLE
+
+    @classmethod
+    def protocol_viscosity_weight(cls, viscosity_level, score):
+        """返回 {'multiplier': float, 'source': str, 'applied': bool} 的显式结构。"""
+        multiplier, source = cls.protocol_viscosity_anchor(viscosity_level, score)
+        return {
+            'multiplier': multiplier,
+            'source': source,
+            'applied': source != VISCOSITY_SOURCE_UNAVAILABLE,
+        }
 
     @classmethod
     def protocol_topological_melt(cls, delta_pos, ibi):
@@ -20711,7 +21053,10 @@ class BettingStrategyExpertSystem:
                 warnings.append(f"{score}: 逆向大盘风险({side}方向庄家亏损)")
 
             # 协议 2: 粘滞度锚定
-            viscosity_weight = cls.protocol_viscosity_anchor(match_viscosity, score)
+            viscosity_info = cls.protocol_viscosity_weight(match_viscosity, score)
+            viscosity_weight = viscosity_info['multiplier']
+            viscosity_source = viscosity_info['source']
+            viscosity_applied = viscosity_info['applied']
 
             # 计算综合效用值
             base_utility = 1.0 / (delta_pos + 1)
@@ -20777,13 +21122,16 @@ class BettingStrategyExpertSystem:
 
             verdict = '机会' if final_utility > 0.1 else '低价值'
             details = (f"位移极差={delta_pos} IBI={ibi:.2f} Δ%={delta_pct:+.1f} "
-                       f"粘滞权重={viscosity_weight:.1f} 账本={ledger_status}{_rtm_tag}")
+                       f"粘滞权重={viscosity_weight:.1f}({viscosity_source}) 账本={ledger_status}{_rtm_tag}")
             if _ledger_warning:
                 details += f" | {_ledger_warning}"
 
             results.append({
                 'score': score, 'verdict': verdict,
-                'utility': final_utility, 'details': details
+                'utility': final_utility, 'details': details,
+                'viscosity_multiplier': viscosity_weight,
+                'viscosity_source': viscosity_source,
+                'viscosity_applied': viscosity_applied,
             })
 
         # 汇总
@@ -20830,8 +21178,22 @@ class BettingStrategyExpertSystem:
         except Exception as _ne_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             warnings.append(f"混合策略纳什均衡求解异常(已降级): {_ne_err}")
 
+        viscosity_rows = [r for r in results if 'viscosity_source' in r]
+        viscosity_sources = {str(r.get('viscosity_source')) for r in viscosity_rows}
+        viscosity_source_summary = (
+            VISCOSITY_SOURCE_UNAVAILABLE
+            if VISCOSITY_SOURCE_UNAVAILABLE in viscosity_sources or not viscosity_sources
+            else '/'.join(sorted(viscosity_sources))
+        )
+        viscosity_multipliers = {float(r.get('viscosity_multiplier') or 0.0) for r in viscosity_rows}
+        viscosity_applied_any = any(bool(r.get('viscosity_applied')) for r in viscosity_rows)
         return {'results': results, 'warnings': warnings, 'summary': summary,
-                'overload_relaxed_scores': overload_relaxed_scores}
+                'overload_relaxed_scores': overload_relaxed_scores,
+                'viscosity_source': viscosity_source_summary,
+                'viscosity_applied': viscosity_applied_any,
+                'viscosity_multiplier': (
+                    viscosity_multipliers.pop() if len(viscosity_multipliers) == 1 else None
+                )}
 
     @staticmethod
     def format_for_tg(expert_result):
@@ -39384,54 +39746,22 @@ Top5比分及概率：
                     print(f"   ⚠️ [幽灵节点注入] 31池构建异常(已降级): {_ghost_build_err}")
                     _full_31_pool_for_ghost = []
 
-                # 调用幽灵节点注入引擎
-                _ghost_injector = TailEndGhostNodeInjector(max_pool_size=15)
-                _ghost_enhanced_pool = _ghost_injector.inject_ghost_nodes(
-                    current_pool15=_pool15_enriched,
+                # 调用幽灵节点注入引擎（注入 + 方向锁收口 + 日志都在 apply_ghost_node_injection 里）
+                _ghost_enhanced_pool = apply_ghost_node_injection(
+                    pool15_enriched=_pool15_enriched,
                     full_31_pool=_full_31_pool_for_ghost,
                     fissure_payload=_tensor_fissure_payload,
+                    history=history if isinstance(locals().get('history'), dict) else None,
+                    fid=fid,
+                    extra_lock_payload=locals().get('_blade_direction_lock_payload'),
+                    max_pool_size=15,
                 )
-                # 如果注入成功（返回的池与原池不同），用增强池替换原有_pool15_enriched
-                if _ghost_enhanced_pool and _ghost_enhanced_pool is not _pool15_enriched:
-                    _pool15_enriched = _ghost_enhanced_pool
-                    # 查找注入的幽灵节点并打印日志
-                    _injected_ghosts = [x for x in _pool15_enriched if x.get('tag') == 'GHOST_INJECTED_NODE']
-                    try:
-                        _gh_lp = lookup_direction_lock_payload(
-                            history if isinstance(locals().get('history'), dict) else None,
-                            fid,
-                            locals().get('_blade_direction_lock_payload'),
-                        )
-                        if _gh_lp and _injected_ghosts and DeepSeekAnalyzer is not None:
-                            _gh_dir = DeepSeekAnalyzer.matrix_direction_lock(_gh_lp).get('direction')
-                            _gh_drop = []
-                            for _gh in _injected_ghosts:
-                                _gh_sc = str(_gh.get('score') or '')
-                                if DeepSeekAnalyzer._classify_score_wdl(_gh_sc)[1] != _gh_dir:
-                                    _gh_drop.append(_gh_sc)
-                            if _gh_drop:
-                                _pool15_enriched = [
-                                    x for x in _pool15_enriched
-                                    if not (x.get('tag') == 'GHOST_INJECTED_NODE' and str(x.get('score') or '') in _gh_drop)
-                                ]
-                                _injected_ghosts = [x for x in _pool15_enriched if x.get('tag') == 'GHOST_INJECTED_NODE']
-                                print(f"   🔒 [方向锁] 幽灵节点丢弃方向外 {_gh_drop}")
-                    except Exception as _gh_lock_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                        print(f"   ⚠️ [方向锁] 幽灵节点未收口: {_gh_lock_err}")
-                    if _injected_ghosts:
-                        _ghost_scores_str = ', '.join(str(g.get('score', '?')) for g in _injected_ghosts)
-                        print(
-                            f"   👻 [幽灵节点注入] 触发！反向大比分捕获成功 | "
-                            f"注入节点={_ghost_scores_str} | "
-                            f"反向={_tensor_fissure_payload.get('counter_direction', '?')} | "
-                            f"增強15池大小={len(_pool15_enriched)}"
-                        )
-                    else:
-                        print("   ℹ️ [幽灵节点注入] 裂缝触发但未找到符合条件的反向节点，保持原15池")
-                else:
-                    print("   ℹ️ [幽灵节点注入] 裂缝触发但15池已含反向比分或无救援候选，维持原池")
+                if _ghost_enhanced_pool.injected:
+                    _pool15_enriched = list(_ghost_enhanced_pool)
             else:
                 pass  # 未触发裂缝，跳过幽灵节点注入
+        except GhostInjectionIntegrityError as _ghost_integrity_err:
+            print(f"   ❌ [幽灵节点注入] 31池数据不完整，拒绝默认值兜底: {_ghost_integrity_err}")
         except Exception as _ghost_inject_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             print(f"   ⚠️ [幽灵节点注入引擎] 异常(已降级回退到原15池，不影响主流程): {_ghost_inject_err}")
 
