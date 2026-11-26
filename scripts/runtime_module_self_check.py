@@ -18,6 +18,7 @@ import odds_fallback as fb
 import odds_index_math as odds
 import okooo_mobile_cs as okooo
 import sporttery_jc as jc
+import unified_odds_evaluator as unified
 from ProductionRunnerBridge import attach_engine_clearing
 
 
@@ -62,7 +63,14 @@ def main() -> None:
     require(_dir == '胜' and isinstance(_res, dict), 'arbitration direction failed')
     target: dict[str, Any] = {}
     require_dict(attach_engine_clearing(target), 'available')
-    print(json.dumps({'ok': True, 'checked': 9}, ensure_ascii=False))
+    evaluator = unified.UnifiedOddsEvaluator()
+    report = evaluator.evaluate_1x2(match_id='self-check', source_type='CN', odds=(2.0, 3.5, 4.0))
+    require_dict(report, 'break_even_prob_thresholds')
+    require(
+        report['min_true_prob_thresholds'] == report['break_even_prob_thresholds'],
+        'unified evaluator break-even alias drifted',
+    )
+    print(json.dumps({'ok': True, 'checked': 10}, ensure_ascii=False))
 
 
 if __name__ == '__main__':

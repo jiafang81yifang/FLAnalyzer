@@ -34,6 +34,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'unified_odds_evaluator',
 ]
 
 APP = 'app_v84_hermes.py'
@@ -133,7 +134,10 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
         marker = f'"{module}"'
         audit.record(f'embed:{module}', marker in block, 'module not referenced in embedded payload')
         first_line = source.read_text(encoding='utf-8').lstrip().splitlines()[0]
-        escaped = json.dumps(first_line)[1:-1]
+        # The block is emitted with json.dumps(..., ensure_ascii=False), so the
+        # fingerprint must use the same setting; ensure_ascii=True mis-reports any
+        # module whose first line contains non-ASCII text as stale.
+        escaped = json.dumps(first_line, ensure_ascii=False)[1:-1]
         audit.record(
             f'embed-in-sync:{module}',
             escaped in block,
@@ -267,6 +271,7 @@ def audit_modules(audit: Audit, root: Path) -> None:
         'blade_deepseek_pipeline': ['strip_match_features_from_method'],
         'ProductionRunnerBridge': [],
         'blade_monitor_panel': [],
+        'unified_odds_evaluator': ['UnifiedOddsEvaluator'],
     }
     for module, names in expectations.items():
         try:
