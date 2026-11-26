@@ -169,11 +169,11 @@ All ten reverts produced red. No revert left a test green.
 |---|---|---|
 | `python3 scripts/check_all.py` | 472 PASS / 0 FAIL | **472 PASS / 0 FAIL** |
 | `python3 scripts/full_audit.py` | 462 / 462 | **462 / 462** |
-| `pytest` | 126 passed | **155 passed** (126 + 29 new) |
+| `pytest` | 126 passed | **160 passed** (126 + 34 new) |
 | `python3 scripts/audit_module_api.py` | PASS | **PASS** |
 | rebuild determinism | identical | **identical** (`22ceb07b…` before and after a second build) |
 
-`app_v84_hermes.py` sha256: `22ceb07bbe4087206f55ea329d25b732af7775cb850457de21794263c92a6ca8`
+`app_v84_hermes.py` sha256: `922ef1323a6d76e726efd7acfc8b573660e11e15a46bdc6c5e43f958a1788512` (identical at the pin commit and at branch HEAD)
 
 Removal counts: **A 11, B 13, C 2, D 1 (guards only — nothing to remove), E 2, F 1 (+2 preventive)**
 
