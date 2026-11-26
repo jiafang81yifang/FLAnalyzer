@@ -273,7 +273,14 @@ class UnifiedOddsEvaluator:
         true_push_prob: float = 0.0,
         market_name: str | None = None,
     ) -> dict[str, Any]:
-        """评估双边盘口：让球/亚盘(AH)或大小球(OU)（须标明 CN 竞彩盘 或 INTL 国际盘）。"""
+        """评估双边盘口：让球/亚盘(AH)或大小球(OU)（须标明 CN 竞彩盘 或 INTL 国际盘）。
+
+        走水盘口的 EV 与 Kelly 要分开看，不要混为一谈：押 1 单位 A 的三种结果收益是
+        A 胜 +b、B 胜 -1、走水 0（退回本金），因此完整期望为
+        EV = p_win*b + p_loss*(-1) + push*0 = p_win*b - p_loss ——
+        走水项乘的是 0，省掉它不是近似而是精确值，所以 ev_list 不做任何 push 修正；
+        需要除以 (1-push_prob) 的只有增长率最优仓位（凯利），见 kelly_note。
+        """
         src = self._normalize_source(source_type)
         if len(odds) != 2 or len(outcomes) != 2:
             raise ValueError("双边盘口赔率与选项名称必须各为长度 2")

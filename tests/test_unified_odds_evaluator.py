@@ -430,6 +430,26 @@ def test_three_way_inverted_order_is_aligned_by_name() -> None:
 # --------------------------------------------------------------------------- #
 # 6. Defect 2: kelly_note only when a push exists
 # --------------------------------------------------------------------------- #
+def test_ev_ignores_push_because_the_push_term_is_exactly_zero() -> None:
+    """EV must stay p_a*b - p_b with no (1-push) scaling: the push outcome pays 0.
+
+    Staking 1 unit on A: A wins +b, B wins -1, push 0, so the full expectation is
+    p_win*b + p_loss*(-1) + push*0, and the push term is multiplied by exactly
+    zero. Any future "fix" that adds a push correction to EV is therefore wrong.
+    """
+    p_a, p_b, push, o_a, o_b = 0.50, 0.40, 0.10, 2.10, 1.80
+    report = UnifiedOddsEvaluator().evaluate_two_way(
+        'M', 'INTL', 'AH', (o_a, o_b), ('AH_HOME', 'AH_AWAY'), line=-0.5,
+        true_probs=(p_a, p_b), push_prob=push, true_push_prob=push,
+    )
+    b_a, b_b = o_a - 1.0, o_b - 1.0
+    # Hand-computed: .5*1.10-.4 = .15 ; .4*.80-.5 = -.18
+    assert report['ev_list'] == pytest.approx([p_a * b_a - p_b, p_b * b_b - p_a], abs=1e-12)
+    assert report['ev_list'] == pytest.approx([0.15, -0.18], abs=1e-12)
+    # Spelled out: the full three-outcome expectation equals the two-term one.
+    assert p_a * b_a + p_b * (-1.0) + push * 0.0 == pytest.approx(0.15, abs=1e-12)
+
+
 def test_kelly_note_absent_without_push() -> None:
     report = UnifiedOddsEvaluator().evaluate_two_way(
         'M', 'INTL', 'OU', (2.10, 1.80), ('OVER', 'UNDER'), line=2.5,
