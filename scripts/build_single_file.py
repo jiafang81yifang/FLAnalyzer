@@ -25,6 +25,7 @@ MODULES = [
     'blade_monitor_panel',
     'unified_odds_evaluator',
     'score_convergence_engine',
+    'tg_goal_table',
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
 END = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'

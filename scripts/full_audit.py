@@ -36,6 +36,7 @@ MODULES = [
     'blade_monitor_panel',
     'unified_odds_evaluator',
     'score_convergence_engine',
+    'tg_goal_table',
 ]
 
 APP = 'app_v84_hermes.py'

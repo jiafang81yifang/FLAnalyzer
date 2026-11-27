@@ -1048,7 +1048,7 @@ class DeepSeekAnalyzer:
     def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:
         """按读取顺序组装 DeepSeek-only TG 报告。
 
-        顺序：31对比表 → 市短 → 市热 → 市热超理论 → heat → desc。
+        顺序：31对比表 → 市短 → 市热 → 市热超理论 → 0球~7+ 表 → heat → desc。
 
         pack 的来源有三层，生产调用点只给 ds_payload（pack 藏在里面）：
           1. 显式 theo_mkt_31_pack / pack kwarg
@@ -1102,6 +1102,14 @@ class DeepSeekAnalyzer:
             _pos_lines = _as_lines(payload.get('mkt_over_theo_tg_lines'))
         if _pos_lines:
             sections.append('\n'.join(_pos_lines))
+
+        # 4b) 0球~7+ 均赔/比分表：必须排在 31 项表与市短/市热之后、研判正文之前。
+        #     缺数据时调用方传的是「未形成（原因）」那一行，不会静默消失。
+        _goal_lines = _as_lines(kwargs.get('goal_table_tg_lines'))
+        if not _goal_lines and isinstance(payload, dict):
+            _goal_lines = _as_lines(payload.get('goal_table_tg_lines'))
+        if _goal_lines:
+            sections.append('\n'.join(_goal_lines))
 
         # 5) heat 段与 6) desc 段，按读取顺序放在最后。
         for extra_key in (
