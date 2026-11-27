@@ -177,6 +177,61 @@ def compare_short_abs_hot(info: Any) -> dict[str, Any]:
     return {'available': False, 'line': '市短市热对照: 本地轻量模块未形成外部热度差。'}
 
 
+def _same_caliber_buckets(pack: Any) -> dict[str, Any]:
+    """把 31 全表按市场盘面的桶重分桶，逐桶比较——比较点接在这里。
+
+    为什么需要它：竞彩的 31 项与市场的 26/25 项不是同一套分桶。竞彩把
+    5:0/5:1/5:2 与 0:5/1:5/2:5 各列为独立格，市场把它们并进主胜其他/客胜其他/
+    任何其他；竞彩拆成 胜其他/平其他/负其他 三桶，市场可能是 3 桶也可能是 4 桶。
+    逐项直减会把「分桶不同」读成「定价错位」。
+
+    这里只做重分桶与差额，不改动调用点原有的逐项行，因此既有数值结论不变。
+    重分桶规则全部来自 `score_books`，本函数不复制任何映射。
+    """
+    import score_books as _sb
+
+    p = pack if isinstance(pack, dict) else {}
+    jc_probs: dict[str, float] = {}
+    market_probs: dict[str, float] = {}
+    for row in (p.get('rows') or []):
+        if not isinstance(row, dict):
+            continue
+        score = _sb.normalize_score_key(row.get('score'))
+        if not score:
+            continue
+        try:
+            jc_pct = float(row.get('jc_odds_pct'))
+        except (TypeError, ValueError):
+            jc_pct = None
+        try:
+            market_pct = float(row.get('market'))
+        except (TypeError, ValueError):
+            market_pct = None
+        if jc_pct is not None:
+            jc_probs[score] = jc_pct / 100.0
+        if market_pct is not None:
+            market_probs[score] = market_pct / 100.0
+    if not jc_probs:
+        return {'available': False, 'reason': '31 全表没有竞彩隐含概率，无法重分桶'}
+
+    # 市场侧那 4 个桶的键不在 31 全表里（31 表是竞彩视角），所以这里只比
+    # 「竞彩聚合出来的桶」与「市场在 31 表里实际报的那些精确格 + 桶」。
+    result = _sb.bucket_deltas(
+        jc_probs, market_probs,
+        policy=_sb.DEFAULT_MARKET_POLICY, book=_sb.MARKET_BOOK_26,
+    )
+    comparable = [r for r in result['rows'] if r['market'] is not None]
+    result.update({
+        'available': bool(comparable),
+        'comparable_buckets': sorted(r['bucket'] for r in comparable),
+        'incomparable_buckets': sorted(
+            r['bucket'] for r in result['rows'] if r['market'] is None
+        ),
+        'reason': '' if comparable else '市场侧没有任何一个桶有可比报价',
+    })
+    return result
+
+
 class V1631StandardUnifiedEngine:
     _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}
     _TEMPLATE_FALLBACK = '未形成'
@@ -388,10 +443,15 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def build_mkt_short_matrix_from_pack(pack: Any) -> dict[str, Any]:
-        """从 31 全表算市短矩阵（市均隐含% > 竞彩隐含%）。
+        """从 31 全表算市短矩阵（市场隐含% > 竞彩隐含%）。
 
         与 `build_theo_mkt_31_pack.pos_rows` 口径不同：那个比的是 市场 vs 理论，
-        这里比的是 市均 vs 竞彩官方，两者各自独立计算。
+        这里比的是 市场 vs 竞彩官方，两者各自独立计算。
+
+        逐项差额保留原口径（竞彩 31 项对市场的市均），所以既有数值结论不变；
+        另附 `same_caliber` 一段：把那 31 项先聚合到市场盘面的桶上再比，
+        因为竞彩的 5 球独立格与「其他」三桶在市场上没有对应的独立格，
+        逐项直减会把分桶差当成定价差。
         """
         p = pack if isinstance(pack, dict) else {}
         rows = []
@@ -433,6 +493,7 @@ class DeepSeekAnalyzer:
             'counts': counts,
             'share_pct': {k: round(v * 100.0 / total, 2) if total else 0.0 for k, v in counts.items()},
             'source': '市均×竞彩31比分',
+            'same_caliber': _same_caliber_buckets(p),
             'reason': '' if rows else '没有任何选项的市均隐含%高于竞彩隐含%',
         }
 
@@ -1954,6 +2015,9 @@ class DeepSeekAnalyzer:
             'water_gaps': facts.get('water_gaps') or [],
         }
         task = '给出本场竞彩研判：方向锁依据、①②比分、数据缺口。不得编造外部数据。'
+        # 两套比分盘的口径必须随提示词一起给模型：它写「其他」比较时容易把
+        # 竞彩与市场的桶当同义词，从而报出一条并不存在的定价错位。
+        task += '\n\n' + SCORE_BOOK_TERMINOLOGY_NOTE
         if gap_block:
             # 模型必须**知道它没有哪些数据**，否则会照常写出一份看起来齐全的研判，
             # 读者无法分辨哪一段是真实结论、哪一段是它替缺失数据编的。
@@ -2418,6 +2482,27 @@ def deepseek_config() -> dict[str, Any]:
         'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),
         'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),
     }
+
+
+#: 「竞彩」与「市场」两套比分盘的口径，注入所有写研判正文的提示词。
+#: 两边的「其他」桶不是同义词，6 个 5 球比分在竞彩是独立格、在市场不是；
+#: 模型若把两边「其他」直接相减，会写出一条不存在的定价错位。
+#: 正文只说这一段必须记住的事实，不复述整套分析框架。
+SCORE_BOOK_TERMINOLOGY_NOTE = (
+    '口径约定（必须遵守）：'
+    '「竞彩」专指中国竞彩足球 31 项比分盘（主胜 13 = 12 个精确格 + 胜其他；'
+    '平局 5 = 4 个精确格 + 平其他；客胜 13 = 12 个精确格 + 负其他）。'
+    '「市场」专指境外主流公司 25/26 项波胆盘（22 个精确格 + 3 或 4 个「其他」桶，'
+    '26 项盘面另设一个总「任何其他」）。'
+    '两边差距只有两条：单边进球独立覆盖上限不同（竞彩 5 球封顶、市场 4 球封顶），'
+    '以及「其他」冷门大比分的归类方式不同。'
+    '因此：竞彩的 胜其他/平其他/负其他 与市场的主胜其他/平局其他/客胜其他/任何其他'
+    '**不是同义词，不得直接相减**；'
+    '5:0 5:1 5:2 / 0:5 1:5 2:5 这 6 个比分**在竞彩是独立格、在市场没有独立格**，'
+    '不得说市场也报了这 6 个比分。'
+    '要比较两边「其他」，必须先重分桶到同一口径；'
+    '实际开出哪个比分以赛果为准。'
+)
 
 
 def assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:

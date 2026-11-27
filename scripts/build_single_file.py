@@ -31,6 +31,8 @@ MODULES = [
     'okooo_analysis_tabs',
     'live500_board',
     'match_data_matrix',
+    'score_books',
+    'number_text',
 
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'

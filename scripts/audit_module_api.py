@@ -34,6 +34,8 @@ MODULES = [
     'okooo_analysis_tabs',
     'live500_board',
     'match_data_matrix',
+    'score_books',
+    'number_text',
 
 ]
 
