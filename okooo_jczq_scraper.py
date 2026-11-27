@@ -49,9 +49,12 @@ import okooo_mobile_cs as okooo
 # ---- 复用 okooo_mobile_cs 的请求层（口径唯一） ----
 # 解码：按 meta charset → utf-8 → gb18030，顺序错就会解出半对半错的乱码。
 decode_html = okooo.decode_okooo_html
-# 抓页 + blocked 判定（403/405 或命中 WAF 文案）。这是本仓库对「被拦」的唯一口径，
-# 本模块不另写一套——两套口径必然漂移，WAF 拦截就会被误当成普通网络错误。
+# 抓页 + blocked / origin_blocked / cache_hit 判定。这是本仓库对「被拦」的唯一口径，
+# 本模块不另写一套——两套口径必然漂移，IP 拦截就会被误当成普通网络错误。
 fetch_page = okooo._fetch_detail
+# 单次 HTTP 往返（含 blocked / origin_blocked / 缓存证据判定）。探测层的重试
+# 建立在它之上，保证「一次尝试 == 一次往返」，不与其他重试循环叠乘。
+attempt_http = okooo._http_attempt
 # 澳客对无 cookie 的直连请求直接回 405，必须先 warm 一次拿 session。
 warm_session = okooo._warm_session
 # 同一个数字口径（去逗号/百分号），赔率解析不另写一套。
@@ -106,6 +109,9 @@ FINAL_COLUMNS = [
     'score', 'handicap', 'wdl_home', 'wdl_draw', 'wdl_away',
     'hc_home', 'hc_draw', 'hc_away',
     'jc31_available', 'jc31_count', 'jc31_odds_json',
+    'cs_status', 'cs_books_n', 'cs_origin_blocked',
+    'cs_page_avg_json', 'cs_books_avg_json',
+    'cs_age', 'cs_x_cache_status', 'cs_reason',
     'subpage_type', 'sub_url', 'status', 'attempts', 'http_status',
     'bytes', 'title', 'row_count', 'rows_text', 'error_msg',
 ]
@@ -151,12 +157,137 @@ def _soup(html: Any) -> BeautifulSoup:
     return BeautifulSoup(html or '', 'html.parser')
 
 
-def _thread_session(proxies: Any) -> Any:
-    session = getattr(_local, 'session', None)
+def _thread_session(proxies: Any, mobile: bool = True) -> Any:
+    cache = getattr(_local, 'sessions', None)
+    if cache is None:
+        cache = _local.sessions = {}
+    key = bool(mobile)
+    session = cache.get(key)
     if session is None:
-        session = warm_session(proxies, mobile=True, referer=MOBILE_WARMUP_URL)
-        _local.session = session
+        session = warm_session(
+            proxies, mobile=key,
+            referer=MOBILE_WARMUP_URL if key else 'https://www.okooo.com/',
+        )
+        cache[key] = session
     return session
+
+
+# --------------------------------------------------------------------------- #
+# 统一请求入口：缓存命中探测
+# --------------------------------------------------------------------------- #
+STATUS_ORIGIN_BLOCKED = 'origin_blocked'
+STATUS_TIMEOUT = 'timeout'
+STATUS_HTTP_ERROR = 'http_error'
+STATUS_OK_PROBE = 'ok'
+
+
+_CACHE_BUSTER_PARAMS = (
+    'cb', '_', '__', 'cachebuster', 'cache_buster', 'nocache', 'no_cache',
+    'ts', 'timestamp', 't', 'r', 'rnd', 'rand', 'random', '_t', '_r',
+)
+
+
+def _assert_stable_url(url: str) -> None:
+    """拒绝带 cache-buster 的 URL。
+
+    实测：`/jczq/` 原样请求命中 CDN 缓存返回 200；同一路径加一个随机 query 就
+    回源，被 WAF 拦成 405。所以给 URL 加随机参数不是「更保险」，而是把一个必然
+    成功的请求变成必然失败。这里直接拒绝，避免有人日后「顺手加个时间戳」。
+    """
+    parsed = urlparse(url)
+    # keep_blank_values：`?t=` 这种空值 cache-buster 默认会被 parse_qs 丢掉，
+    # 那样就漏判了，所以必须保留空值参数。
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    # 名字命中即拒绝，与取值无关：`?_=1712` 与 `?t=` 都是 cache-buster 的常见写法。
+    offenders = sorted(
+        name for name in params if name.strip().lower() in _CACHE_BUSTER_PARAMS
+    )
+    if offenders:
+        raise ValueError(
+            f'{url} 带 cache-buster 参数 {offenders}：给澳客 URL 加随机 query 会让'
+            'CDN 缓存失效并回源，被 WAF 拦成 405。请原样使用列表页/子页 URL。'
+        )
+
+
+def fetch_with_cache_probe(
+    url: str,
+    *,
+    proxies: Any = None,
+    session: Any = None,
+    retries: int = 2,
+    timeout: int = LIST_TIMEOUT,
+    mobile: bool | None = None,
+) -> dict[str, Any]:
+    """所有抓取请求的统一入口：先判缓存命中/源站 IP 拦截，再谈重试。
+
+    返回在 `_fetch_detail` 的字段之上补齐两个布尔量和两个状态键：
+      `cache_hit`       命中 CDN 缓存（`age` 有值且非零，或 `x-cache-status: HIT`）
+      `origin_blocked`  未命中缓存 + 403/405 + WAF 拦截页 → 源站按出口 IP 拦截
+      `probe_status`    归一化结果：ok / origin_blocked / timeout / http_error
+      `attempts`        实际发出的 HTTP 往返次数
+
+    重试规则（这是与旧行为的唯一区别）：
+      * 命中缓存或 200        → ok
+      * origin_blocked        → 立刻返回，**不计入重试次数**、不换 UA/Referer/session
+      * 其它错误（超时、5xx） → 指数退避重试
+
+    每次尝试只发**一次** HTTP 往返（直接走 `okooo_mobile_cs._http_attempt`），
+    重试决策全部收在这一层，避免与 `_fetch_detail` 内部的重试互相叠乘。
+    blocked 文案与解码口径仍只有 `_http_attempt` 那一份，本模块不另判一套。
+
+    为什么要这样：2026-11-26 逐条实测证明源站按出口 IP 信誉拦截机房/云段，客户端
+    指纹、UA、Referer、cookie 全部无效（证据清单见模块 docstring）。对 IP 拦截做
+    重试只会加深封禁并拖慢整轮，所以它必须与「普通网络抖动」分开处置。
+
+    **URL 必须逐字节保持不变。** 实测的反直觉事实：同一个路径、URL 一字不差且命中
+    缓存时是 200，多加一个随机 query 就变成回源 405。所以「加 cache-buster」会把
+    本来能成功的请求变成必然失败。这条防护写在代码里（`_assert_stable_url`），
+    不只写在文档里——将来谁加 cache-buster 会立刻被这条断言拦下。
+    """
+    _assert_stable_url(url)
+    if mobile is None:
+        mobile = 'm.okooo.com' in url
+    referers = okooo._referers_for(url)
+    referer = referers[0] if referers else MOBILE_WARMUP_URL
+    active_session = session
+    attempts = max(1, int(retries or 1))
+    last: dict[str, Any] = {}
+    for attempt in range(attempts):
+        if active_session is None and attempt:
+            active_session = _thread_session(proxies, mobile=mobile)
+        last = attempt_http(
+            url, proxies=proxies, session=active_session, referer=referer, timeout=timeout,
+        )
+        # 注意：`status` 始终是 HTTP 状态码（_http_attempt 的既有语义），
+        # 归一化后的结果类别另放 `probe_status`，两个含义不挤一个键。
+        last['cache_hit'] = bool(last.get('cache_hit'))
+        last['origin_blocked'] = bool(last.get('origin_blocked'))
+        last['attempts'] = attempt + 1
+        # 防御性检查：探测层自己绝不改写 URL（见 _assert_stable_url 的说明）。
+        # 用显式抛错而不是 assert——assert 在 -O 下会被剥掉，这种防护不能失效。
+        if str(last.get('url') or url) != url:
+            raise RuntimeError(
+                f'probe rewrote the URL: {last.get("url")!r} != {url!r}'
+            )
+        if last.get('ok'):
+            last['probe_status'] = STATUS_OK_PROBE
+            return last
+        if last['origin_blocked']:
+            # 源站按出口 IP 拦截：重试无意义，一次就收手。
+            last['probe_status'] = STATUS_ORIGIN_BLOCKED
+            return last
+        last['probe_status'] = STATUS_TIMEOUT if last.get('transport_error') else STATUS_HTTP_ERROR
+        if not last.get('transport_error') and 400 <= int(last.get('status') or 0) < 500:
+            # 4xx（404 之类）是「页面没了」，重试同一 URL 不会变好，直接返回。
+            return last
+        if attempt + 1 < attempts:
+            nxt = okooo._next_referer(referers, referer)
+            if nxt:
+                referer = nxt
+            time.sleep(min(4, 2 ** attempt) + random.uniform(0, RETRY_JITTER))  # nosec B311 - 退避抖动，非密码学用途
+    last.setdefault('probe_status', STATUS_HTTP_ERROR)
+    last['attempts'] = attempts
+    return last
 
 
 # --------------------------------------------------------------------------- #
@@ -272,8 +403,11 @@ def fetch_match_list(
     }
     if html is None:
         session = session or warm_session(proxies, mobile=True, referer=MOBILE_WARMUP_URL)
-        info = fetch_page(LIST_URL, proxies=proxies, session=session,
-                          retries=2, timeout=LIST_TIMEOUT)
+        # 列表页是主路径，且实测稳定命中 CDN 缓存（age 有值）→ 200。
+        info = fetch_with_cache_probe(
+            LIST_URL, proxies=proxies, session=session,
+            retries=3, timeout=LIST_TIMEOUT, mobile=True,
+        )
         page = info.get('html') or ''
     else:
         page = html if isinstance(html, str) else decode_html(html)
@@ -305,10 +439,21 @@ def fetch_match_list(
         'skipped_cards': skipped,
         'jc31_match_count': sum(1 for m in matches if m['jc31_available']),
         'error': str(info.get('error') or ''),
+        'cache_hit': bool(info.get('cache_hit')),
+        'origin_blocked': bool(info.get('origin_blocked')),
+        'age': str(info.get('age') or ''),
+        'x_cache_status': str(info.get('x_cache_status') or ''),
+        'server': str(info.get('server') or ''),
+        'probe_status': str(info.get('probe_status') or ''),
     }
     if not matches:
         shape = f'{CARD_SELECTOR}={hits}, HTTP {result["status"]}, {result["source_bytes"]} bytes'
-        if result['blocked']:
+        if result['origin_blocked']:
+            result['reason'] = (
+                f'源站按出口 IP 拦截（WAF 405，{info.get("error") or "blocked"}；'
+                f'x-cache-status={result["x_cache_status"] or "-"}, age={result["age"] or "-"}）: {shape}'
+            )
+        elif result['blocked']:
             result['reason'] = f'WAF 拦截（{info.get("error") or "blocked"}）: {shape}'
         elif not page:
             result['reason'] = f'列表页为空/请求失败（{info.get("error") or "empty response"}）: {shape}'
@@ -374,36 +519,50 @@ def _subpage_record(
         'title': '',
         'rows': [],
         'error_msg': '',
+        'cache_hit': False,
+        'origin_blocked': False,
+        'age': '',
+        'x_cache_status': '',
+        'traceid': '',
     }
-    info: dict[str, Any] = {}
-    last_error = ''
-    for attempt in range(1, SUBPAGE_MAX_ATTEMPTS + 1):
-        record['attempts'] = attempt
-        info = fetch_page(sub_url, proxies=proxies,
-                          session=_thread_session(proxies), timeout=SUBPAGE_TIMEOUT)
-        record['http_status'] = int(info.get('status') or 0)
-        record['bytes'] = int(info.get('bytes') or 0)
-        record['title'] = str(info.get('title') or '')
-        if info.get('ok'):
-            rows = extract_rows(info.get('html') or '')
-            if rows:
-                record['status'] = STATUS_OK
-                record['rows'] = rows
-                last_error = ''
-            else:
-                # 200 但没有任何行容器：结构未命中，重试也是同一份字节。
-                record['status'] = STATUS_ERROR
-                last_error = 'no_row_container: 页面无 table tr / div 行容器'
-            break
-        if info.get('blocked'):
-            # WAF 拦截：重试只会加重封禁，也拖慢整轮，立刻标记并跳过。
-            record['status'] = STATUS_BLOCKED
-            last_error = str(info.get('error') or f'HTTP {record["http_status"]} blocked')
-            break
-        last_error = str(info.get('error') or f'HTTP {record["http_status"]}')
-        if attempt < SUBPAGE_MAX_ATTEMPTS:
-            time.sleep(2 ** (attempt - 1) + random.uniform(0, RETRY_JITTER))  # nosec B311 - 退避抖动不是密码学用途
-    record['error_msg'] = last_error
+    # 走统一入口：缓存命中 / 源站 IP 拦截 / 普通抖动的判定与重试策略全在探测层，
+    # 子页这里不再自己判 blocked、也不再自己写退避。
+    probe = fetch_with_cache_probe(
+        sub_url, proxies=proxies, session=_thread_session(proxies),
+        retries=SUBPAGE_MAX_ATTEMPTS, timeout=SUBPAGE_TIMEOUT,
+    )
+    record.update({
+        'attempts': int(probe.get('attempts') or 0),
+        'http_status': int(probe.get('status') or 0),
+        'bytes': int(probe.get('bytes') or 0),
+        'title': str(probe.get('title') or ''),
+        'cache_hit': bool(probe.get('cache_hit')),
+        'origin_blocked': bool(probe.get('origin_blocked')),
+        'age': str(probe.get('age') or ''),
+        'x_cache_status': str(probe.get('x_cache_status') or ''),
+        'traceid': str(probe.get('traceid') or ''),
+    })
+    if probe.get('ok'):
+        rows = extract_rows(probe.get('html') or '')
+        if rows:
+            record['status'] = STATUS_OK
+            record['rows'] = rows
+        else:
+            # 200 但没有任何行容器：结构未命中，重试也是同一份字节。
+            record['status'] = STATUS_ERROR
+            record['error_msg'] = 'no_row_container: 页面无 table tr / div 行容器'
+    elif probe.get('origin_blocked'):
+        record['status'] = STATUS_ORIGIN_BLOCKED
+        record['error_msg'] = (
+            f'源站按出口 IP 拦截（HTTP {record["http_status"]}，响应体 block_message；'
+            f'x-cache-status={record["x_cache_status"] or "-"}, age={record["age"] or "-"}）'
+            '；这不是页面结构变化'
+        )
+    else:
+        record['status'] = STATUS_ERROR
+        record['error_msg'] = str(
+            probe.get('error') or f'HTTP {record["http_status"]}'
+        )
     time.sleep(random.uniform(*POST_TASK_SLEEP))  # nosec B311 - 限速抖动不是密码学用途
     return record
 
@@ -429,6 +588,123 @@ def fetch_subpages(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_subpage_record, match, url, proxies) for match, url in tasks]
         return [future.result() for future in futures]
+
+
+# --------------------------------------------------------------------------- #
+# 市均（桌面波胆页）：默认不可用，如实上报 IP 拦截
+# --------------------------------------------------------------------------- #
+CS_URL_TEMPLATE = 'https://www.okooo.com/soccer/match/{match_id}/cs/'
+CS_ALWAYS_SUMMED = ()
+
+
+def fetch_market_average(
+    match: dict[str, Any],
+    *,
+    proxies: Any = None,
+    cs_html: Any = None,
+) -> dict[str, Any]:
+    """取某场的市均比分（25 项）。
+
+    **默认在本机不可用**：桌面波胆页 `/soccer/match/<id>/cs/` 需要住宅 IP，
+    机房/云段一律被阿里云 WAF 拦成 405（响应体 `block_message`）。这里绝不重试、
+    绝不换 UA/Referer、也绝不拿竞彩价冒充市均——三者都会让下游拿到假数据。
+
+    传入 `cs_html`（`--cs-html <dir>` 或调用方注入）时走离线解析路径：
+    仓库 `tests/fixtures/okooo_desktop_cs_1347776.html` 是真实抓包，
+    实测解出 25 项市均 / 27 家公司。
+    """
+    match_id = str(match.get('match_id', '') or '')
+    url = CS_URL_TEMPLATE.format(match_id=match_id)
+    record: dict[str, Any] = {
+        'match_id': match_id,
+        'match_no': match.get('match_no', ''),
+        'home': match.get('home', ''),
+        'away': match.get('away', ''),
+        'cs_url': url,
+        'status': STATUS_BLOCKED,
+        'reason': '',
+        'origin_blocked': False,
+        'cache_hit': False,
+        'age': '',
+        'x_cache_status': '',
+        'attempts': 0,
+        'http_status': 0,
+        'bytes': 0,
+        'page_avg': {},
+        'books_avg': {},
+        'books_n': 0,
+        'parse_stage': '',
+        'error_msg': '',
+    }
+
+    if cs_html is not None:
+        if isinstance(cs_html, (str, Path)) and Path(str(cs_html)).exists():
+            cs_html = Path(str(cs_html)).read_bytes()
+        html = cs_html if isinstance(cs_html, str) else decode_html(cs_html)
+        parsed = okooo._parse_cs_datatable(html)
+        record.update({
+            'http_status': 200,
+            'bytes': len(html.encode('utf-8')),
+            'parse_stage': parsed.get('stage', ''),
+            'page_avg': parsed.get('page_avg') or {},
+            'books_avg': parsed.get('books_avg') or {},
+            'books_n': int(parsed.get('books_n') or 0),
+        })
+        if parsed.get('books_avg'):
+            record['status'] = STATUS_OK
+        else:
+            record['status'] = STATUS_ERROR
+            record['reason'] = (
+                f'离线市均 HTML 解析失败（stage={parsed.get("stage")}，'
+                f'headers={parsed.get("header_count")}，rows={parsed.get("row_count")}）'
+            )
+            record['error_msg'] = record['reason']
+        return record
+
+    probe = fetch_with_cache_probe(
+        url, proxies=proxies, session=_thread_session(proxies, mobile=False),
+        retries=1, timeout=SUBPAGE_TIMEOUT, mobile=False,
+    )
+    record.update({
+        'attempts': int(probe.get('attempts') or 0),
+        'http_status': int(probe.get('status') or 0),
+        'bytes': int(probe.get('bytes') or 0),
+        'origin_blocked': bool(probe.get('origin_blocked')),
+        'cache_hit': bool(probe.get('cache_hit')),
+        'age': str(probe.get('age') or ''),
+        'x_cache_status': str(probe.get('x_cache_status') or ''),
+        'cache_origin': 'okooo.com',
+    })
+    if probe.get('ok'):
+        parsed = okooo._parse_cs_datatable(probe.get('html') or '')
+        record.update({
+            'status': STATUS_OK,
+            'parse_stage': parsed.get('stage', ''),
+            'page_avg': parsed.get('page_avg') or {},
+            'books_avg': parsed.get('books_avg') or {},
+            'books_n': int(parsed.get('books_n') or 0),
+        })
+        return record
+    if probe.get('origin_blocked'):
+        record['status'] = STATUS_ORIGIN_BLOCKED
+        record['reason'] = (
+            '源站按出口 IP 拦截：CDN 未命中（'
+            f'x-cache-status={record["x_cache_status"] or "-"}, age={record["age"] or "-"}），'
+            f'回源被阿里云 WAF 拦成 HTTP {record["http_status"]}（响应体 block_message）。'
+            '客户端指纹/UA/Referer/cookie 均无效，需要住宅 IP 或缓存命中；'
+            '这不是页面结构变化。'
+        )
+    else:
+        record['status'] = STATUS_ERROR
+        record['reason'] = (
+            f'市均页抓取失败（HTTP {record["http_status"]}, {probe.get("error") or "unknown"}）'
+        )
+    record['error_msg'] = record['reason']
+    return record
+
+
+# --------------------------------------------------------------------------- #
+# 清洗与导出
 
 
 # --------------------------------------------------------------------------- #
@@ -502,10 +778,33 @@ def _dedupe_records(subpage_records: list[dict[str, Any]] | None) -> list[dict[s
     return kept
 
 
+def _cs_columns(record: dict[str, Any] | None) -> dict[str, Any]:
+    """市均记录的导出列。缺口原样写进 `cs_reason`，日志里能一眼看出是 IP 拦截。"""
+    if not record:
+        return {
+            'cs_status': '', 'cs_books_n': '', 'cs_origin_blocked': '',
+            'cs_page_avg_json': '', 'cs_books_avg_json': '', 'cs_age': '',
+            'cs_x_cache_status': '', 'cs_reason': '',
+        }
+    return {
+        'cs_status': record.get('status', ''),
+        'cs_books_n': record.get('books_n', ''),
+        'cs_origin_blocked': bool(record.get('origin_blocked')),
+        'cs_page_avg_json': json.dumps(record.get('page_avg') or {}, ensure_ascii=False)
+        if record.get('page_avg') else '',
+        'cs_books_avg_json': json.dumps(record.get('books_avg') or {}, ensure_ascii=False)
+        if record.get('books_avg') else '',
+        'cs_age': record.get('age', ''),
+        'cs_x_cache_status': record.get('x_cache_status', ''),
+        'cs_reason': record.get('reason', ''),
+    }
+
+
 def clean_and_export(
     matches: list[dict[str, Any]],
     subpage_records: list[dict[str, Any]] | None,
     output_dir: str | Path = 'output',
+    cs_records: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     """去重、去噪并导出 CSV（utf-8-sig）与 XLSX。
 
@@ -515,13 +814,18 @@ def clean_and_export(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    cs_by_match: dict[str, dict[str, Any]] = {}
+    for record in cs_records or []:
+        cs_by_match.setdefault(str(record.get('match_id', '')), record)
+
     by_match: dict[str, list[dict[str, Any]]] = {}
     for record in _dedupe_records(subpage_records):
         by_match.setdefault(str(record.get('match_id', '')), []).append(record)
 
     rows: list[dict[str, Any]] = []
     for match in matches:
-        base = _match_base_row(match)
+        base = {**_match_base_row(match),
+                **_cs_columns(cs_by_match.get(str(match.get('match_id', ''))))}
         records = by_match.pop(str(match.get('match_id', '')), [])
         if not records:
             rows.append(base)
@@ -539,7 +843,7 @@ def clean_and_export(
                 'home': record.get('home', ''),
                 'away': record.get('away', ''),
             })
-            rows.append({**base, **_subpage_columns(record)})
+            rows.append({**base, **_cs_columns(None), **_subpage_columns(record)})
 
     frame = pd.DataFrame(rows, columns=FINAL_COLUMNS)
 
@@ -588,15 +892,60 @@ def scrape(
     proxies: Any = None,
     limit: int | None = None,
     workers: int = SUBPAGE_MAX_WORKERS,
+    cs_html: Any = None,
+    with_cs: bool = False,
 ) -> dict[str, Any]:
-    """抓列表 →（可选）抓子页 → 导出。默认不碰 `/match/*.php`。"""
+    """抓列表 →（可选）市均/子页 → 导出。
+
+    默认只打 `/jczq/` 列表页（主产出：赛程 + 每场 31 项竞彩比分）。
+    `cs_html`（目录或 {match_id: html}）用于离线解析市均；`with_cs` 才尝试在线抓市均。
+    """
     listing = fetch_match_list(proxies=proxies, html=html)
     records: list[dict[str, Any]] = []
     if with_subpages and listing['available']:
         targets = listing['matches'] if limit is None else listing['matches'][:limit]
         records = fetch_subpages(targets, proxies=proxies, max_workers=workers)
-    frame = clean_and_export(listing['matches'], records, output_dir)
-    return {'listing': listing, 'subpage_records': records, 'frame': frame}
+    cs_records: list[dict[str, Any]] = []
+    if listing['available'] and (with_cs or cs_html is not None):
+        targets = listing['matches'] if limit is None else listing['matches'][:limit]
+        for match in targets:
+            injected = _cs_html_for(cs_html, str(match.get('match_id', '')))
+            if injected is None and not with_cs:
+                continue
+            cs_records.append(
+                fetch_market_average(match, proxies=proxies, cs_html=injected)
+            )
+    frame = clean_and_export(listing['matches'], records, output_dir, cs_records)
+    return {
+        'listing': listing, 'subpage_records': records,
+        'cs_records': cs_records, 'frame': frame,
+    }
+
+
+def _cs_html_for(cs_html: Any, match_id: str) -> Any:
+    """从 `--cs-html` 的目录或映射里取某场的市均 HTML；没有就返回 None。"""
+    if cs_html is None:
+        return None
+    if isinstance(cs_html, dict):
+        return cs_html.get(match_id)
+    base = Path(str(cs_html))
+    if not base.exists():
+        return None
+    if base.is_file():
+        return base
+    for pattern in (f'{match_id}.html', f'cs_{match_id}.html', f'*{match_id}*.html'):
+        found = sorted(base.glob(pattern))
+        if found:
+            return found[0]
+    return None
+
+
+def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(key, '') or '')
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 def _summarize(result: dict[str, Any]) -> dict[str, Any]:
@@ -617,6 +966,14 @@ def _summarize(result: dict[str, Any]) -> dict[str, Any]:
         'skipped_cards': listing['skipped_cards'],
         'subpage_requests': len(records),
         'subpage_statuses': statuses,
+        'cache_hit': listing.get('cache_hit', False),
+        'age': listing.get('age', ''),
+        'x_cache_status': listing.get('x_cache_status', ''),
+        'cs_requests': len(result.get('cs_records') or []),
+        'cs_statuses': _count_by(result.get('cs_records') or [], 'status'),
+        'cs_origin_blocked': any(
+            r.get('origin_blocked') for r in (result.get('cs_records') or [])
+        ),
         'rows_written': int(frame.attrs.get('row_count', 0)),
         'csv_path': frame.attrs.get('csv_path', ''),
         'xlsx_path': frame.attrs.get('xlsx_path', ''),
@@ -641,6 +998,14 @@ def build_parser() -> argparse.ArgumentParser:
         '--no-subpages', action='store_true',
         help='显式关闭子页（当前默认即为关闭，保留该开关以兼容旧命令行）',
     )
+    parser.add_argument(
+        '--cs-html', default=None,
+        help='离线市均：本地 HTML 文件，或按 <match_id>.html 命名的目录（不联网即可解析市均）',
+    )
+    parser.add_argument(
+        '--with-cs', action='store_true',
+        help='尝试在线抓市均 /soccer/match/<id>/cs/（本机实测被源站按出口 IP 拦成 405）',
+    )
     parser.add_argument('--proxy', default=None, help='HTTP(S) 代理，如 http://127.0.0.1:7890')
     parser.add_argument('--limit', type=int, default=None, help='只抓前 N 场比赛的子页')
     parser.add_argument('--workers', type=int, default=SUBPAGE_MAX_WORKERS,
@@ -662,6 +1027,8 @@ def main(argv: list[str] | None = None) -> int:
         proxies=args.proxy,
         limit=args.limit,
         workers=args.workers,
+        cs_html=args.cs_html,
+        with_cs=bool(args.with_cs),
     )
     summary = _summarize(result)
     if args.json:
@@ -677,6 +1044,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f'子页请求: {summary["subpage_requests"]} 条，状态 {summary["subpage_statuses"]}')
         elif not with_subpages:
             print('子页: 默认不抓（关键数据已在列表页；需要时加 --with-subpages）')
+        if summary['cs_requests']:
+            print(f'市均: {summary["cs_requests"]} 条，状态 {summary["cs_statuses"]}')
+            if summary['cs_origin_blocked']:
+                print('  ⚠️ 市均缺失原因：源站按出口 IP 拦截（不是页面结构变化）')
         print(f'CSV: {summary["csv_path"]}')
         print(f'XLSX: {summary["xlsx_path"] or "未生成"}')
     return 0 if summary['available'] else 1
