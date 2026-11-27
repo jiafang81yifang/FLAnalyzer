@@ -672,6 +672,11 @@ def _source_line(row: dict[str, Any]) -> str:
     return '｜'.join(bits)
 
 
+# 缺口横幅的唯一表头常量。报告顶部最终会把矩阵缺口、六盘口缺口、31 表缺口
+# 合成**一个**块，共用这一行表头，所以它必须是常量而不是散落的字面量。
+GAP_BANNER_HEADER = '⚠️【本场缺口（先说清楚，不影响出报）】'
+
+
 def format_gap_banner(matrix: dict[str, Any], max_items: int = 6) -> list[str]:
     """缺口横幅：每个原因码配一句中文，供报告顶部「先说缺口再说结论」使用。
 
@@ -692,7 +697,7 @@ def format_gap_banner(matrix: dict[str, Any], max_items: int = 6) -> list[str]:
             buckets.setdefault(code, []).append(str(gap.get('field') or ''))
     if not buckets:
         return []
-    lines = ['⚠️【本场缺口（先说清楚，不影响出报）】']
+    lines = [GAP_BANNER_HEADER]
     for code in sorted(buckets, key=lambda c: (-len(buckets[c]), c)):
         fields = sorted({f for f in buckets[code] if f})
         shown = '、'.join(fields[:max_items])

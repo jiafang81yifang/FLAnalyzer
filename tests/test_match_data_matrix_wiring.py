@@ -538,3 +538,15 @@ def test_gap_banner_prints_chinese_not_codes_only(rec: dict[str, Any]) -> None:
 def test_gap_banner_is_empty_when_nothing_is_missing() -> None:
     assert mdm.format_gap_banner({'rows': [{'gaps': []}]}) == []
     assert mdm.format_gap_banner({}) == []
+
+
+def test_gap_banner_header_is_a_shared_constant() -> None:
+    """表头必须是常量：报告顶部会把矩阵/六盘口/31 表三个缺口块合成一个，
+    共用同一行表头。字面量散在各处，合并时就会漂移成两种写法。
+    """
+    assert isinstance(mdm.GAP_BANNER_HEADER, str) and mdm.GAP_BANNER_HEADER.strip()
+    banner = mdm.format_gap_banner({'rows': [{'gaps': [{'field': 'x', 'reason': 'not_started'}]}]})
+    assert banner[0] == mdm.GAP_BANNER_HEADER
+    # 源码里不再有第二份相同的表头字面量
+    source = inspect.getsource(mdm)
+    assert source.count(mdm.GAP_BANNER_HEADER) == 1, '表头被写成了多份字面量'
