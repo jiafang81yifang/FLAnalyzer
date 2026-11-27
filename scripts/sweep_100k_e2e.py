@@ -107,7 +107,15 @@ ENV_NOISE_MARKERS = (
 
 LAMBDA_REGIMES = ('balanced', 'home_heavy', 'away_heavy', 'both_high', 'both_low')
 ODDS_SHAPES = ('clean', 'spread', 'missing_keys', 'zero', 'negative',
-               'huge', 'text', 'nan', 'inf', 'mixed_bad')
+               'huge', 'text', 'nan', 'inf', 'mixed_bad', 'hostile_str',
+               'decimal')
+# The overflow shape that a truthiness/exception guard cannot see: float('1e400')
+# returns inf instead of raising, so a site hardened only with OverflowError
+# still renders `inf%`. The sweep injected int 10**400 but never these strings,
+# which is exactly why that defect hid. These are the literal texts a hostile or
+# corrupted record can carry.
+HOSTILE_NUMERIC_STRINGS = ('1e400', '-1e400', 'inf', '-inf', 'Infinity',
+                           'nan', 'NaN', '1e999', '9' * 400)
 LEAGUES = ('英超', '西甲', '意甲', '德甲', '法甲', '欧冠', '日职联', '挪超', '', '未知联赛')
 
 MAX_TG_LEN = 4096
@@ -210,6 +218,20 @@ def _perturb_odds(odds: dict[str, float], rng: random.Random,
     elif shape == 'text':
         for key in victims:
             out[key] = rng.choice(('abc', '', '  ', '8.5倍', None, []))
+    elif shape == 'hostile_str':
+        # every victim gets a hostile numeric *string*; some also get the int
+        for key in victims:
+            out[key] = rng.choice(HOSTILE_NUMERIC_STRINGS)
+        if rng.random() < 0.3 and victims:
+            out[victims[0]] = 10 ** 400
+    elif shape == 'decimal':
+        # A record arrives through json.load, which cannot carry a Decimal — so
+        # the Decimal *shape* that can actually reach the app is its string
+        # rendering. Injecting a real Decimal here would only fail the harness's
+        # own json.dump, which would be a harness artifact, not a product shape.
+        from decimal import Decimal
+        for key in victims:
+            out[key] = str(rng.choice((Decimal('1e400'), Decimal('1E999'), Decimal('NaN'))))
     elif shape == 'nan':
         for key in victims:
             out[key] = float('nan')
@@ -412,6 +434,15 @@ def _build_case(seed: int) -> dict[str, Any]:
         'regime': regime,
         'league': rec['league'],
         'jc_shape': jc_shape,
+        # Coverage accounting: these cases exercised the hostile-numeric paths,
+        # which is a different claim from "100,000 ordinary cases ran".
+        'hostile_numeric': (family == 'corrupt_record'
+                            or jc_shape in ('hostile_str', 'decimal', 'huge', 'inf', 'nan',
+                                            'mixed_bad')
+                            or official_shape in ('hostile_str', 'decimal', 'huge', 'inf',
+                                                  'nan', 'mixed_bad')
+                            or stored_shape in ('hostile_str', 'decimal', 'huge', 'inf',
+                                                'nan', 'mixed_bad')),
         'official_shape': official_shape,
         'page_shape': page_shape,
         'stored_shape': stored_shape,
@@ -752,6 +783,7 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
             '31项市均×竞彩对比表', 'DeepSeek 数据分析研判报告'))
         defects.extend(_check_model_output(case, stdout, text))
         defects.extend(_check_refusal_only(text))
+        defects.extend(_check_no_non_finite_in_body(text))
         if produced_report:
             defects.extend(_check_split(text))
             defects.extend(_check_direction(text, case))
@@ -794,7 +826,33 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
     defects.extend(_check_model_output(case, stdout, text))
     defects.extend(_check_judgment_fields(case, stdout))
     defects.extend(_check_refusal_only(text))
+    defects.extend(_check_no_non_finite_in_body(text))
     return defects
+
+
+def _check_no_non_finite_in_body(text: str) -> list[tuple[str, str]]:
+    """E11: the sent body must never carry a non-finite figure.
+
+    `inf`/`nan` are not numbers a reader can act on, and `float('1e400')` reaches
+    them without raising — so an exception guard alone does not protect the body.
+    This is checked on the text that would actually be sent.
+    """
+    # A diagnostic that *names* the offending value is not the defect: telling
+    # the reader "赔率数值非法: inf" is correct and useful. What must never happen
+    # is a non-finite value formatted as a number — `inf%`, `Δinf`, `赔率 inf`.
+    # So skip matches inside a diagnostic clause.
+    DIAGNOSTIC = ('非法', '非数值', '无效', 'invalid', '熔断', 'rejected', '异常')
+    out: list[tuple[str, str]] = []
+    for match in re.finditer(r'(?<![\w.])-?(inf|nan)(?![\w])', text, re.IGNORECASE):
+        line_start = text.rfind('\n', 0, match.start()) + 1
+        line_end = text.find('\n', match.end())
+        context = text[max(0, line_start):line_end if line_end > 0 else len(text)]
+        if any(marker in context for marker in DIAGNOSTIC):
+            continue
+        snippet = context.strip()[:70]
+        out.append(('E11', f'non_finite_in_body:{snippet}'))
+        break
+    return out
 
 
 def _check_refusal_only(text: str) -> list[tuple[str, str]]:
@@ -1002,6 +1060,10 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
                 for invariant, detail in defects:
                     failures.append({'invariant': invariant, 'detail': detail, 'case': case})
             coverage['cases'] += 1
+            if case.get('hostile_numeric'):
+                coverage['hostile_numeric_cases'] += 1
+            else:
+                coverage['ordinary_cases'] += 1
             coverage['determinism_checked'] += 1
             # Determinism means "same input, same output". The input includes the
             # history file, so the comparison run gets a *fresh* copy — reusing the
@@ -1032,6 +1094,10 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
             failures.append({'invariant': 'E1',
                              'detail': f'harness_crash:{type(exc).__name__}', 'case': case})
             coverage['cases'] += 1
+            if case.get('hostile_numeric'):
+                coverage['hostile_numeric_cases'] += 1
+            else:
+                coverage['ordinary_cases'] += 1
     with contextlib.suppress(OSError):
         for name in os.listdir(tmpdir):
             os.unlink(os.path.join(tmpdir, name))

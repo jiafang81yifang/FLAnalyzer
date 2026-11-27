@@ -77,3 +77,89 @@ def test_pack_market_values_are_all_finite() -> None:
                 continue
             assert math.isfinite(float(row[key])), (row['score'], key, row[key])
     assert math.isfinite(float(pack['market_sum']))
+
+
+def test_no_display_formatter_renders_a_non_finite_value() -> None:
+    """The whole class, not the three sites reached first.
+
+    Every display entry point must render inf/NaN as a placeholder. This walks
+    the shared formatter over the hostile shapes, so a regression anywhere it is
+    used fails here.
+    """
+    import number_text as nt
+
+    for hostile in ('1e400', 'inf', '-1e400', 'nan', float('inf'),
+                    float('-inf'), float('nan'), 10 ** 400):
+        assert nt.num_text(hostile, '.2f') == '-', hostile
+        assert nt.pct_text(hostile) == '-', hostile
+    # and the value that is fine still formats
+    assert nt.num_text(1.234, '.2f') == '1.23'
+    assert nt.pct_text(12.345) == '12.3%'
+
+
+def test_a_rendered_body_can_never_carry_a_non_finite_number() -> None:
+    """The boundary guard: whatever produced the number, the body is clean.
+
+    Revert tested: removing `_scrub_non_finite_text` -> the body keeps 'inf%'.
+    """
+    import number_text as nt
+
+    with pytest.raises(AssertionError):
+        nt.assert_finite_text('置信度 inf%')
+    with pytest.raises(AssertionError):
+        nt.assert_finite_text('方向 nan')
+    nt.assert_finite_text('置信度 12.3%')          # ordinary body passes
+    scrubbed = app._scrub_non_finite_text('置信度 inf% 方向 nan')
+    assert 'inf' not in scrubbed and 'nan' not in scrubbed, scrubbed
+    assert '12.3%' in app._scrub_non_finite_text('置信度 12.3%')
+    # and the emit path must actually call the scrubber: a body with a
+    # non-finite figure may not reach send_tg unchanged.
+    src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
+    assert '_scrub_non_finite_text(tg_report)' in src, (
+        'the emit path must scrub the report before sending it')
+
+
+def test_emit_path_never_puts_inf_in_the_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """End to end: a record whose odds are the string shape yields no `inf` cell."""
+    import os
+    import tempfile
+
+    import sys as _sys
+    _scripts = str(ROOT / 'scripts')
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    import sweep_100k_e2e as S
+
+    case = S._build_case(20261127)
+    rec = case['rec']
+    # plant the string shape where the 31 table reads market odds
+    rec['correct_score_page_avg'] = {k: '1e400' for k in list(rec['correct_score_page_avg'])[:5]}
+    case = dict(case, rec=rec)
+    d = tempfile.mkdtemp()
+    sent, _out = S._run_once(case, os.path.join(d, 'h.json'))
+    for text in (t for t in sent if t):
+        lowered = text.lower()
+        assert 'inf%' not in lowered, text[:200]
+        assert 'nan%' not in lowered, text[:200]
+
+
+def test_body_checker_separates_a_rendered_inf_from_a_diagnostic() -> None:
+    """The boundary check must fire on a rendered figure, not on a diagnostic.
+
+    Revert tested: dropping the DIAGNOSTIC exclusion -> the checker flags
+    「赔率数值非法: inf」, which is a correct message, and the sweep would report a
+    false defect on every hostile-value case.
+    """
+    import sys as _sys
+    _scripts = str(ROOT / 'scripts')
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    import sweep_100k_e2e as S
+
+    assert S._check_no_non_finite_in_body('置信度 inf%'), 'a rendered inf must be caught'
+    assert S._check_no_non_finite_in_body('Δ -inf pp'), 'a rendered -inf must be caught'
+    assert not S._check_no_non_finite_in_body('赔率数值非法: inf'), (
+        'naming the bad value is a correct diagnostic')
+    assert not S._check_no_non_finite_in_body('置信度 12.3%')

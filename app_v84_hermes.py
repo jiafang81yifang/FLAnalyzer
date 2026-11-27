@@ -32214,6 +32214,19 @@ def _record_tg_outcome(history, fid, *, sent, kind, rejected=''):
         print(f"   ⚠️ [TG投递结论] 落盘失败: {_rec_save_err}")
 
 
+def _scrub_non_finite_text(text):
+    """把正文里印成数字的非有限值改写成「-」。
+
+    只改「看起来像一个数」的那些（`inf` / `nan` / `-inf`，可带 `%` 或小数点），
+    不动正常中文里的词。出口级兜底，确保用户永远看不到 `inf%`。
+    """
+    import re as _re
+    out = str(text or '')
+    out = _re.sub(r'(?<![\w.])-?(?:inf|Inf|INF|nan|NaN|NAN)(?:\.0+)?(?=\s*%|\s*$|\s|/|\||Δ)',
+                  '-', out)
+    return out
+
+
 def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None, force_anti_homogen=None):  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; keep stage-2 pipeline behavior intact.
     """阶段2轻量出口：读取/重建 pipeline_report_bundle，
     仅调用 deepseek-flash（DeepSeek-V4.1-Flash）研判并强制推送 TG（不再整场重抓/重算）。
@@ -33125,6 +33138,17 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
     )
     tg_report = "\n\n".join(_final_sections) if _final_sections else '[报告内容为空]'
     # 发报前体检：缺六盘口 / 缺 DeepSeek 外壳不再阻止发送，只产生披露标签。
+    # 出口级兜底：不管哪个渲染点把非有限值写成了数字，这里都拦下并改写，
+    # 而不是让它作为「inf%」发出去。单点修 3 处只是治标——报告里有 39 个
+    # 数字格式化点，这个断言是治类的。
+    try:
+        from number_text import assert_finite_text as _assert_finite
+        _assert_finite(tg_report, allow_tokens=('infinity', 'Infinity'))
+    except AssertionError as _nf_err:
+        print(f"   ⚠️ [数值卫生] 报告含非有限值，已改写: {_nf_err}")
+        tg_report = _scrub_non_finite_text(tg_report)
+    except Exception as _nf_self_err:  # noqa: BLE001 - 兜底本身失败不影响发报
+        print(f"   ⚠️ [数值卫生] 自检异常(跳过): {type(_nf_self_err).__name__}: {_nf_self_err}")
     # 这道闸以前是「装了假门」：实现体是 `return str(text or '')`，签名还只收一个位置
     # 参数，所以 app 的五个关键字参数一进来就 TypeError，被 except 吞掉，
     # 注释里写的「缺六盘口 → 拒发并告警」一次都没执行过。现在它真的会跑，
@@ -33435,17 +33459,16 @@ def emit_mkt_over_theo_matches_digest():
 
 
 def _pct_text(value):
-    try:
-        if value is None or value == '':
-            return ''
-        number = float(value)
-        # `float('1e400')` 不抛异常，它返回 inf；只补 OverflowError 挡不住这个形状，
-        # 报告里就会出现 `inf%`。非有限值一律当「未形成」。
-        if not math.isfinite(number):
-            return ''
-        return f'{number:.2f}%'
-    except (TypeError, ValueError, OverflowError):
+    """百分比单元格：非有限值一律空串，绝不渲染成 `inf%`。
+
+    走 `number_text` 这一个入口，而不是各写一遍 `f'{float(x):.2f}%'`——
+    后者对 `float('1e400')`（返回 inf，不抛异常）是无效防线。
+    """
+    if value is None or value == '':
         return ''
+    from number_text import num_text
+    rendered = num_text(value, '.2f', missing='')
+    return f'{rendered}%' if rendered else ''
 
 
 def _lowest_odds_label(odds_map):
