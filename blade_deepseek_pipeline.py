@@ -33,12 +33,26 @@ def split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:
     """按行切块，绝不把一行（表格行/比分行）切断。
 
     原来的实现按固定字符数硬切，31 行表格会被从中间劈开。现在优先在换行处切。
+
+    ``\\x0c``（form feed）是**强制分页符**：调用方把已经分好页的块用它会聚，
+    每一块必须各自成为一条消息。不这么处理的话，上一页的尾巴会和下一页的
+    表头挤进同一条，下一页的前几行就丢了表头（send_tg 里「分页符即使正文未超长，
+    也拆成独立 Telegram 消息」说的就是这件事，但此前 splitlines 把它当普通换行）。
     """
     s = str(text or '')
     limit = max(100, int(max_len or 3900))
+    page_break = '\x0c'
+    if page_break in s:
+        chunks: list[str] = []
+        for page in s.split(page_break):
+            if not page.strip():
+                # 前置分页符会切出一个空串：它不是一页，别让调用方多发一条空消息
+                continue
+            chunks.extend(split_tg_html_preserving_pre(page, limit))
+        return chunks or ['']
     if len(s) <= limit:
         return [s] if s else ['']
-    chunks: list[str] = []
+    chunks = []
     current: list[str] = []
     current_len = 0
     for line in s.splitlines(keepends=True):
