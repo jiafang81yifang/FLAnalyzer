@@ -26,6 +26,8 @@ PYTHON_FILES = [
     'unified_odds_evaluator.py',
     'tg_goal_table.py',
     'score_matrices.py',
+    'score_books.py',
+    'number_text.py',
     'market_guardrails.py',
 
 ]

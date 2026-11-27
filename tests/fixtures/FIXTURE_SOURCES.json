@@ -145,5 +145,29 @@
     "captured": "2026-11-27",
     "note": "fid for order 5002 = the user's match 1338958 (海登海姆 vs 纽伦堡). This is the merge example: 500 gives fid/order/score slot, Okooo gives match_id 1338958 and the odds tabs.",
     "used_by": "test_match_matrix_merged_row_* (one row joining both sources on order 5002)"
+  },
+  "score_books_jc31_synthetic.json": {
+    "url": "synthetic://no-network/fixture-authored-by-hand",
+    "status": 200,
+    "captured": "2026-11-27",
+    "synthetic": true,
+    "note": "合成数据，非真实行情。赔率按盘面形状手写，只验证口径换算与残差计算能否跑通；不是任何一家公司任何一场比赛的报价。不得据此推算命中率、收益率或任何历史频率。",
+    "used_by": "test_score_books.py (竞彩 31 项齐全样本) / test_score_book_terminology.py"
+  },
+  "score_books_market26_synthetic.json": {
+    "url": "synthetic://no-network/fixture-authored-by-hand",
+    "status": 200,
+    "captured": "2026-11-27",
+    "synthetic": true,
+    "note": "合成数据，非真实行情。市场 26 项（22 精确格 + 4 桶），手写赔率，用途同上。",
+    "used_by": "test_score_books.py (市场 26 项齐全样本)"
+  },
+  "score_books_market25_synthetic.json": {
+    "url": "synthetic://no-network/fixture-authored-by-hand",
+    "status": 200,
+    "captured": "2026-11-27",
+    "synthetic": true,
+    "note": "合成数据，非真实行情。市场 25 项（22 精确格 + 3 桶，无独立平局其他），手写赔率，用途同上。",
+    "used_by": "test_score_books.py (市场 25 项齐全样本)"
   }
 }
