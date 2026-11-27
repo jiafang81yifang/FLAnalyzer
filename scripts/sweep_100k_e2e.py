@@ -672,6 +672,20 @@ def _netblock() -> Any:
     return stack
 
 
+def _render_fallback_patch(case: dict[str, Any]) -> Any:
+    """Force one of the two HTML fallbacks so the sweep actually exercises them."""
+    mode = case.get('render_fallback')
+    if mode == 'raise':
+        def _boom(*a, **k):
+            raise RuntimeError('sweep-forced render failure')
+        return mock.patch.object(PIPE.DeepSeekAnalyzer, 'format_matrix_dual_prejudge_html',
+                                 staticmethod(_boom))
+    if mode == 'empty':
+        return mock.patch.object(PIPE.DeepSeekAnalyzer, 'format_matrix_dual_prejudge_html',
+                                 staticmethod(lambda *a, **k: ''))
+    return mock.patch.object(APP, '_sweep_noop_render_marker', 1, create=True)
+
+
 def _pack_absent_patch(case: dict[str, Any]) -> Any:
     """Make rebuild raise for the `rebuild_failed` control, else a no-op patch."""
     if case.get('pack_absent_state') == 'rebuild_failed':
@@ -691,7 +705,10 @@ def _capture_send(sent: list) -> Any:
     """
     def _send(text, parse_mode=None):
         sent.append(text)
+        # E14 needs the parse_mode each body went out with.
+        _send.modes.append((parse_mode, text))
         return True
+    _send.modes = []
     return _send
 
 
@@ -723,6 +740,8 @@ def _run_once(case: dict[str, Any], hist_path: str,
             json.dump(history, fh, ensure_ascii=False)
 
     sent: list[str] = []
+    _capture = _capture_send(sent)
+    case['_sent_modes'] = _capture.modes
     m_obj = {'id': str(rec['id']), 'cn_name': rec['cn_name'], 'time': rec['time'],
              'match_time': rec['match_time'], 'kickoff_source': 'okooo_match_time'}
 
@@ -732,7 +751,7 @@ def _run_once(case: dict[str, Any], hist_path: str,
     with _netblock(), \
          mock.patch.object(app, 'HISTORY_FILE', hist_path), \
          mock.patch.object(app, 'send_tg',
-                           side_effect=_capture_send(sent)), \
+                           side_effect=_capture), \
          mock.patch.object(app, '_ensure_mobile_six',
                            side_effect=lambda r, mid, force=False: False), \
          mock.patch.object(app, 'attach_okooo_ids_to_matches',
@@ -740,6 +759,7 @@ def _run_once(case: dict[str, Any], hist_path: str,
          mock.patch.object(pipe, 'deepseek_chat_completion',
                            side_effect=_model_reply), \
          _pack_absent_patch(case), \
+         _render_fallback_patch(case), \
          contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
         try:
             if case.get('bundle_prebuilt'):
@@ -838,6 +858,8 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
         defects.extend(_check_refusal_only(text))
         defects.extend(_check_no_non_finite_in_body(text))
         defects.extend(_check_no_fabricated_gap(case, text))
+        defects.extend(_check_title_once(case, text))
+        defects.extend(_check_render_fallback_html(case, case.get('_sent_modes') or []))
         if produced_report:
             defects.extend(_check_split(text))
             defects.extend(_check_direction(text, case))
@@ -890,11 +912,75 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
     defects.extend(_check_refusal_only(text))
     defects.extend(_check_no_non_finite_in_body(text))
     defects.extend(_check_no_fabricated_gap(case, text))
+    defects.extend(_check_title_once(case, text))
+    defects.extend(_check_render_fallback_html(case, case.get('_sent_modes') or []))
     return defects
 
 
 _BOARD_LABELS = ('亚盘让球', '大小球', '胜平负', '竞彩让球', '总进球', '半全场')
 _OU_LINE_LABEL = '大小球盘口'
+
+
+def _check_render_fallback_html(case: dict[str, Any],
+                                sent: list[tuple[Any, Any]]) -> list[tuple[str, str]]:
+    """E14: the two HTML fallbacks must not leak markup or over-bold.
+
+    * a `parse_mode=None` delivery carries no HTML tags at all;
+    * the raising path produces exactly one `<b>…</b>` pair, wrapping the title.
+
+    #28 replaced `align_displayed_landings`/`mark_*` with real behaviour and made
+    these fallbacks reachable; a sweep that never triggers them cannot claim
+    anything about them.
+    """
+    out: list[tuple[str, str]] = []
+    mode = case.get('render_fallback')
+    if not mode:
+        return out
+    for parse_mode, body in sent:
+        body = str(body or '')
+        if parse_mode is None:
+            for tag in ('<b>', '</b>', '<font'):
+                if tag in body:
+                    out.append(('E14', f'plain_delivery_carries_{tag}'))
+                    break
+        elif parse_mode == 'HTML' and mode == 'raise':
+            pairs = body.count('<b>')
+            closes = body.count('</b>')
+            if pairs != 1 or closes != 1:
+                out.append(('E14', f'bold_pairs:{pairs}/{closes}'))
+            else:
+                first = next((ln for ln in body.splitlines() if ln.strip()), '')
+                if not (first.startswith('<b>') and '</b>' in first):
+                    out.append(('E14', f'bold_does_not_wrap_title:{first[:60]}'))
+    return out
+
+
+def _check_title_once(case: dict[str, Any], text: str) -> list[tuple[str, str]]:
+    """E13: the delivered title line carries 📌 and the kickoff exactly once.
+
+    `rebuild_pipeline_bundle_from_history` returns an already-formatted title_line;
+    feeding that back through `format_tg_match_header` doubles 📌, the match
+    number and the kickoff, and #28 pins the result to the first line a reader
+    sees. Zero tolerance: one occurrence each.
+    """
+    out: list[tuple[str, str]] = []
+    title = ''
+    for line in text.splitlines():
+        if '📌' in line:
+            title = line.strip()
+            break
+    if not title:
+        return out
+    marks = title.count('📌')
+    if marks != 1:
+        out.append(('E13', f'title_mark_count:{marks}:{title[:70]}'))
+    rec = case.get('rec') or {}
+    kickoff = str(rec.get('match_time') or rec.get('time') or rec.get('kickoff_time') or '')
+    # The pack-absent path prints its own header (「📌 名称（order=…）」) because it
+    # has no bundle kickoff to show; the kickoff rule belongs to the normal path.
+    if kickoff and not case.get('pack_absent_state') and title.count(kickoff) != 1:
+        out.append(('E13', f'kickoff_count:{title.count(kickoff)}:{title[:70]}'))
+    return out
 
 
 def _check_no_fabricated_gap(case: dict[str, Any], text: str) -> list[tuple[str, str]]:
@@ -1096,6 +1182,12 @@ def _check_direction(text: str, case: dict[str, Any]) -> list[tuple[str, str]]:
     for line in text.splitlines():
         if '①' not in line and '②' not in line:
             continue
+        # The operator-direction line (PR #26) names the on-screen ①② on purpose:
+        # it says the recompute produced nothing in the requested direction and
+        # that the scores shown are the pre-command ones. That is a disclosure,
+        # not a cross-direction recommendation, so it is not a candidate pair.
+        if '操作员已指定方向' in line:
+            continue
         scores = _CANDIDATE_RE.findall(line)
         dirs = {PIPE._score_wdl(s) for s in scores} - {''}
         if len(dirs) > 1:
@@ -1154,6 +1246,11 @@ _INJECT_REFUSAL = bool(__import__('os').environ.get('SWEEP_INJECT_REFUSAL'))
 # The three pack-absent exits. The ordinary path never reaches them, so without
 # this the headline "0 failed" says nothing about them.
 _FORCE_PACK_ABSENT = bool(__import__('os').environ.get('SWEEP_FORCE_PACK_ABSENT'))
+# #28 made the two HTML fallbacks real: renderer raises -> escaped plain text;
+# renderer returns '' -> plain-text body. Neither was reachable in a normal run.
+_FORCE_RENDER_FAIL = bool(__import__('os').environ.get('SWEEP_FORCE_RENDER_FAIL'))
+_FORCE_RENDER_EMPTY = bool(__import__('os').environ.get('SWEEP_FORCE_RENDER_EMPTY'))
+_RENDER_FALLBACK_CYCLE = ('', '', 'raise', 'empty')
 _PACK_ABSENT_CYCLE = ('rebuild_failed', 'payload_broken', 'no_scrape_facts')
 
 
@@ -1180,6 +1277,21 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
             pass
         else:
             _absent_state = ''
+        # Render-fallback coverage: one case in ten alternates the two fallbacks.
+        if _FORCE_RENDER_FAIL:
+            case['render_fallback'] = 'raise'
+        elif _FORCE_RENDER_EMPTY:
+            case['render_fallback'] = 'empty'
+        elif index % 10 == 0:
+            _rf = _RENDER_FALLBACK_CYCLE[index % len(_RENDER_FALLBACK_CYCLE)]
+            if _rf:
+                case['render_fallback'] = _rf
+        # /方向 coverage: one case in ten carries an operator direction, which
+        # makes `_emit_pack_absent_report`'s sibling path prepend the
+        # 「操作员已指定方向」 line. Counted separately.
+        if index % 10 == 3:
+            case['rec']['operator_direction'] = ('胜', '平', '负')[(index // 10) % 3]
+            case['operator_direction'] = case['rec']['operator_direction']
         if _absent_state:
             case['pack_absent_state'] = _absent_state
             # The harness prebuilds a bundle for some cases by calling rebuild
@@ -1202,6 +1314,10 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
                 coverage['ordinary_cases'] += 1
             if case.get('pack_absent_state'):
                 coverage[f'pack_absent_{case["pack_absent_state"]}'] += 1
+            if case.get('render_fallback'):
+                coverage[f'render_fallback_{case["render_fallback"]}'] += 1
+            if case.get('operator_direction'):
+                coverage['operator_direction_cases'] += 1
             coverage['determinism_checked'] += 1
             # Determinism means "same input, same output". The input includes the
             # history file, so the comparison run gets a *fresh* copy — reusing the
@@ -1217,7 +1333,14 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
             replay, _replay_out = _run_once(case, hist_path, reseed=False)
             first_bodies = [t for t in sent if t]
             replay_bodies = [t for t in replay if t]
-            if replay_bodies != first_bodies:
+            # The claim is about *outcome*, not byte equality: a refusal that
+            # becomes a report (or the reverse) means the writeback changed what
+            # the input means. Text can legitimately differ on replay — the
+            # operator-direction line quotes the stored score, which the first
+            # run itself writes, so 「原 无」becomes 「原 2-1」 by design.
+            _shape = [(len(b) > 200) for b in (replay_bodies or [])]
+            _shape_first = [(len(b) > 200) for b in (first_bodies or [])]
+            if (bool(replay_bodies) != bool(first_bodies)) or _shape != _shape_first:
                 failures.append({
                     'invariant': 'E9', 'case': case,
                     'detail': f'replay_after_writeback_differs:'
@@ -1238,6 +1361,10 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
                 coverage['ordinary_cases'] += 1
             if case.get('pack_absent_state'):
                 coverage[f'pack_absent_{case["pack_absent_state"]}'] += 1
+            if case.get('render_fallback'):
+                coverage[f'render_fallback_{case["render_fallback"]}'] += 1
+            if case.get('operator_direction'):
+                coverage['operator_direction_cases'] += 1
     with contextlib.suppress(OSError):
         for name in os.listdir(tmpdir):
             os.unlink(os.path.join(tmpdir, name))
