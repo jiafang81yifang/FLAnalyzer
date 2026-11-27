@@ -27207,19 +27207,29 @@ def _attach_mobile_ah_ou_books(rec, match_id, proxies=None):
 
 
 def _record_jc_handicap(rec):
-    """竞彩让球整数。只认列表/落盘的整球，不把亚盘小数当成让球。"""
+    """竞彩让球整数。只认列表/落盘的整球，不把亚盘小数当成让球。
+
+    顶层（`jc_handicap` 等）先看；顶层没有时再看 `six_market_mobile` 里的同名键——
+    六盘口包里的 `jc_handicap` 是同一场比赛的让球，只看顶层会把
+    「记录明明有让球」误报成「本次未取到竞彩让球线」。
+    """
     rec = rec if isinstance(rec, dict) else {}
-    for key in ('jc_handicap', 'jc_handicap_int', 'jingcai_handicap'):
-        raw = rec.get(key)
-        if raw is None or str(raw).strip() == '':
-            continue
-        try:
-            val = float(raw)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if abs(val - round(val)) > 1e-6 or abs(val) > 5:
-            continue
-        return float(round(val))
+    six = rec.get('six_market_mobile')
+    holders = [rec]
+    if isinstance(six, dict):
+        holders.append(six)
+    for holder in holders:
+        for key in ('jc_handicap', 'jc_handicap_int', 'jingcai_handicap'):
+            raw = holder.get(key)
+            if raw is None or str(raw).strip() == '':
+                continue
+            try:
+                val = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if abs(val - round(val)) > 1e-6 or abs(val) > 5:
+                continue
+            return float(round(val))
     return None
 
 
@@ -32261,11 +32271,60 @@ def _pack_absent_state(rec, bundle, rb_err=''):
     return 'rebuild_failed' if rb_err else 'no_scrape_facts'
 
 
+def _pack_absent_31_lines(rec, payload):
+    """研判包缺失时，尽量用记录里现存的赔率真算一张 31 表。
+
+    31 表**不依赖 bundle**：市均在 `correct_score_page_avg`，竞彩在
+    `jc_score_odds` / `correct_score_jc_correct_official`，行骨架可以现拼。
+    以前这里无条件写「本场没有可用的市均/竞彩赔率」——那句话在记录明明带着
+    这两份赔率时是**对已存在数据的否认**。
+
+    返回 (lines, rows_built, source_state)。rows_built == 0 才算真的算不出来。
+    """
+    analyzer = _ensure_deepseek_analyzer()
+    if analyzer is None:
+        return ([], 0, {'market': 0, 'jc': 0})
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        flat = [r for r in (payload.get('jc_cross_rows') or []) if isinstance(r, dict)]
+        extra = analyzer._collect_legal_cs_market_odds(rec, flat)
+        jc = _merge_jc_odds_sources(
+            rec.get('jc_score_odds'),
+            rec.get('correct_score_jc_official'),
+            payload.get('jc_score_odds'),
+            payload.get('correct_score_jc_official'),
+        )
+        prov = analyzer.resolve_cs31_provenance(rec, payload)
+        lam = _frozen_lambda_of(rec, payload)
+        pack = analyzer.build_theo_mkt_31_pack(
+            flat,
+            home=str(payload.get('home') or ''),
+            away=str(payload.get('away') or ''),
+            match_name=str(payload.get('match') or rec.get('match') or ''),
+            extra_market_odds=extra,
+            market_provenance=prov.get('provenance') or None,
+            market_provenance_source=prov.get('source') or '',
+            jc_score_odds=jc,
+            lam_home=lam.get('home'),
+            lam_away=lam.get('away'),
+        )
+    except Exception as _pack_err:  # noqa: BLE001 - 算不出来要如实说，不能编
+        return ([], 0, {'error': f'{type(_pack_err).__name__}: {_pack_err}'})
+    rows = [r for r in (pack.get('rows') or []) if isinstance(r, dict)]
+    if not rows:
+        return ([], 0, {'market': len(extra or {}), 'jc': len(jc or {})})
+    lines = analyzer.format_theo_mkt_31_tg_lines(pack)
+    return (lines, len(rows), {'market': len(extra or {}), 'jc': len(jc or {})})
+
+
 def _emit_pack_absent_report(*, rec, bundle, cn_name='', fid='', rb_err=''):
     """研判包缺失时的完整正文，而不是一行告警。
 
-    契约：**一定发出去，一定带赛事标识、缺失原因、以及正确的下一步**。
-    三种状态各自的行动指令见 `_pack_absent_state`。
+    契约：**一定发出去，一定带赛事标识、缺失原因、以及正确的下一步**；并且
+    **只用记录里真实存在的值**——记录带六盘口就写六盘口，带市均/竞彩就真算一张
+    31 表。缺的才写缺，且要写清缺的是哪个源。
+
+    三种状态的行动指令见 `_pack_absent_state`。
     """
     global _TG_FORCE_SEND
     rec = rec if isinstance(rec, dict) else {}
@@ -32273,6 +32332,13 @@ def _emit_pack_absent_report(*, rec, bundle, cn_name='', fid='', rb_err=''):
     match = str(cn_name or rec.get('match') or rec.get('cn_name') or fid or '未知赛事')
     order = str(rec.get('order') or rec.get('no') or rec.get('local_id') or '-')
     order_note = f'（order={order}）'
+
+    # 记录上现存的六盘口必须先并进来。不并的话，事实板会对着一条
+    # `six_market_mobile` 齐全的记录写「亚盘/大小球 无数据」——编造缺失。
+    payload = _fold_record_boards_into_payload(
+        {'match': match, 'six_market_mobile': rec.get('six_market_mobile') or {}},
+        rec,
+    )
 
     if state == 'payload_broken':
         banner = (
@@ -32299,15 +32365,27 @@ def _emit_pack_absent_report(*, rec, bundle, cn_name='', fid='', rb_err=''):
         )
         reason = '该记录缺少阶段1结果（无 bundle、无预测比分、无抓取完成标记）'
 
-    lines = [f'📌 {match} {order_note}'.strip(), '', banner, '',
-             '📈【31项市均×竞彩对比表】',
-             f'  未形成（{reason}）；本场没有可用的市均/竞彩赔率，故 31 项无法成表。',
-             '',
+    t31_lines, row_count, src = _pack_absent_31_lines(rec, payload)
+    if row_count:
+        table_block = t31_lines
+    else:
+        # 真算不出来：必须点名缺的是**哪个源**，不许泛泛否认。
+        why = str(src.get('error') or '')
+        if why:
+            detail = f'31 表装配失败：{why}'
+        else:
+            detail = (
+                f'市均可用项={src.get("market", 0)}，竞彩比分可用项={src.get("jc", 0)}；'
+                '两个源都为空，31 项无法成表'
+            )
+        table_block = ['📈【31项市均×竞彩对比表】', f'  未形成（{detail}）']
+
+    lines = [f'📌 {match} {order_note}'.strip(), '', banner, '', *table_block, '',
              '🧠【DeepSeek 数据分析研判报告】']
     lines.append(f'  ⚠️ 缺失原因：{reason}')
     try:
         lines.extend(_deterministic_judgment_lines(
-            {}, rec=rec, payload={}, bundle=bundle if isinstance(bundle, dict) else {},
+            {}, rec=rec, payload=payload, bundle=bundle if isinstance(bundle, dict) else {},
             error=reason, cn_name=match,
         )[1:])
     except Exception as _det_err:  # noqa: BLE001 - 确定性正文失败也要把原因写出来
@@ -32315,19 +32393,30 @@ def _emit_pack_absent_report(*, rec, bundle, cn_name='', fid='', rb_err=''):
     lines.extend(['', action])
     body = '\n'.join(ln for ln in lines if ln is not None)
 
-    # 可检索痕迹：状态机判定与最终正文长度都留一行，线上能 grep 到。
+    # 可检索痕迹：状态、31 表行数、六盘口与赔率的真实可用量都留一行。
     print(
         f"   🧩 [阶段2·包缺失] state={state} order={order} chars={len(body)}"
+        f" t31_rows={row_count} market={src.get('market', 0)} jc={src.get('jc', 0)}"
         f" rb_err={rb_err[:120] or '-'}"
     )
+    sent_ok = False
+    send_err = ''
     try:
         _TG_FORCE_SEND = True
         send_judgment_report_tg(body, parse_mode=None)
-    except Exception as _absent_send_err:  # noqa: BLE001 - 发不出去也要落结论行
-        print(f"   ❌ [阶段2·包缺失] 发送失败: {_absent_send_err}")
-    _record_tg_outcome(history=_history_or_empty(), fid=fid, sent=True,
-                       kind=f'pack_absent_{state}', rejected=reason)
-    print(_stage2_verdict_line(True, f'研判包缺失({state})，已发确定性正文', cn_name, fid))
+        sent_ok = True
+    except Exception as _absent_send_err:  # noqa: BLE001 - 发不出去必须如实记成未发
+        send_err = f'{type(_absent_send_err).__name__}: {_absent_send_err}'
+        print(f"   ❌ [阶段2·包缺失] 发送失败: {send_err}")
+    # 发失败不能记成成功。以前这里无条件 sent=True，是「失败被当成成功」的又一处。
+    _record_tg_outcome(
+        history=_history_or_empty(), fid=fid, sent=sent_ok,
+        kind=f'pack_absent_{state}' if sent_ok else f'pack_absent_{state}_send_failed',
+        rejected='' if sent_ok else (send_err or reason),
+    )
+    print(_stage2_verdict_line(
+        sent_ok, f'研判包缺失({state})，已发确定性正文' if sent_ok else f'研判包缺失({state})，发送失败',
+        cn_name, fid))
     return body
 
 
