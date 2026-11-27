@@ -17,6 +17,7 @@ import convergence_arbitrator as arb
 import odds_fallback as fb
 import odds_index_math as odds
 import okooo_mobile_cs as okooo
+import score_matrices as sm
 import sporttery_jc as jc
 import unified_odds_evaluator as unified
 from ProductionRunnerBridge import attach_engine_clearing
@@ -63,13 +64,21 @@ def main() -> None:
     require(_dir == '胜' and isinstance(_res, dict), 'arbitration direction failed')
     target: dict[str, Any] = {}
     require_dict(attach_engine_clearing(target), 'available')
-    evaluator = unified.UnifiedOddsEvaluator()
-    report = evaluator.evaluate_1x2(match_id='self-check', source_type='CN', odds=(2.0, 3.5, 4.0))
-    require_dict(report, 'break_even_prob_thresholds')
+
+    # score_matrices：31 项 / 15 战术池 / Top-8 三套矩阵自检，热席位全部有值。
+    market = {score: 10.0 for score in sm.THIRTY_ONE_SCORES}
+    jc_scores = {score: {'odds': 9.0, 'heat_seats': 1} for score in sm.THIRTY_ONE_SCORES}
+    matrices = sm.build_score_matrices('SELFCHECK_31_15_8', market, jc_scores)
+    require(len(matrices.matrix_31) == 31, 'score matrix must carry all 31 scores')
+    require(len(matrices.matrix_tactical_pools) == 15, 'tactical pool matrix must carry 15 pools')
+    require(len(matrices.top_8_min_abs_delta) == 8, 'top-8 delta matrix must carry 8 rows')
     require(
-        report['min_true_prob_thresholds'] == report['break_even_prob_thresholds'],
-        'unified evaluator break-even alias drifted',
+        (matrices.channel_summary.win_count, matrices.channel_summary.draw_count,
+         matrices.channel_summary.loss_count) == (13, 5, 13),
+        'direction tree must be 13/5/13',
     )
+    require(bool(sm.format_matrices_markdown(matrices)), 'markdown rendering failed')
+    require(bool(sm.format_matrices_telegram(matrices)), 'telegram rendering failed')
     print(json.dumps({'ok': True, 'checked': 10}, ensure_ascii=False))
 
 
