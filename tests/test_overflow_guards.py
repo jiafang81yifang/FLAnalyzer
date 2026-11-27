@@ -238,3 +238,32 @@ def test_emit_scrubs_a_non_finite_judgment_and_still_says_why(
         tail = body.split('DeepSeek 数据分析研判报告', 1)[-1]
         assert tail.strip(), 'judgment section blanked by scrubbing'
         assert '未形成' in tail, tail[:120]
+
+
+def test_e10_detects_a_refusal_only_body() -> None:
+    """E10 must have teeth, or `E10 == 0` on post-#22 is vacuous.
+
+    Third false-green risk in this line of work: a check that reports zero
+    because it cannot see the thing, not because the thing is absent. This
+    drives the real checker with the exact body the third refusal exit emits.
+    """
+    import sys as _sys
+    _scripts = str(ROOT / 'scripts')
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    import sweep_100k_e2e as S
+
+    body = ('⚠️【阶段2缺省】[A vs B]\n'
+            'history 无可用精算结果，无法输出 DeepSeek 研判。请重新跑阶段1抓取。')
+    assert S._check_refusal_only(body), 'E10 must flag a refusal-only body'
+    case = {'seed': 1, 'rec': {}, 'matched': 31, 'family': 'x', 'lam_h': 1.0,
+            'lam_a': 1.0, 'regime': 'x', 'league': '', 'jc_shape': '',
+            'official_shape': '', 'page_shape': '', 'stored_shape': '',
+            'heat_shape': '', 'lock': '', 'pool_len': 31}
+    found = S._check_report(case, [body], '')
+    assert any(inv == 'E10' for inv, _ in found), (
+        f'the report-level checker must surface E10; got {found}')
+    # and a real report must not be flagged
+    assert not S._check_refusal_only(
+        '📈【31项市均×竞彩对比表】\n  汇总: 共31项\n'
+        '🧠【DeepSeek 数据分析研判报告】\n  ① 2-1 ② 1-0')

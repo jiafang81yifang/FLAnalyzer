@@ -32215,17 +32215,28 @@ def _record_tg_outcome(history, fid, *, sent, kind, rejected=''):
 
 
 def _scrub_non_finite_text(text):
-    """把正文里印成数字的非有限值改写成「-」。
+    """把正文里印成数字的非有限值改写成显式「未形成」，并留可检索痕迹。
 
-    只改「看起来像一个数」的那些（`inf` / `nan` / `-inf`，可带 `%` 或小数点），
-    不动正常中文里的词。出口级兜底，确保用户永远看不到 `inf%`。
+    只改「看起来像一个数」的那些（`inf` / `nan` / `-inf`，可带 `%` 或小数点）。
+
+    为什么不直接换成裸 `-`：一段只有非有限值的研判，替换成 `-` 之后仍然是一段
+    「有内容」的正文，读者会以为那是一个已给出的值。所以换成
+    `-（非有限值·未形成）`，让该段自证「这里没有可用数值」。
+
+    为什么必须留痕：scrubbing 一旦发生，说明上游有渲染点漏了有限性检查。
+    静默改写等于把缺陷藏进正文——日志里必须能检索到。
     """
     import re as _re
     out = str(text or '')
-    out = _re.sub(r'(?<![\w.])-?(?:inf|Inf|INF|nan|NaN|NAN)(?:\.0+)?(?=\s*%|\s*$|\s|/|\||Δ)',
-                  '-', out)
+    out, n = _re.subn(
+        r'(?<![\w.])-?(?:inf|Inf|INF|nan|NaN|NAN)(?:\.0+)?(?P<pct>%?)'
+        r'(?=\s*$|\s|/|\||Δ)', lambda m: '-（非有限值·未形成）', out)
+    if n:
+        print(
+            f"   ⚠️ [数值卫生] scrubbing applied: replaced {n} non-finite value(s) "
+            f"in the outgoing body (upstream renderer missed a finiteness check)"
+        )
     return out
-
 
 def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None, force_anti_homogen=None):  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; keep stage-2 pipeline behavior intact.
     """阶段2轻量出口：读取/重建 pipeline_report_bundle，

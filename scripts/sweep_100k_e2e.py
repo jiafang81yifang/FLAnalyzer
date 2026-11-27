@@ -1042,6 +1042,9 @@ def _cluster(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------
 # worker entry points
 # --------------------------------------------------------------------------
+_INJECT_REFUSAL = bool(__import__('os').environ.get('SWEEP_INJECT_REFUSAL'))
+
+
 def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
     """Run one shard of seed indices; returns counts, failures, coverage."""
     failures: list[dict[str, Any]] = []
@@ -1050,6 +1053,13 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
     tmpdir = tempfile.mkdtemp(prefix='sweep100k-')
     for index, seed in enumerate(cases):
         case = _build_case(seed_base + seed)
+        if _INJECT_REFUSAL:
+            # Deliberate control: strip everything stage 2 needs to rebuild a
+            # bundle, so it takes the 「阶段2缺省」 exit. E10 must go red here.
+            for key in ('predicted_score', 'second_score', 'pipeline_scrape_done',
+                        'pipeline_report_bundle', 'deepseek_judgment'):
+                case['rec'].pop(key, None)
+            case['bundle_prebuilt'] = False
         # One history file per case: sharing it let the previous case's record
         # leak into the replay and the determinism comparison.
         hist_path = os.path.join(tmpdir, f'h{index}.json')

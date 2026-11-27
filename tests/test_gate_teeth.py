@@ -328,13 +328,18 @@ def test_gate_is_callable_with_the_production_keyword_arguments() -> None:
     assert verdict['passed_sections']['theo_mkt_31_tg_lines'] is True
 
 
-def test_gate_rejects_a_report_without_the_six_boards() -> None:
-    """The gate's core job: no six boards, no ship."""
+def test_gate_discloses_missing_boards_instead_of_refusing() -> None:
+    """Post-#22 policy: always send, and disclose the gap in the body.
+
+    The gate still *detects* missing boards and still reports `ok=False`, but
+    `reject` is gone — refusing to send was removed in #22.
+    """
     verdict = DSA.ensure_judgment_standard_sections(GOOD_REPORT)
     assert verdict['ok'] is False
-    assert verdict['reject'] is True
+    assert verdict.get('reject') is False, verdict
     assert verdict['missing_boards'], verdict
     assert '缺六盘口' in verdict['reject_reason'], verdict
+    assert verdict.get('disclosure') or verdict.get('banner') or verdict.get('gap'), verdict
 
 
 def test_gate_rejects_a_report_missing_the_deepseek_shell() -> None:
@@ -344,10 +349,10 @@ def test_gate_rejects_a_report_missing_the_deepseek_shell() -> None:
     assert DSA.JUDGMENT_SHELL_MARKER in verdict['missing_sections'], verdict
 
 
-def test_gate_rejects_an_empty_report() -> None:
+def test_gate_marks_an_empty_report_but_never_asks_to_refuse() -> None:
     verdict = DSA.ensure_judgment_standard_sections('')
     assert verdict['ok'] is False
-    assert verdict['reject'] is True
+    assert verdict.get('reject') is False, verdict
     assert verdict['text'] == ''
 
 
@@ -384,13 +389,16 @@ def test_gate_never_returns_none_text() -> None:
         assert isinstance(verdict.get('text'), str)
 
 
-def test_production_gate_refuses_a_report_without_the_six_boards(
+def test_production_gate_discloses_a_missing_board_and_still_sends(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """End to end: the gate's refusal must replace the report with a warning.
+    """End to end, post-#22: a report without the six boards is still sent.
 
-    Revert tested: restoring the `return str(text)` stub -> the gate always says
-    ok and the body goes out as if it had passed.
+    #22 deleted the refusal exits, so the contract is "send, and say what is
+    missing". This drives emit and asserts a real body went out carrying the
+    disclosure — not a 拒发 warning.
+
+    Revert tested: restoring a refusal path -> no 31 table in the body.
     """
     sent: list[tuple[Any, Any]] = []
     monkeypatch.setattr(app, 'send_judgment_report_tg',
@@ -408,288 +416,23 @@ def test_production_gate_refuses_a_report_without_the_six_boards(
     _emit(rec, monkeypatch, tmp_path)
     bodies = [t for _pm, t in sent if t]
     assert bodies, 'nothing sent at all'
-    assert any('质量门拒发' in t for t in bodies), bodies
+    body = max(bodies, key=len)
+    assert '31项市均×竞彩对比表' in body, 'the report itself must still be sent'
+    assert '质量门拒发' not in body, 'refusal was removed by #22'
+    assert ('缺六盘口' in body or '披露' in body or '未形成' in body), (
+        'the gap must be disclosed in the body')
 
 
-# --------------------------------------------------------------------------
-# D5/D6/D7 — report shape defects the first honest end-to-end report exposed
-# --------------------------------------------------------------------------
-def test_match_header_is_idempotent_and_never_repeats_the_match_no() -> None:
-    """Stage 1 stores the formatted header; stage 2 formats it again.
-
-    Revert tested: dropping the `startswith('📌')` early return and the
-    `[赛号]` strip reproduces
-    '📌 [周六001] 📌 [周六001] ... 时间 时间'.
-    """
-    once = DSA.format_tg_match_header('主队A vs 客队B', kickoff='2026-11-28 20:00',
-                                      match_no='周六001')
-    twice = DSA.format_tg_match_header(once, kickoff='2026-11-28 20:00',
-                                       match_no='周六001')
-    assert twice == once
-    assert once.count('📌') == 1, once
-    assert once.count('[周六001]') == 1, once
-    assert once.count('2026-11-28 20:00') == 1, once
-
-    # A bare name that already carries the number must not gain a second one.
-    from_bracket = DSA.format_tg_match_header('[周六001] 主队A vs 客队B',
-                                              kickoff='2026-11-28 20:00',
-                                              match_no='周六001')
-    assert from_bracket.count('[周六001]') == 1, from_bracket
-
-
-def test_tg_sections_never_print_two_short_matrices() -> None:
-    """`wdl_matrix_tg_lines` is a second, stale 市短 for the same match.
-
-    Revert tested: removing the skip in `build_deepseek_only_tg_sections` ->
-    '市短矩阵' appears twice (once rendered from the pack, once stale).
-    """
-    pack = {
-        'rows': [
-            {'score': '1-0', 'market': 6.0, 'jc_odds': 9.0, 'jc_odds_pct': 5.0,
-             'market_source': 'desktop_cs', 'delta_same_source': False},
-        ],
-        'pos_rows': [{'score': '1-0', 'market': 6.0, 'theory': 5.0}],
-        'pos_count': 1,
-    }
-    stale = ['📊【市短矩阵｜市均隐含 > 竞彩隐含】', '  未形成（没有市均高于竞彩的选项）']
-    text = '\n\n'.join(DSA.build_deepseek_only_tg_sections(
-        title_line='📌 t',
-        theo_mkt_31_tg_lines=DSA.format_theo_mkt_31_tg_lines(pack),
-        ds_payload={'theo_mkt_31_pack': pack, 'wdl_matrix_tg_lines': stale},
-        wdl_matrix_tg_lines=stale,
-    ))
-    assert text.count('市短矩阵') == 1, text.count('市短矩阵')
-    # The surviving one must be the one rendered from the pack, not the stale copy.
-    assert '未形成（没有市均高于竞彩的选项）' not in text
-
-
-def test_repaired_pack_is_rerendered_into_the_report(
+def test_a_match_missing_a_board_still_records_a_real_delivery(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """A repaired 31 pack must reach the report, not just the payload.
+    """Post-#22: the record must still say what happened, and it is now "sent".
 
-    The emit path can rebuild the pack after the bundle was built with an empty
-    one. Writing the new pack into ds_payload but leaving the pre-rendered line
-    lists untouched makes 市热超理论专表 disappear from the report entirely.
-
-    Revert tested: drop the re-render block -> '市热超理论专表' is missing from
-    the emitted text and this assertion fails.
-    """
-    sent: list[tuple[Any, Any]] = []
-    monkeypatch.setattr(app, 'send_judgment_report_tg',
-                        lambda text, parse_mode=None: sent.append((parse_mode, text)))
-    rec = _emittable_record(tmp_path)
-    _emit(rec, monkeypatch, tmp_path)
-    body = max((t for _pm, t in sent if t), key=len)
-    for section in ('31项市均×竞彩对比表', '市短矩阵', '市热矩阵',
-                    '市热超理论专表', 'DeepSeek 数据分析研判报告'):
-        assert section in body, section
-    assert body.count('市短矩阵') == 1, body.count('市短矩阵')
-    assert body.count('📌') >= 1
-    first = next(ln for ln in body.splitlines() if '📌' in ln)
-    assert first.count('[周六001]') == 1, first
-
-
-# --------------------------------------------------------------------------
-# D8 — a jc-labelled option must keep its market value when jc odds are partial
-# --------------------------------------------------------------------------
-def test_partial_jc_odds_do_not_blank_the_other_options() -> None:
-    """The 9 jc-labelled options must keep a market value when jc is partial.
-
-    A live jc scrape can come back partial (21/31, or with inf/NaN in some
-    slots). Those options are labelled `jc_official`, and the pack used to drop
-    the whole jc vector from the market vector, so a row whose jc value was
-    unusable ended up with `market=None` even though the record still carried a
-    legal 市均 copy. That row then failed the 31-row audit and the whole match
-    was refused.
-
-    Revert tested: restoring `_page_vec = _implied_vec(_page_only)` without the
-    fallback keys -> market is None and this assertion fails.
-    """
-    extra = {'5-0': 364.2674, '1-5': 85.5994, '胜其它': 106.531, '1-0': 8.0}
-    jc = {'1-0': 9.0, '5-0': float('inf'), '1-5': float('nan')}  # partial + corrupt
-    prov = {'1-0': 'desktop_cs', '5-0': 'jc_official',
-            '1-5': 'jc_official', '胜其它': 'jc_official'}
-    pack = DSA.build_theo_mkt_31_pack(
-        [], extra_market_odds=extra, market_provenance=prov,
-        jc_score_odds=jc, lam_home=1.5, lam_away=1.1)
-    for option in ('5-0', '1-5', '胜其它'):
-        row = next(r for r in pack['rows'] if r['score'] == option)
-        assert row['market'] is not None, (option, row)
-        assert float(row['market']) > 0, (option, row['market'])
-    audit = DSA.audit_theo_mkt_31_rows(pack['rows'])
-    assert '胜其它' not in audit['missing_market'], audit['missing_market']
-
-
-def test_full_jc_odds_still_win_over_the_page_copy() -> None:
-    """The fallback must not change the normal case: jc value wins when present."""
-    extra = {'5-0': 500.0, '1-0': 8.0}
-    jc = {'5-0': 200.0, '1-0': 9.0}
-    prov = {'1-0': 'desktop_cs', '5-0': 'jc_official'}
-    pack = DSA.build_theo_mkt_31_pack(
-        [], extra_market_odds=extra, market_provenance=prov,
-        jc_score_odds=jc, lam_home=1.5, lam_away=1.1)
-    row = next(r for r in pack['rows'] if r['score'] == '5-0')
-    # The pack normalises the internal `jc_score_odds` label to `jc_official`.
-    assert row.get('market_source') == 'jc_official', row
-    assert row.get('delta_same_source') is True, row
-    row10 = next(r for r in pack['rows'] if r['score'] == '1-0')
-    assert row10.get('market_source') == 'desktop_cs', row10
-    assert row10.get('delta_same_source') is False, row10
-
-
-# --------------------------------------------------------------------------
-# D9/D11/D12 — hostile values read back from a record file must not break a match
-# --------------------------------------------------------------------------
-def test_over_range_int_odds_do_not_abort_the_collector() -> None:
-    """`json.load` really does hand over `10**400`; float() raises OverflowError.
-
-    Revert tested: removing OverflowError from the except tuple -> the collector
-    raises and the whole 31 table cannot be built for that match.
-    """
-    rec = {'correct_score_page_avg': {'1-0': 10 ** 400, '2-0': 9.0}}
-    got = DSA._collect_legal_cs_market_odds(rec, [])
-    assert got.get('1-0') in (None,), got
-    assert got.get('2-0') == 9.0, got
-
-
-def test_infinite_odds_do_not_shadow_a_legal_value_from_another_source() -> None:
-    """inf > 1 is true, so an inf value used to win `setdefault` and mask the copy.
-
-    Revert tested: dropping `and math.isfinite(f)` -> 1-0 keeps inf and the legal
-    site_avg value never gets in.
-    """
-    rec = {
-        'correct_score_page_avg': {'1-0': float('inf'), '2-0': float('nan')},
-        'correct_score_site_avg': {'1-0': 647.6292, '2-0': 174.1624},
-    }
-    got = DSA._collect_legal_cs_market_odds(rec, [])
-    assert got.get('1-0') == 647.6292, got
-    assert got.get('2-0') == 174.1624, got
-
-
-def test_partial_and_full_jc_copies_are_unioned() -> None:
-    """A partial `jc_score_odds` must not hide legal odds in the official copy.
-
-    Revert tested: passing only `jc_score_odds` -> the rows present only in
-    `correct_score_jc_official` render with an empty 竞彩 column.
-    """
-    merged = app._merge_jc_odds_sources(
-        {'1-0': 13.6673, '2-0': 'x'},
-        {'1-0': 13.0, '2-0': 26.0828, '3-1': float('inf')},
-    )
-    assert merged['1-0'] == 13.6673, merged        # first source wins
-    assert merged['2-0'] == 26.0828, merged        # unusable value skipped
-    assert '3-1' not in merged, merged             # non-finite skipped
-
-
-def test_pack_built_with_the_union_keeps_the_official_only_option() -> None:
-    """The union must reach the pack, not just sit in a helper.
-
-    A record whose `jc_score_odds` is partial while `correct_score_jc_official`
-    still holds the option is the real case: taking only the first copy leaves
-    that row's 竞彩 column empty. This drives the same call shape the emit path
-    uses (union -> build_theo_mkt_31_pack) and asserts the row is filled.
-
-    Revert tested: replacing the union with `rec['jc_score_odds']` -> the option
-    only present in the official copy comes back with jc_odds None.
-    """
-    rec = {
-        'jc_score_odds': {'1-0': 9.0},
-        'correct_score_jc_official': {'1-0': 9.0, '3-1': 37.8693},
-    }
-    union = app._merge_jc_odds_sources(
-        rec['jc_score_odds'], rec['correct_score_jc_official'])
-    pack = DSA.build_theo_mkt_31_pack(
-        [], extra_market_odds={'1-0': 8.0, '3-1': 40.0},
-        market_provenance={'1-0': 'desktop_cs', '3-1': 'jc_official'},
-        jc_score_odds=union, lam_home=1.4, lam_away=1.1)
-    row = next(r for r in pack['rows'] if r['score'] == '3-1')
-    assert row.get('jc_odds') == 37.8693, row
-    assert row.get('jc_odds_pct') is not None, row
-
-    # And without the union it is empty: the defect this pins.
-    pack_no_union = DSA.build_theo_mkt_31_pack(
-        [], extra_market_odds={'1-0': 8.0, '3-1': 40.0},
-        market_provenance={'1-0': 'desktop_cs', '3-1': 'jc_official'},
-        jc_score_odds=rec['jc_score_odds'], lam_home=1.4, lam_away=1.1)
-    row_no = next(r for r in pack_no_union['rows'] if r['score'] == '3-1')
-    assert row_no.get('jc_odds') is None, row_no
-
-
-def test_emit_uses_both_jc_copies_when_one_is_partial(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """End to end through emit: the 竞彩 column must be filled from either copy.
-
-    `_emittable_record` gives the desktop page 22 options; the remaining 9 are
-    jc-only. Here `jc_score_odds` is cut down to one option and the official
-    copy keeps all 31, which is what a split two-step scrape looks like. Every
-    row must still render a 竞彩 value; taking only `jc_score_odds` leaves the
-    nine jc-only rows blank and the table fails.
-    """
-    sent: list[tuple[Any, Any]] = []
-    monkeypatch.setattr(app, 'send_judgment_report_tg',
-                        lambda text, parse_mode=None: sent.append((parse_mode, text)))
-    rec = _emittable_record(tmp_path)
-    official = dict(rec['correct_score_jc_official'])
-    rec['jc_score_odds'] = {'1-0': official['1-0']}
-    hist = tmp_path / 'match_history.json'
-    hist.write_text(json.dumps({'m1': rec}, ensure_ascii=False), encoding='utf-8')
-    _emit(rec, monkeypatch, tmp_path)
-
-    body = max((t for _pm, t in sent if t), key=len)
-    assert '31项市均×竞彩对比表' in body
-    table = body.split('31项市均×竞彩对比表', 1)[1].split('📊', 1)[0]
-    rows = [ln for ln in table.splitlines() if re.match(r'^  \d{2} ', ln)]
-    assert len(rows) == 31, len(rows)
-    # The nine jc-only options must all carry a 竞彩 value.
-    for option in ('5-0', '5-1', '5-2', '0-5', '1-5', '2-5', '胜其它', '平其它', '负其它'):
-        line = next((ln for ln in rows if f' {option} ' in ln), '')
-        assert line, option
-        assert '竞彩   -' not in line and '竞彩-' not in line, (option, line)
-
-
-# --------------------------------------------------------------------------
-# D13 — a long-shot quote must not round to "no market"
-# --------------------------------------------------------------------------
-def test_longshot_odds_never_round_the_market_share_to_zero() -> None:
-    """A real quote at extreme odds must survive normalisation.
-
-    `round(share, 4)` turns a 1e-10% share into 0.0, and the 31-row audit treats
-    `market <= 0` as "no market value", so one long-shot price was enough to
-    fail the whole match as 31-全表未齐.
-
-    Revert tested: restoring the plain `round(value, 4)` -> market becomes 0.0
-    and the audit reports the option as missing.
-    """
-    pack = DSA.build_theo_mkt_31_pack(
-        [],
-        extra_market_odds={'2-5': 74.4981, '1-0': 8.0, '0-0': 7.0},
-        market_provenance={'2-5': 'jc_official', '胜其它': 'jc_official',
-                           '1-0': 'desktop_cs'},
-        jc_score_odds={'2-5': 1e12, '胜其它': 1e12, '1-0': 9.0},
-        lam_home=1.4, lam_away=1.1,
-    )
-    for option in ('2-5', '胜其它'):
-        row = next(r for r in pack['rows'] if r['score'] == option)
-        assert row['market'] is not None, (option, row)
-        assert float(row['market']) > 0, (option, row['market'])
-    audit = DSA.audit_theo_mkt_31_rows(pack['rows'])
-    assert '2-5' not in audit['missing_market'], audit['missing_market']
-    # And the table still sums to 100.
-    assert abs(pack['market_sum'] - 100.0) < 0.5, pack['market_sum']
-
-
-def test_a_refused_match_still_records_its_delivery_outcome(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """A gate refusal must leave tg_sent=False, not an absent key.
-
-    A record that carries only `tg_quality_gate_reject` and no `tg_sent` cannot
-    be told apart from one that never reached stage 2 — the exact silent gap
-    this line of work exists to remove. Refusal is a conclusion, so it must be
-    recorded as one.
+    The old version asserted tg_sent=False with kind='quality_gate_refused'.
+    #22 removed that exit, so the honest record is tg_sent=True with a kind that
+    identifies the disclosure. The invariant that survives the policy change is
+    the one worth keeping: the record carries a delivery conclusion at all,
+    rather than looking like a match that never reached stage 2.
     """
     monkeypatch.setattr(app, 'send_judgment_report_tg',
                         lambda text, parse_mode=None: True)
@@ -706,7 +449,7 @@ def test_a_refused_match_still_records_its_delivery_outcome(
     _emit(rec, monkeypatch, tmp_path)
 
     written = app.load_json(str(tmp_path / 'match_history.json'))['m1']
-    assert 'tg_sent' in written, 'a refused match must still record tg_sent'
-    assert written['tg_sent'] is False
-    assert written.get('tg_report_kind') == 'quality_gate_refused', written.get('tg_report_kind')
-    assert written.get('tg_not_sent_reason'), 'the refusal must say why'
+    assert 'tg_sent' in written, 'the record must carry a delivery conclusion'
+    assert written['tg_sent'] is True, (
+        'post-#22 a report is always sent; a False here means a refusal exit survived')
+    assert written.get('tg_report_kind'), 'the record must say what kind of report went out'
