@@ -30,7 +30,7 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 299fb3f = 落盘写入 docstring 与行为对齐 + 钉子测试
-$PinCommit = '299fb3f2561c9182b86d96039c837ce0f6045228'
+$PinCommit = '27da1839e6f93f1ab12be6fafc94db610bf61720'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
