@@ -9,7 +9,7 @@ Choose ONE deployment mode:
    - The committed app_v84_hermes.py already contains embedded runtime modules for
      blade_deepseek_pipeline, blade_ml_engine, okooo_mobile_cs, blade_monitor_panel,
      ProductionRunnerBridge, convergence_arbitrator, odds_fallback, odds_index_math,
-     and sporttery_jc. If you edit any sibling module in development, refresh the
+     sporttery_jc, and unified_odds_evaluator. If you edit any sibling module in development, refresh the
      embedded block with:
        python scripts\build_single_file.py
    - Start with:
@@ -26,6 +26,7 @@ Choose ONE deployment mode:
        odds_fallback.py
        odds_index_math.py
        sporttery_jc.py
+       unified_odds_evaluator.py
    - Start with:
        streamlit run C:\FLAnalyzer\app_v84_hermes.py --server.headless true
 
