@@ -1,9 +1,13 @@
 """Guards the two side effects plus the undefined-name class of bug found while cleaning up.
 
-1. `code_improvements/` — `ModelPerformanceAnalyzer.analyze_and_generate` writes a dated
-   file into the working directory on every review. Tests must not write into the
-   checkout; `tests/conftest.py` redirects it and this file proves the redirect holds
-   for the whole suite, not just for the tests that call the analyser directly.
+1. The review's byproduct files — `ModelPerformanceAnalyzer.analyze_and_generate` used to
+   drop `code_improvements/improvements_<date>.py` into the working directory on every
+   review, with no reader anywhere in the repo, the history, or the installer. The write
+   is gone; the *content* is not. One test below pins both halves at once: a completed
+   review must leave the working directory byte-for-byte unchanged **and** must still
+   hand the generated code back in its return value, because that is what the Telegram
+   review embeds. Either regression — re-adding the write, or dropping the content with
+   it — fails that one assert pair.
 
 2. Undefined names inside `app_v84_hermes` — the legacy purge deleted the module-level
    `sporttery_jc` import shim, which removed the only top-level binding of
@@ -62,26 +66,52 @@ def _imported_names(fn: ast.AST) -> set[str]:
     return names
 
 
-def test_code_improvements_dir_is_gitignored() -> None:
-    """The runtime byproduct must never be committable by accident."""
-    ignored = (ROOT / '.gitignore').read_text(encoding='utf-8')
-    assert '/code_improvements/' in ignored
+def test_review_leaves_the_working_directory_untouched_but_still_returns_the_code(
+    monkeypatch, tmp_path,
+) -> None:
+    """One guard against both regressions: a revived write, or a dropped payload.
 
+    `analyze_and_generate` used to write `code_improvements/improvements_<date>.py` into
+    the process working directory — on a Windows install, the program folder — and
+    nothing anywhere read it back. Deleting the write is only correct because the text
+    still reaches the user through the return value, which `post_match_review` and the
+    daily-learning report embed.
 
-def test_analyser_honours_a_redirected_output_dir(monkeypatch, tmp_path) -> None:
-    """The output dir is read from the module constant, so a test can redirect it.
+    So the guard is a pair, not a deletion:
 
-    If the write path hard-coded the literal instead of reading `CODE_IMPROVEMENTS_DIR`,
-    the conftest redirect would silently stop working and the tree would get dirty again.
+      * run a review from an empty working directory and assert the directory is still
+        empty (no `improvements_*.py`, no new subdirectory of any name — moving the
+        debris to `logs/` is not a fix);
+      * assert the same call still returns the model's code text.
+
+    Add the write back and the first half fails. Drop `code_improvements` from the
+    return value and the second half fails.
     """
     app = _app()
-    target = tmp_path / 'redirected'
-    monkeypatch.setattr(app, 'CODE_IMPROVEMENTS_DIR', str(target))
-    monkeypatch.setattr(app, '_ds_flash_takeover', lambda *a, **k: '模型表现自动分析报告\n台账01 真实正文')
+    marker = 'IMPROVEMENT_MARKER_7f3a = {"strategy": "late_pressure"}'
+    monkeypatch.setattr(
+        app, '_ds_flash_takeover',
+        lambda *a, **k: f'模型表现自动分析报告\n台账01 真实正文\n模型改进代码建议\n{marker}\n',
+    )
+    workdir = tmp_path / 'install_dir'
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
     with contextlib.redirect_stdout(io.StringIO()):
-        app.ModelPerformanceAnalyzer.analyze_and_generate({'rows': [], 'total': 1, 'hits': 0})
-    assert target.is_dir(), 'the redirected directory was not used'
-    assert list(target.glob('improvements_*.py')), 'no improvement file was written'
+        report, code, _skill = app.ModelPerformanceAnalyzer.analyze_and_generate(
+            {'rows': [], 'total': 1, 'hits': 0}
+        )
+
+    leftovers = sorted(str(p.relative_to(workdir)) for p in workdir.rglob('*'))
+    assert leftovers == [], (
+        'the review wrote into the program directory: '
+        f'{leftovers} — the improvement text belongs in the return value, not on disk'
+    )
+    assert not list(workdir.rglob('improvements_*.py')), 'an improvements_*.py came back'
+    assert marker in code, (
+        'the review no longer returns the improvement code, so the report lost content '
+        f'along with the file write; got {code!r}'
+    )
+    assert '真实正文' in report, 'the report text itself must survive too'
 
 
 def test_market_heat_table_name_is_importable_where_it_is_used() -> None:

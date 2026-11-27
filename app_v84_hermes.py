@@ -41978,9 +41978,6 @@ def _dual_model_both_wrong_fact(rows):
     )
 
 
-CODE_IMPROVEMENTS_DIR = "code_improvements"
-
-
 _MODEL_REPORT_VIEWS = (
     '泊松理论', '市场概率', 'Δ偏差', 'IBI', '分差',
     '相邻比分', '顺位',
@@ -42317,19 +42314,10 @@ class ModelPerformanceAnalyzer:
                         new_skill_code = rebuilt_skill
             code_improvements, _ = _purge_team_names(code_improvements, banned_names)
             new_skill_code, _ = _purge_team_names(new_skill_code, banned_names)
-            try:
-                os.makedirs(CODE_IMPROVEMENTS_DIR, exist_ok=True)
-                _today = datetime.now().strftime('%Y-%m-%d')
-                _path = os.path.join(CODE_IMPROVEMENTS_DIR, f"improvements_{_today}.py")
-                with open(_path, 'w', encoding='utf-8') as f:
-                    f.write(f"# deepseek-flash 提出的代码建议 - {_today}\n")
-                    f.write("# 不写 first_score，不改方向锁，不自动并入运行代码，代码不含队名特征\n\n")
-                    f.write(code_improvements)
-                    f.write("\n\n")
-                    f.write(new_skill_code)
-                print(f"   💾 [模型复盘] deepseek-flash 代码建议已保存: {_path}")
-            except Exception as _save_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                print(f"   ⚠️ [模型复盘] 代码建议保存失败: {_save_err}")
+            # 代码建议只走返回值：调用方把它拼进复盘正文推送出去。
+            # 以前这里还会落一份 code_improvements/improvements_<日期>.py，
+            # 但全仓没有任何读取点（无 loader、无 glob、安装器也不认），
+            # 那份文件只会让用户目录自己长出垃圾。
             if local_only and isinstance(performance_report, str):
                 # 纯本地补算：让「〔本地补算·非模型研判〕」真正是第一行，
                 # 调用方与日志一眼可辨，不再有前导空行。

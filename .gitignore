@@ -21,7 +21,8 @@ config.env
 # Scrape-cache byproduct; tests must use captured fixtures, not live caches.
 tests/fixtures/_cache_*/
 
-# Runtime byproduct of ModelPerformanceAnalyzer.analyze_and_generate: it writes
-# improvements_<date>.py here on every review. Nothing reads these files back
-# (no loader, no glob, no install step), so they are debris, not data.
+# Legacy runtime byproduct path: nothing writes here anymore (the review keeps the
+# improvement text in its return value), but installs from older builds may still
+# carry an `code_improvements/` folder. Keeping the ignore rule means those stale
+# directories can never be committed by accident; it costs nothing at runtime.
 /code_improvements/
