@@ -30,7 +30,7 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 4e32405 = 热度席位改按排名位次(前8名8..1席) + 三套矩阵接进TG报告
-$PinCommit = '588b0cb8d31ad13d2baa284151b5a580adb3ccbd'
+$PinCommit = 'b736b326428929ea7d19dd92c5832af875d7b9c8'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
