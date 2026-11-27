@@ -481,9 +481,11 @@ def test_probe_cache_miss_405_blocked_page_is_origin_blocked(
     assert out['cache_hit'] is False
     assert out['probe_status'] == 'origin_blocked'
     assert out['x_cache_status'] == 'EXPIRED'
-    # 源站按出口 IP 拦截：重试没用，必须一次就收手。
-    assert out['attempts'] == 1
-    assert len(calls) == 1, calls
+    # 桌面页有 2 个 Referer 候选：每个只试一次（不按 retries=4 放大），
+    # 两个都被 WAF 拦才判 IP 拦截。有界 = 候选数，而不是 retries。
+    assert out['attempts'] == 2
+    assert len(calls) == 2, calls
+    assert len(out['referers_tried']) == 2
 
 
 def test_probe_timeout_retries_with_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -560,6 +562,116 @@ def test_probe_keeps_meaningful_query_params() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 8b. 换 Referer 的阶梯：先试完所有候选，才能判 IP 拦截
+# --------------------------------------------------------------------------- #
+def _patch_by_referer(
+    monkeypatch: pytest.MonkeyPatch,
+    by_referer: dict[str, Any],
+    default: Any = None,
+) -> list[str]:
+    """按请求的 Referer 决定返回什么，并记录每次请求实际用的 Referer。"""
+    seen_referers: list[str] = []
+
+    def fake_get(url, *args, **kwargs):
+        headers = kwargs.get('headers') or {}
+        referer = str(headers.get('Referer') or '')
+        seen_referers.append(referer)
+        item = by_referer.get(referer, default)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(okooo.requests, 'get', fake_get)
+    monkeypatch.setattr(scraper, 'warm_session', lambda *a, **k: okooo.requests)
+    monkeypatch.setattr(scraper, '_thread_session', lambda *a, **k: okooo.requests)
+    monkeypatch.setattr(scraper.time, 'sleep', lambda *_: None)
+    monkeypatch.setattr(okooo.time, 'sleep', lambda *_: None)
+    return seen_referers
+
+
+def test_second_referer_succeeds_after_first_is_waf_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """桌面波胆页的现实：首页作 Referer 是 405，换同场次页就 200。
+
+    两种 405 响应体一模一样，所以「Referer 不对」绝不能被判成终态 IP 拦截——
+    这条是把可恢复错误降级成终态的直接回归测试。
+    """
+    url = 'https://www.okooo.com/soccer/match/1347776/cs/'
+    referers = okooo._referers_for(url)
+    assert len(referers) >= 2, referers
+    good = '<html><body><table id="datatable"><tr class="titlebg"><td><b>1:0</b></td></tr></table></body></html>'
+
+    seen = _patch_by_referer(
+        monkeypatch,
+        {referers[0]: _ProbeResp(405, _blocked_page(), {'x-cache-status': 'EXPIRED'}),
+         referers[1]: _ProbeResp(200, good, {'age': '9'})},
+    )
+    out = scraper.fetch_with_cache_probe(url, retries=1)
+
+    assert out['ok'] is True, out
+    assert out['probe_status'] == 'ok'
+    assert out['cache_hit'] is True
+    assert len(out['referers_tried']) == 2, out['referers_tried']
+    # 第二个候选确实被请求过，且用的就是候选顺序里的那个 Referer。
+    assert seen == referers[:2], seen
+
+
+def test_all_referers_blocked_is_origin_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """所有候选都返回 WAF 405 才成立 origin_blocked，且记下试过哪些。"""
+    url = 'https://www.okooo.com/soccer/match/1347776/cs/'
+    referers = okooo._referers_for(url)
+    _patch_by_referer(
+        monkeypatch,
+        {r: _ProbeResp(405, _blocked_page(), {'x-cache-status': 'EXPIRED'}) for r in referers},
+    )
+    out = scraper.fetch_with_cache_probe(url, retries=1)
+
+    assert out['ok'] is False
+    assert out['origin_blocked'] is True
+    assert out['probe_status'] == 'origin_blocked'
+    assert len(out['referers_tried']) == 2, out['referers_tried']
+    assert out['attempts'] == 2, 'two referers, one trip each — bounded, not endless'
+
+
+def test_mobile_page_single_referer_blocks_in_one_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手机页只给 1 个候选：一次请求就够，不重复。"""
+    url = 'https://m.okooo.com/match/note.php?MatchID=1348444'
+    referers = okooo._referers_for(url)
+    assert len(referers) == 1, referers
+    seen = _patch_by_referer(
+        monkeypatch, {referers[0]: _ProbeResp(405, _blocked_page(), {'x-cache-status': 'EXPIRED'})}
+    )
+    out = scraper.fetch_with_cache_probe(url, retries=4)
+
+    assert out['origin_blocked'] is True
+    assert len(out['referers_tried']) == 1
+    assert out['attempts'] == 1
+    assert seen == referers, seen
+
+
+def test_cache_hit_returns_before_second_referer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """缓存命中一次就返回，不去试第二个候选。"""
+    url = 'https://www.okooo.com/soccer/match/1347776/cs/'
+    good = '<html><body><p>ok</p></body></html>'
+    seen = _patch_by_referer(
+        monkeypatch, {}, default=_ProbeResp(200, good, {'age': '30'})
+    )
+    out = scraper.fetch_with_cache_probe(url, retries=1)
+
+    assert out['ok'] is True and out['cache_hit'] is True
+    assert len(seen) == 1, seen
+    assert len(out['referers_tried']) == 1
+
+
+def test_list_page_has_single_referer_so_behaviour_unchanged() -> None:
+    """列表页只有一个候选，所以它的路径与之前完全一致。"""
+    assert len(okooo._referers_for(scraper.LIST_URL)) == 1
+
+
+# --------------------------------------------------------------------------- #
 # 9. 市均：IP 拦截不重试 / 离线注入可解析
 # --------------------------------------------------------------------------- #
 CS_FIXTURE = FIXTURES / 'okooo_desktop_cs_1347776.html'
@@ -578,8 +690,9 @@ def test_market_average_origin_blocked_does_not_retry(
     )
     assert record['status'] == 'origin_blocked'
     assert record['origin_blocked'] is True
-    assert record['attempts'] == 1
-    assert len(calls) == 1, calls
+    # 市均页走桌面 URL → 2 个 Referer 候选各试一次，全拦才判 IP 拦截。
+    assert record['attempts'] == 2
+    assert len(calls) == 2, calls
     assert record['http_status'] == 405
     assert record['x_cache_status'] == 'EXPIRED'
     assert '源站按出口 IP 拦截' in record['reason']

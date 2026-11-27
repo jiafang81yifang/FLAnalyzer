@@ -315,39 +315,66 @@ def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: i
     返回 {ok, url, status, bytes, title, blocked, error, html, encoding, referer}
     外加缓存证据 `origin_blocked` / `cache_hit` / `age` / `x_cache_status` / `server`。
 
-    **源站按出口 IP 拦截（origin_blocked）一次就收手：不重试、不换 UA/Referer。**
-    2026-11-26 逐条实测已证明客户端侧全部无效（TLS 指纹、真实 Chrome CDP、
-    Googlebot UA、随机 query、双 A 记录直连、POST/HEAD/OPTIONS、带 acw_tc cookie、
-    第三方 r.jina.ai 出口，全部同一个 405 拦截页）。继续重试只会加深封禁并拖慢整轮。
+    **`origin_blocked` 只有在 `_referers_for` 的候选全部试过之后才成立。**
+    桌面波胆页的现实（仓库 `_referers_for` 文档记载的现场核对）：首页作 Referer 是
+    405，换成同场次页/`/odds/` 是 200。两种 405 的响应体一模一样（都是那句
+    `your request has been blocked`），所以**只看响应体无法区分「Referer 不对」和
+    「出口 IP 被拦」**，必须先沿候选把 Referer 换完：
+      * 换 Referer 后能成功 → 这是可恢复错误，绝不能被判成终态；
+      * 全部候选都 405 → 才是源站按出口 IP 拦截。
+    有界性：桌面页通常 2 个候选、手机页 1 个，所以最多 2 次往返，不会无限重试。
+    过程中**不换 UA、不换 session、不改 URL**，只沿 `_referers_for` 的顺序换 Referer。
+
+    真正的 IP 拦截（全部候选都 405）也不再重试：2026-11-26 逐条实测证明客户端侧
+    全部无效（TLS 指纹、真实 Chrome CDP、Googlebot UA、随机 query、双 A 记录直连、
+    POST/HEAD/OPTIONS、带 acw_tc cookie、第三方 r.jina.ai 出口，都是同一个拦截页）。
+    返回里带 `referers_tried`，日志能看出试过哪些、不是一次就放弃。
     """
     is_mobile = 'm.okooo.com' in url
-    referers = _referers_for(url)
-    attempts = max(1, retries) * (len(referers) + 1)
-    referer = referers[0] if referers else _WARMUP_URL
+    referers = _referers_for(url) or [_WARMUP_URL]
     active_session = session
     info: dict[str, Any] = {}
     last_error = ''
-    for attempt in range(attempts):
+    tried: list[str] = []
+    referers_tried: list[str] = []
+    for referer in referers:
+        referers_tried.append(referer)
         info = _http_attempt(
             url, proxies=proxies, session=active_session, referer=referer, timeout=timeout,
         )
+        info['referers_tried'] = list(referers_tried)
         if info['ok']:
             info['error'] = ''
             return info
         last_error = str(info.get('error') or 'empty response')
+        tried.append(f'{referer} → {last_error}')
         if info['origin_blocked']:
-            break
+            # 这个 Referer 被拦：先别下结论，换下一个候选；全部试完才算 IP 拦截。
+            continue
         if not info.get('transport_error') and 400 <= int(info['status']) < 500:
+            # 非 WAF 的 4xx（404 等）：换 Referer 也不会让页面回来，直接返回。
             break
-        nxt = _next_referer(referers, referer)
-        if nxt:
-            referer = nxt
+        time.sleep(min(3, 2 ** len(referers_tried)))
+    # 非 WAF 的可重试错误（超时/5xx）再按 retries 走退避；IP 拦截不再重试。
+    if not info.get('ok') and not info.get('origin_blocked') and info.get('transport_error'):
+        for attempt in range(max(0, max(1, retries) - 1)):
             active_session = active_session or _warm_session(
-                proxies, mobile=is_mobile, referer=referer,
+                proxies, mobile=is_mobile, referer=referers_tried[-1],
             )
-        if attempt + 1 < attempts:
-            time.sleep(min(3, 2**attempt))
+            info = _http_attempt(
+                url, proxies=proxies, session=active_session,
+                referer=referers_tried[-1], timeout=timeout,
+            )
+            info['referers_tried'] = list(referers_tried)
+            if info['ok']:
+                info['error'] = ''
+                return info
+            last_error = str(info.get('error') or 'empty response')
+            if info['origin_blocked'] or not info.get('transport_error'):
+                break
+            time.sleep(min(3, 2 ** attempt))
     info['error'] = last_error or 'empty response'
+    info['attempted'] = tried
     return info
 
 

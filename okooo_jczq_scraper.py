@@ -247,44 +247,58 @@ def fetch_with_cache_probe(
     _assert_stable_url(url)
     if mobile is None:
         mobile = 'm.okooo.com' in url
-    referers = okooo._referers_for(url)
-    referer = referers[0] if referers else MOBILE_WARMUP_URL
+    referers = okooo._referers_for(url) or [MOBILE_WARMUP_URL]
     active_session = session
-    attempts = max(1, int(retries or 1))
+    retries = max(1, int(retries or 1))
     last: dict[str, Any] = {}
-    for attempt in range(attempts):
-        if active_session is None and attempt:
-            active_session = _thread_session(proxies, mobile=mobile)
-        last = attempt_http(
-            url, proxies=proxies, session=active_session, referer=referer, timeout=timeout,
-        )
-        # 注意：`status` 始终是 HTTP 状态码（_http_attempt 的既有语义），
-        # 归一化后的结果类别另放 `probe_status`，两个含义不挤一个键。
-        last['cache_hit'] = bool(last.get('cache_hit'))
-        last['origin_blocked'] = bool(last.get('origin_blocked'))
-        last['attempts'] = attempt + 1
-        # 防御性检查：探测层自己绝不改写 URL（见 _assert_stable_url 的说明）。
-        # 用显式抛错而不是 assert——assert 在 -O 下会被剥掉，这种防护不能失效。
-        if str(last.get('url') or url) != url:
-            raise RuntimeError(
-                f'probe rewrote the URL: {last.get("url")!r} != {url!r}'
+    referers_tried: list[str] = []
+    blocked_any = False
+    attempts = 0
+    for referer in referers:
+        referers_tried.append(referer)
+        for retry in range(retries):
+            if active_session is None and attempts:
+                active_session = _thread_session(proxies, mobile=mobile)
+            last = attempt_http(
+                url, proxies=proxies, session=active_session,
+                referer=referer, timeout=timeout,
             )
-        if last.get('ok'):
-            last['probe_status'] = STATUS_OK_PROBE
-            return last
-        if last['origin_blocked']:
-            # 源站按出口 IP 拦截：重试无意义，一次就收手。
-            last['probe_status'] = STATUS_ORIGIN_BLOCKED
-            return last
-        last['probe_status'] = STATUS_TIMEOUT if last.get('transport_error') else STATUS_HTTP_ERROR
-        if not last.get('transport_error') and 400 <= int(last.get('status') or 0) < 500:
-            # 4xx（404 之类）是「页面没了」，重试同一 URL 不会变好，直接返回。
-            return last
-        if attempt + 1 < attempts:
-            nxt = okooo._next_referer(referers, referer)
-            if nxt:
-                referer = nxt
-            time.sleep(min(4, 2 ** attempt) + random.uniform(0, RETRY_JITTER))  # nosec B311 - 退避抖动，非密码学用途
+            attempts += 1
+            # 注意：`status` 始终是 HTTP 状态码（_http_attempt 的既有语义），
+            # 归一化后的结果类别另放 `probe_status`，两个含义不挤一个键。
+            last['cache_hit'] = bool(last.get('cache_hit'))
+            last['origin_blocked'] = bool(last.get('origin_blocked'))
+            last['attempts'] = attempts
+            last['referers_tried'] = list(referers_tried)
+            # 防御性检查：探测层自己绝不改写 URL（见 _assert_stable_url 的说明）。
+            # 用显式抛错而不是 assert——assert 在 -O 下会被剥掉，这种防护不能失效。
+            if str(last.get('url') or url) != url:
+                raise RuntimeError(
+                    f'probe rewrote the URL: {last.get("url")!r} != {url!r}'
+                )
+            if last.get('ok'):
+                last['probe_status'] = STATUS_OK_PROBE
+                return last
+            if last['origin_blocked']:
+                # 两种 405 的响应体完全一样（Referer 不对 vs 出口 IP 被拦），
+                # 所以先换下一个 Referer 候选；候选全试完才算真的 IP 拦截。
+                blocked_any = True
+                break
+            if not last.get('transport_error') and 400 <= int(last.get('status') or 0) < 500:
+                # 非 WAF 的 4xx（404 等）是「页面没了」，换 Referer 也不会变好。
+                last['probe_status'] = STATUS_HTTP_ERROR
+                last['attempts'] = attempts
+                return last
+            last['probe_status'] = (
+                STATUS_TIMEOUT if last.get('transport_error') else STATUS_HTTP_ERROR
+            )
+            if retry + 1 < retries:
+                time.sleep(min(4, 2 ** retry) + random.uniform(0, RETRY_JITTER))  # nosec B311 - 退避抖动，非密码学用途
+    if blocked_any:
+        last['probe_status'] = STATUS_ORIGIN_BLOCKED
+        last['origin_blocked'] = True
+        last['attempts'] = attempts
+        return last
     last.setdefault('probe_status', STATUS_HTTP_ERROR)
     last['attempts'] = attempts
     return last
@@ -524,6 +538,7 @@ def _subpage_record(
         'age': '',
         'x_cache_status': '',
         'traceid': '',
+        'referers_tried': [],
     }
     # 走统一入口：缓存命中 / 源站 IP 拦截 / 普通抖动的判定与重试策略全在探测层，
     # 子页这里不再自己判 blocked、也不再自己写退避。
@@ -541,6 +556,7 @@ def _subpage_record(
         'age': str(probe.get('age') or ''),
         'x_cache_status': str(probe.get('x_cache_status') or ''),
         'traceid': str(probe.get('traceid') or ''),
+        'referers_tried': list(probe.get('referers_tried') or []),
     })
     if probe.get('ok'):
         rows = extract_rows(probe.get('html') or '')
@@ -555,7 +571,8 @@ def _subpage_record(
         record['status'] = STATUS_ORIGIN_BLOCKED
         record['error_msg'] = (
             f'源站按出口 IP 拦截（HTTP {record["http_status"]}，响应体 block_message；'
-            f'x-cache-status={record["x_cache_status"] or "-"}, age={record["age"] or "-"}）'
+            f'x-cache-status={record["x_cache_status"] or "-"}, age={record["age"] or "-"}；'
+            f'已试 {len(record["referers_tried"])} 个 Referer 候选）'
             '；这不是页面结构变化'
         )
     else:
@@ -627,6 +644,7 @@ def fetch_market_average(
         'cache_hit': False,
         'age': '',
         'x_cache_status': '',
+        'referers_tried': [],
         'attempts': 0,
         'http_status': 0,
         'bytes': 0,
@@ -673,6 +691,7 @@ def fetch_market_average(
         'cache_hit': bool(probe.get('cache_hit')),
         'age': str(probe.get('age') or ''),
         'x_cache_status': str(probe.get('x_cache_status') or ''),
+        'referers_tried': list(probe.get('referers_tried') or []),
         'cache_origin': 'okooo.com',
     })
     if probe.get('ok'):
@@ -690,8 +709,9 @@ def fetch_market_average(
         record['reason'] = (
             '源站按出口 IP 拦截：CDN 未命中（'
             f'x-cache-status={record["x_cache_status"] or "-"}, age={record["age"] or "-"}），'
-            f'回源被阿里云 WAF 拦成 HTTP {record["http_status"]}（响应体 block_message）。'
-            '客户端指纹/UA/Referer/cookie 均无效，需要住宅 IP 或缓存命中；'
+            f'回源被阿里云 WAF 拦成 HTTP {record["http_status"]}（响应体 block_message）；'
+            f'已按顺序试过 {len(record["referers_tried"])} 个 Referer 候选全部被拦。'
+            '客户端指纹/UA/cookie 均无效（Referer 也已穷尽），需要住宅 IP 或缓存命中；'
             '这不是页面结构变化。'
         )
     else:
