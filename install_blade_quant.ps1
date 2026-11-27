@@ -33,7 +33,7 @@ try {
 # 260c102 = 内置六步比分收敛引擎（score_convergence_engine，含31项完备树/宏观裁决/
 #           全方向预判）；Step4 读结构化市热/市短（ranking/counts 优先，文本仅兜底），
 #           生产形态下可正常锁定 2 个比分；TG 新增「六步收敛」段。已过全套审计
-$PinCommit = '40533747c768061b75a1491ce885d1109c4bc3dc'
+$PinCommit = 'd6680cf2d301fec766609282f8c8e7d563db168d'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
