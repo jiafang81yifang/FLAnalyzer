@@ -615,7 +615,7 @@ def audit_unified_report(audit: Audit, root: Path, workdir: Path) -> None:
     audit.record('report:build-sections',
                  [s.get('key') for s in report.get('sections') or []] == list(app.UNIFIED_REPORT_SECTION_KEYS))
     verdict = next((s for s in report.get('sections') or [] if s.get('key') == 'verdict'), {})
-    audit.record('report:verdict-present', '首选 2-1' in str(verdict.get('verdict')), str(verdict.get('verdict'))[:120])
+    audit.record('report:verdict-present', '候选A 2-1' in str(verdict.get('verdict')), str(verdict.get('verdict'))[:120])
     audit.record('report:verdict-confidence', verdict.get('confidence') == '中偏高', str(verdict.get('confidence')))
     risk = next((s for s in report.get('sections') or [] if s.get('key') == 'risk'), {})
     risk_items = risk.get('items') or []
@@ -1152,7 +1152,7 @@ def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:
     healthy_report = app.build_unified_analysis_report(healthy, source='audit')
     audit.record('lambda:report-healthy-not-flagged', healthy_report.get('data_insufficient') is False)
     audit.record('lambda:report-healthy-keeps-score',
-                 '首选 2-1' in str(next(
+                 '候选A 2-1' in str(next(
                      (s.get('verdict') for s in healthy_report.get('sections') or []
                       if s.get('key') == 'verdict'), '')))
 
