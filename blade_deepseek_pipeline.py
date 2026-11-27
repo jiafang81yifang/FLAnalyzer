@@ -1095,7 +1095,11 @@ class DeepSeekAnalyzer:
         lines = [head]
         _prov_raw = p.get('cs31_provenance')
         provenance: dict[str, Any] = _prov_raw if isinstance(_prov_raw, dict) else {}
+        # 缺项的逐项原因（审计给的 {比分: 为什么缺}）；没有就退回一句通用原因。
+        _why_raw = p.get('missing_sources')
+        why_map: dict[str, str] = _why_raw if isinstance(_why_raw, dict) else {}
         counts: dict[str, int] = {}
+        unaudited: list[str] = []
         for idx, row in enumerate(rows, 1):
             score = str(row.get('score') or '')
             market = _f(row.get('market'))
@@ -1107,6 +1111,31 @@ class DeepSeekAnalyzer:
             elif src == 'jc_score_odds':
                 src = 'jc_official'
             counts[src] = counts.get(src, 0) + 1
+            if market is None or theory is None:
+                # 有一列没数：绝不写「-」（那是「这一列没有」的歧义写法），
+                # 也绝不用 0 或估价顶上去。保留真有的那几列，把缺的那一列
+                # 写成唯一约定的「无数据（原因：…）」，并逐项点名缺哪个源。
+                unaudited.append(score)
+                why = str(why_map.get(score) or '')
+                if not why:
+                    why = (
+                        '市均与竞彩31比分都没给这一项'
+                        if market is None and theory is None
+                        else ('理论概率未形成——冻结λ缺失' if theory is None
+                              else '市场赔率未取到——市均与竞彩31比分都没给')
+                    )
+                real = []
+                if market is not None:
+                    real.append(f'市均{market:.2f}')
+                if theory is not None:
+                    real.append(f'理论{theory:.1f}%')
+                prefix = ' '.join(real)
+                lines.append(
+                    f'  {idx:02d} {score:<5s} '
+                    + (prefix + ' ' if prefix else '')
+                    + DeepSeekAnalyzer.unavailable_line(why)
+                )
+                continue
             market_txt = f'{market:.2f}' if market is not None else '-'
             jc_txt = f'{jc:.2f}' if jc is not None else '-'
             # 竞彩隐含% 必须用去水归一后的 jc_odds_pct，不能是单家 1/odds。
@@ -1128,6 +1157,11 @@ class DeepSeekAnalyzer:
             + (' | 出处:反推(老记录无cs31_provenance)'
                if str(p.get('cs31_provenance_source') or '') == 'derived' else '')
         )
+        if unaudited:
+            lines.append(
+                '  无数据项(' + str(len(unaudited)) + '): ' + '/'.join(unaudited)
+                + ' —— 上表逐行注明原因，未估算、未补占位值'
+            )
         extras = p.get('cs31_extras') if isinstance(p.get('cs31_extras'), dict) else {}
         if extras:
             lines.append(
@@ -1296,6 +1330,14 @@ class DeepSeekAnalyzer:
         if _goal_lines:
             sections.append('\n'.join(_goal_lines))
 
+        # 4c) 六盘口事实板：六块盘口逐行给值或「无数据（原因：…）」。
+        #     紧贴在研判正文之前，读者先看到缺什么，再读结论。
+        _six_fact = _as_lines(kwargs.get('six_market_fact_tg_lines'))
+        if not _six_fact and isinstance(payload, dict):
+            _six_fact = _as_lines(payload.get('six_market_fact_tg_lines'))
+        if _six_fact:
+            sections.append('\n'.join(_six_fact))
+
         # 5) heat 段与 6) desc 段，按读取顺序放在最后。
         for extra_key in (
             'heat_tg_lines', 'jc_vs_hot_tg_lines', 'wdl_matrix_tg_lines',
@@ -1327,6 +1369,40 @@ class DeepSeekAnalyzer:
     JUDGMENT_SHELL_MARKER: ClassVar[str] = 'DeepSeek 数据分析研判报告'
 
     @staticmethod
+    def six_market_union(payload: Any = None) -> dict[str, Any]:
+        """把分散在三层的六盘口取并集，返回一份合成源。
+
+        六盘口包可能在三个位置：研判包顶层、`pay['six_market_mobile']`、
+        `board['six_market_mobile']`。历史实现是「第一个非空的 dict 赢」，
+        于是包里只要非空就把顶层整块遮住——而亚盘/大小球来自公司明细路径
+        （写在记录上、再写回包），`build_cross_market_board` 又把它们放在顶层，
+        两边不同步时「包里 AH=None、顶层 AH=-0.75」会被判缺盘口。
+
+        现在按层叠加取并集：有值压过无值，一旦某层给了值就不会被后面的层改回缺失。
+
+        这个函数是**唯一**的六盘口读侧入口：体检、报告事实板、送模型的缺失清单
+        全走它，所以三处不可能对「缺哪块」给出不同答案。
+        """
+        pay = payload if isinstance(payload, dict) else {}
+        board = pay.get('cross_market_board')
+        layers: list[Any] = [pay, pay.get('six_market_mobile')]
+        if isinstance(board, dict):
+            layers.append(board)
+            layers.append(board.get('six_market_mobile'))
+        out: dict[str, Any] = {}
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            for key, value in layer.items():
+                if key == 'six_market_mobile':
+                    continue
+                if value in (None, '', {}, []):
+                    out.setdefault(key, value)
+                    continue
+                out[key] = value
+        return out
+
+    @staticmethod
     def six_market_gaps(source: Any) -> list[str]:
         """列出源里真实缺的六盘口项（中文名）。
 
@@ -1350,6 +1426,266 @@ class DeepSeekAnalyzer:
                 gaps.append(label)
         return gaps
 
+    # 六盘口里「结构性不可达」的两块：博彩公司盘口线，不在竞彩赔率源上。
+    # 其余四块在 m.okooo.com/jczq/ 的 oddsData 里，缺了就是我们的解析/抓取问题。
+    # 这个分类只决定文案与处置建议，不决定发不发——报告一律照发。
+    STRUCTURAL_BOARDS: ClassVar[tuple[str, ...]] = ('亚盘让球', '大小球')
+
+    @staticmethod
+    def unavailable_line(reason: Any = '') -> str:
+        """缺数据段落的唯一写法：`无数据（原因：…）`。
+
+        既不许整段消失，也不许用 0 / '-' / 估算值顶上去。调用点统一走这里，
+        措辞才不会一处一个样。
+        """
+        why = str(reason or '').strip() or '上游未提供'
+        return f'无数据（原因：{why}）'
+
+    # 缺口横幅的唯一标题。**跨模块共享常量**：PR #20 的
+    # `match_data_matrix.format_gap_banner` 也读它，两处绝不各写一份字符串。
+    # 放在这里而不是 match_data_matrix，是因为本模块是所有 sibling 里最底层的
+    # 一个（不 import 任何兄弟模块），谁都能安全地从这里取常量。
+    GAP_BANNER_HEADER: ClassVar[str] = '⚠️【本场缺口（先说清楚，不影响出报）】'
+
+    @staticmethod
+    def compose_gap_banner(boards_missing: Any = None,
+                           cs31_missing: Any = None,
+                           matrix: Any = None) -> dict[str, Any]:
+        """把三个轴的缺口合成**一个**横幅块。
+
+        三条子行，任何一条没有内容就整条省略；三条都空则整块省略：
+
+            ⚠️【本场缺口（先说清楚，不影响出报）】
+              · 六盘口缺：…（结构性不可达 / 本次未解析，分开写）
+              · 31 表缺：…（点名的比分选项）
+              · 数据源缺：…#20 的 reason_text 行
+
+        第三组**不重写**：直接调 `match_data_matrix.format_gap_banner`，把那边的
+        行去掉它自己的标题后原样并入。这样 `REASON_TEXT` 只有一处真源，
+        措辞不会在两份代码里漂移。
+
+        导入方向：`match_data_matrix` 依赖 `live500_board`，而两个模块都不依赖
+        本模块，所以这里 import 它**不成环**。仍然用函数内延迟导入 + 失败降级，
+        理由有两条：本模块被 `build_single_file.py` 内嵌进 app（内嵌环境里
+        兄弟模块可能还没装进 sys.modules），以及 PR #20 尚未合并时这里必须
+        只是「没有第三组」，不能让整份报告挂掉。
+        """
+        boards = [str(b) for b in (boards_missing or []) if str(b or '').strip()]
+        # 保持 SIX_MARKET_BOARDS 的展示顺序，不按审计返回的顺序。
+        order = [label for label, _ in DeepSeekAnalyzer.SIX_MARKET_BOARDS]
+        boards = sorted(boards, key=lambda b: order.index(b) if b in order else len(order))
+        structural = [b for b in boards if b in DeepSeekAnalyzer.STRUCTURAL_BOARDS]
+        transient = [b for b in boards if b not in DeepSeekAnalyzer.STRUCTURAL_BOARDS]
+        cs31 = [str(c) for c in (cs31_missing or []) if str(c or '').strip()]
+
+        board_line = ''
+        if boards:
+            bits = ['/'.join(boards)]
+            detail = []
+            if structural:
+                detail.append('结构性不可达：' + '/'.join(structural)
+                              + '（博彩公司盘口线，不在竞彩赔率源）')
+            if transient:
+                detail.append('本次未解析出：' + '/'.join(transient)
+                              + '（竞彩 oddsData 里有，属解析/抓取问题）')
+            board_line = '  · 六盘口缺：' + bits[0]
+            if detail:
+                board_line += '（' + '；'.join(detail) + '）'
+
+        cs31_line = ('  · 31 表缺：' + '；'.join(cs31)) if cs31 else ''
+
+        matrix_lines = DeepSeekAnalyzer._matrix_gap_lines(matrix)
+        matrix_body = [
+            ln for ln in matrix_lines
+            if ln.strip() and DeepSeekAnalyzer.GAP_BANNER_HEADER not in ln
+        ]
+        matrix_line = ''
+        if matrix_body:
+            # #20 的渲染是「每行一个原因码」；并入本块时把首行接到
+            # 「数据源缺：」后面，其余行保持缩进，读者仍然逐码可读。
+            first = matrix_body[0].strip()
+            first = first[1:].strip() if first.startswith('·') else first
+            matrix_line = '  · 数据源缺：' + first
+            if len(matrix_body) > 1:
+                matrix_line += '\n' + '\n'.join(
+                    ('    ' + ln.strip()) if ln.strip().startswith('·') else ln
+                    for ln in matrix_body[1:]
+                )
+
+        sub_lines = [ln for ln in (board_line, cs31_line, matrix_line) if ln]
+        banner = ''
+        if sub_lines:
+            banner = '\n'.join([DeepSeekAnalyzer.GAP_BANNER_HEADER, *sub_lines])
+        return {
+            'header': DeepSeekAnalyzer.GAP_BANNER_HEADER,
+            'boards_line': board_line,
+            'cs31_line': cs31_line,
+            'matrix_line': matrix_line,
+            'lines': sub_lines,
+            'banner': banner,
+        }
+
+    @staticmethod
+    def gap_banner_lines(boards_missing: Any = None, cs31_missing: Any = None,
+                         matrix: Any = None) -> list[str]:
+        """报告顶部缺口块的**唯一**渲染入口。
+
+        合成规则（与 PR #20 的 `match_data_matrix` 约定一致）：
+          * 三条子行谁有内容写谁，都没有就返回空列表（不加横幅）；
+          * 标题与「数据源缺」组由 #20 的 `format_gap_banner` 负责——它在
+            `REASON_TEXT` 的中文措辞上有唯一真源，本模块**不重写**那套文案；
+            本模块只提供「六盘口缺」与「31 表缺」两行，插在标题之后。
+          * #20 不在时（未合并 / 内嵌环境缺模块）本模块自己补标题，
+            这样只有本模块一组缺口时横幅依然成立。
+
+        这样合并后只有**一个**标题字符串、一组「数据源缺」行，不会出现两个
+        打架的抬头。
+        """
+        gap = DeepSeekAnalyzer.compose_gap_banner(
+            boards_missing=boards_missing, cs31_missing=cs31_missing, matrix=matrix,
+        )
+        own = [gap['boards_line'], gap['cs31_line']]
+        own = [ln for ln in own if ln]
+        try:
+            from match_data_matrix import format_gap_banner  # noqa: PLC0415 - 见 compose_gap_banner 的导入说明
+            pr20 = [str(ln) for ln in (format_gap_banner(matrix) or [])] if matrix else []
+        except Exception:  # noqa: BLE001 - #20 不可用：本模块自己标题
+            pr20 = []
+        if pr20:
+            header = pr20[0]
+            rest = [ln for ln in pr20[1:] if ln.strip()]
+            return [header, *own, *rest]
+        if own:
+            return [DeepSeekAnalyzer.GAP_BANNER_HEADER, *own]
+        return []
+
+    @staticmethod
+    def _matrix_gap_lines(matrix: Any) -> list[str]:
+        """#20 的数据源缺口行。拿不到模块时返回空列表，绝不自己编一份。"""
+        if not matrix:
+            return []
+        try:
+            from match_data_matrix import format_gap_banner  # noqa: PLC0415 - 见 compose_gap_banner 的导入说明
+        except Exception:  # noqa: BLE001 - #20 未合并/内嵌环境缺模块时只是没有第三组
+            return []
+        try:
+            return [str(ln) for ln in (format_gap_banner(matrix) or [])]
+        except Exception:  # noqa: BLE001 - 渲染失败不能连累横幅的另外两组
+            return []
+
+    @staticmethod
+    def data_gap_report(boards_missing: Any = None, cs31_missing: Any = None,
+                        matrix: Any = None) -> dict[str, Any]:
+        """把「到底缺什么」整理成一份可复用的降级说明。
+
+        这是缺口信息的**唯一**来源：报告顶部横幅、六盘口事实板、31 表缺项行、
+        以及送进模型提示词的缺失数据块，全部读这一份，所以三者不可能互相矛盾。
+
+        返回值（全部是数据，不含结论）：
+          boards        缺的六盘口中文名（顺序与 SIX_MARKET_BOARDS 一致）
+          structural    boards 里结构性不可达的那部分
+          transient     boards 里属于我方解析/抓取的那部分
+          cs31          31 全表的缺项描述（审计给的原样字符串）
+          summary       一行摘要，用于日志
+          banner        报告顶部横幅正文（多行，空字符串表示不缺任何东西）
+          prompt_block  送进模型提示词的缺失数据块（空字符串表示不缺任何东西）
+        """
+        gap = DeepSeekAnalyzer.compose_gap_banner(
+            boards_missing=boards_missing, cs31_missing=cs31_missing, matrix=matrix,
+        )
+        boards = [str(b) for b in (boards_missing or []) if str(b or '').strip()]
+        order = [label for label, _ in DeepSeekAnalyzer.SIX_MARKET_BOARDS]
+        boards = sorted(boards, key=lambda b: order.index(b) if b in order else len(order))
+        structural = [b for b in boards if b in DeepSeekAnalyzer.STRUCTURAL_BOARDS]
+        transient = [b for b in boards if b not in DeepSeekAnalyzer.STRUCTURAL_BOARDS]
+        cs31 = [str(c) for c in (cs31_missing or []) if str(c or '').strip()]
+
+        summary_bits: list[str] = []
+        if boards:
+            summary_bits.append(f'六盘口缺{len(boards)}/6')
+        if cs31:
+            summary_bits.append('31全表比分选项未齐')
+        if gap.get('matrix_line'):
+            summary_bits.append('数据源有缺口')
+        summary = '、'.join(summary_bits)
+
+        banner_lines: list[str] = []
+        if gap.get('banner'):
+            banner_lines.extend(gap['banner'].split('\n'))
+            banner_lines.append(
+                '  以上缺口在正文里逐条标为「无数据（原因：…）」，未估算、未补占位值。'
+            )
+
+        prompt_lines: list[str] = []
+        if boards:
+            prompt_lines.append('- 缺六盘口：' + '/'.join(boards))
+            if structural:
+                prompt_lines.append(
+                    '    其中结构性不可达：' + '/'.join(structural)
+                    + '（博彩公司盘口线，不在竞彩赔率源）'
+                )
+            if transient:
+                prompt_lines.append(
+                    '    其中本次未解析出：' + '/'.join(transient) + '（竞彩 oddsData 里有，解析/抓取问题）'
+                )
+        if cs31:
+            prompt_lines.append('- 缺 31 全表比分选项：' + '；'.join(cs31))
+        if gap.get('matrix_line'):
+            prompt_lines.append('- 数据源缺口：' + gap['matrix_line']
+                                .replace('  · 数据源缺：', '').strip())
+
+        return {
+            'boards': boards,
+            'structural': structural,
+            'transient': transient,
+            'cs31': cs31,
+            'summary': summary,
+            'header': gap['header'],
+            'banner': '\n'.join(banner_lines),
+            'prompt_block': '\n'.join(prompt_lines),
+        }
+
+    @staticmethod
+    def format_six_market_fact_lines(source: Any = None, gaps: Any = None) -> list[str]:
+        """六盘口事实板：每块盘口恰好一行，有值写值，没值写 `无数据（原因：…）`。
+
+        以前缺口只在门禁的拒发原因里出现过一次，正文里既没有这一节、
+        也没有任何一行说「这块没有」。现在它是一节固定内容：
+        六块全在就六行真值，缺几块就有几行点名的 `无数据`，绝不省略。
+        """
+        src: dict[str, Any] = source if isinstance(source, dict) else {}
+        gap_info = gaps if isinstance(gaps, dict) else DeepSeekAnalyzer.data_gap_report()
+        missing = set(gap_info.get('boards') or [])
+        lines = ['🔎【六盘口事实板】']
+        for label, key in DeepSeekAnalyzer.SIX_MARKET_BOARDS:
+            value = src.get(key)
+            if label in missing or value in (None, '', {}, []):
+                if label in DeepSeekAnalyzer.STRUCTURAL_BOARDS:
+                    why = '结构性不可达——博彩公司盘口线，不在竞彩赔率源'
+                else:
+                    why = '本次未解析出——竞彩 oddsData 里有，属解析/抓取问题'
+                lines.append(f'  {label}：' + DeepSeekAnalyzer.unavailable_line(why))
+                continue
+            lines.append(f'  {label}：{DeepSeekAnalyzer._format_board_value(value)}')
+        return lines
+
+    @staticmethod
+    def _format_board_value(value: Any) -> str:
+        """把一块盘口的值渲染成一行文字；只读已有值，绝不补造。"""
+        if isinstance(value, dict):
+            if all(isinstance(v, (int, float)) or v is None for v in value.values()):
+                bits = [
+                    f'{k}={v:g}' if isinstance(v, (int, float)) else f'{k}=—'
+                    for k, v in value.items()
+                ]
+                return ' '.join(bits) if bits else DeepSeekAnalyzer.unavailable_line()
+            return f'{len(value)} 项'
+        if isinstance(value, (list, tuple, set)):
+            return f'{len(value)} 项'
+        if isinstance(value, (int, float)):
+            return f'{value:g}'
+        return str(value)
+
     @staticmethod
     def ensure_judgment_standard_sections(
         text: Any,
@@ -1361,13 +1697,21 @@ class DeepSeekAnalyzer:
         *args: Any,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """发报前硬闸：缺六盘口或缺 DeepSeek 外壳时给出明确的拒发标记。
+        """发报前体检：报告缺什么就标什么，**不再决定发不发**。
 
-        返回 dict（不是直通的 str）：
-          text            规整后的正文（未拒发时调用点直接用它）
-          ok              是否可以发
-          reject          是否必须拒发
-          reject_reason   一句话原因，调用点原样打进日志
+        政策的反转点（用户明确要求）：以前缺六盘口或缺 DeepSeek 外壳会 `reject`，
+        整份报告被换成一条「暂不分析 / 质量门拒发」的告警，用户什么都看不到。
+        现在这两件事都是**披露标签**：正文照发，缺口在顶部横幅、六盘口事实板、
+        31 表缺项行里逐条点名。检测逻辑一点没变（三层并集、结构性 vs 本次未解析），
+        变的只有结论：`reject` 恒为 False。
+
+        返回 dict：
+          text            规整后的正文（调用点直接用它）
+          ok              正文是否包含全部段落
+          reject          恒 False——保留字段只为让旧调用点/日志不炸
+          reject_reason   **不再是拒发原因**，而是缺失数据的一句话描述
+          disclosure      'missing_boards' / 'missing_shell' / ''（本次缺的是什么）
+          banner          顶部降级横幅（不缺数据时为空串）
           missing_boards  缺的六盘口项（中文名）
           missing_sections 缺的报告段
           section_status  各段是否在场
@@ -1379,29 +1723,7 @@ class DeepSeekAnalyzer:
         body = str(text or '')
         pay: dict[str, Any] = payload if isinstance(payload, dict) else {}
 
-        # 六盘口可能分散在三层：研判包顶层、pay['six_market_mobile']、board['six_market_mobile']。
-        # 历史实现是「第一个非空的 dict 赢」，于是包里只要非空就把顶层整块遮住——
-        # 而亚盘/大小球来自公司明细路径（写在记录上、再写回包），
-        # `build_cross_market_board` 又把它们放在顶层，两边不同步时
-        # 「包里 AH=None、顶层 AH=-0.75」会被判缺盘口，一份有效报告被拒。
-        # 现在按层叠加取并集：有值压过无值，一旦某层给了值就不会被后面的层改回缺失。
-        board_src: dict[str, Any] = {}
-        board = pay.get('cross_market_board')
-        _layers: list[Any] = [pay]
-        _layers.append(pay.get('six_market_mobile'))
-        if isinstance(board, dict):
-            _layers.append(board)
-            _layers.append(board.get('six_market_mobile'))
-        for _layer in _layers:
-            if not isinstance(_layer, dict):
-                continue
-            for _k, _v in _layer.items():
-                if _k == 'six_market_mobile':
-                    continue
-                if _v in (None, '', {}, []):
-                    board_src.setdefault(_k, _v)
-                    continue
-                board_src[_k] = _v
+        board_src = DeepSeekAnalyzer.six_market_union(pay)
         missing_boards = DeepSeekAnalyzer.six_market_gaps(board_src)
 
         section_status = {
@@ -1417,29 +1739,37 @@ class DeepSeekAnalyzer:
             # 分开写「结构性不可达」与「本次没解析出来」，因为处置完全不同：
             # 亚盘/大小球是博彩公司盘口线，不在竞彩赔率页上，抓不到就是抓不到；
             # 其余四项在 m.okooo.com/jczq/ 的 oddsData 里，解析失败说明有东西可修。
-            # 这个分类只改原因文案，不改拒发结论——门禁照旧不许放宽。
-            _structural = {'亚盘让球', '大小球'} & set(missing_boards)
+            # 这个分类只决定文案与处置建议，不再决定发不发。
+            _structural = set(DeepSeekAnalyzer.STRUCTURAL_BOARDS) & set(missing_boards)
             _transient = [b for b in missing_boards if b not in _structural]
             _bits = []
             if _structural:
                 _bits.append(
-                    '结构性缺(' + '/'.join(sorted(_structural)) + ')'
+                    '结构性不可达(' + '/'.join(
+                        b for b in missing_boards if b in _structural) + ')'
                     '=博彩公司盘口线，不在竞彩赔率源，需另找可达来源'
                 )
             if _transient:
                 _bits.append(
-                    '本次未取到(' + '/'.join(_transient) + ')'
+                    '本次未解析出(' + '/'.join(_transient) + ')'
                     '=竞彩 oddsData 里有，属解析/抓取问题，可修'
                 )
             reasons.append('缺六盘口(' + '/'.join(missing_boards) + ')｜' + '；'.join(_bits))
         if missing_sections:
             reasons.append('缺DeepSeek外壳(' + '/'.join(missing_sections) + ')')
-        reject = bool(reasons)
+        gap = DeepSeekAnalyzer.data_gap_report(boards_missing=missing_boards)
         return {
             'text': body,
-            'ok': not reject,
-            'reject': reject,
+            'ok': not reasons,
+            # 政策反转过：缺数据不再阻止发送，报告一律照发并由横幅披露。
+            'reject': False,
             'reject_reason': '；'.join(reasons),
+            'disclosure': (
+                ('missing_boards' if missing_boards else '')
+                or ('missing_shell' if missing_sections else '')
+            ),
+            'banner': gap['banner'],
+            'gap': gap,
             'missing_boards': missing_boards,
             'missing_sections': missing_sections,
             'section_status': section_status,
@@ -1519,6 +1849,22 @@ class DeepSeekAnalyzer:
         home = str(facts.get('home') or '')
         away = str(facts.get('away') or '')
         match_name = str(facts.get('match') or f'{home} vs {away}'.strip())
+        # 缺口清单：调用方（app 的 emit 路径）已经算好并放进 payload 的
+        # `missing_data_block`；没有就现算一份，绝不能「没传就当没有缺口」。
+        gap_block = str(facts.get('missing_data_block') or '').strip()
+        if not gap_block:
+            gap_report = facts.get('data_gap_report')
+            if isinstance(gap_report, dict):
+                gap_block = str(gap_report.get('prompt_block') or '').strip()
+        if not gap_block:
+            _boards_missing = DeepSeekAnalyzer.six_market_gaps(
+                DeepSeekAnalyzer.six_market_union(facts)
+            )
+            _pack31 = facts.get('theo_mkt_31_pack')
+            _cs31_missing = (_pack31 or {}).get('missing') if isinstance(_pack31, dict) else None
+            gap_block = str(DeepSeekAnalyzer.data_gap_report(
+                boards_missing=_boards_missing, cs31_missing=_cs31_missing,
+            ).get('prompt_block') or '').strip()
         key_facts = {
             'match': match_name,
             'kickoff': facts.get('kickoff') or '',
@@ -1529,10 +1875,19 @@ class DeepSeekAnalyzer:
             'betfair_data': facts.get('betfair_data') or {},
             'water_gaps': facts.get('water_gaps') or [],
         }
-        messages = assemble_prompt(
-            facts=key_facts,
-            task='给出本场竞彩研判：方向锁依据、①②比分、数据缺口。不得编造外部数据。',
-        )
+        task = '给出本场竞彩研判：方向锁依据、①②比分、数据缺口。不得编造外部数据。'
+        if gap_block:
+            # 模型必须**知道它没有哪些数据**，否则会照常写出一份看起来齐全的研判，
+            # 读者无法分辨哪一段是真实结论、哪一段是它替缺失数据编的。
+            # 这条指令是提示词的一部分（下面 messages 里可断言），不是日志。
+            key_facts['缺失数据（本次真实缺口）'] = gap_block
+            task += (
+                '\n\n本场数据不全，事实数据里的「缺失数据（本次真实缺口）」逐条列明了缺什么。'
+                '对这些项：必须在正文里明确写出「该段无数据（原因：…）」，'
+                '不得估算、不得反推、不得用默认盘口或历史均值填补，'
+                '也不得把它们当成已观测到的事实来支撑结论。'
+            )
+        messages = assemble_prompt(facts=key_facts, task=task)
         try:
             text = deepseek_chat_completion(
                 messages, model=model, max_retries=1, timeout=timeout,
@@ -1612,10 +1967,6 @@ class DeepSeekAnalyzer:
         return f'<b>{escape(str(text or ""))}</b>'
 
     @staticmethod
-    def collapse_repeated_judgment_blocks(text: Any) -> str:
-        return str(text or '')
-
-    @staticmethod
     def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:
         return str(text or '')
 
@@ -1684,6 +2035,95 @@ class DeepSeekAnalyzer:
     @staticmethod
     def sanitize_six_market_tg_text(text: Any) -> str:
         return str(text or '')
+
+    # 章节标题：以 emoji/装饰符开头、紧跟一个【…】块的那一行。
+    # 只认这一类，是因为本仓库全部真实报告段都是这个写法（见 _section_title）。
+    _SECTION_TITLE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r'^\s*(?:[^\w\s【]{1,3}\s*)?【[^】\n]{2,40}】'
+    )
+
+    @staticmethod
+    def _section_title(line: Any) -> str:
+        """这一行是不是章节标题？是就返回归一后的标题，否则空串。
+
+        真实报告里重复出现的**同一行标题**有两种，必须区别对待：
+
+          1. 正文里真的塞了两遍同一段（100k sweep 报的「标题重复」，以及
+             `📌 [周六001] 📌 [周六001] …` 那种标题行复制）—— 这是缺陷，要合并；
+          2. 分页重挂表头 —— `paginate_tg_sections` 按 Telegram 上限切页时，
+             每一页都用所属小节的头行开头，`format_matrices_telegram` 因此会在
+             3 页里各出现一次 `【一、31 项比分矩阵】`。那是**设计**，删掉它读者
+             就不知道自己在看哪张表。
+
+        区别在「标题之间有没有换页符」：第 2 种必然以 `\\x0c` 分页符隔开
+        （`format_matrices_tg_messages` 与 `format_goal_odds_matrix_messages`
+        都用 `\\x0c` 拼页）。所以 `collapse_repeated_judgment_blocks` 只在
+        **同一个分页之内**合并同名标题，跨分页的重复一律保留。
+        """
+        text = str(line or '')
+        match = DeepSeekAnalyzer._SECTION_TITLE_RE.match(text)
+        if not match:
+            return ''
+        return re.sub(r'\s+', ' ', text[match.start():match.end()]).strip()
+
+    @staticmethod
+    def collapse_repeated_judgment_blocks(text: Any) -> str:
+        """同名章节只留第一次（含它的正文），后来重复的那一段整段删掉。
+
+        这个名字下的实现以前是 `return str(text or '')` —— 一道空闸。
+        `send_tg` 门禁写得很正确（`parse_mode != 'HTML'` 才调用、结果再跑
+        `sanitize_bot_output`），但函数体是直通，于是「同名章节只留第一次」
+        全仓库一次都没发生过：模型把同一段写两遍、或标题行被拼两次，
+        都会原样发到 Telegram（100k sweep 的「标题重复」即此）。
+
+        规则（保守，宁可少合并也不误删内容）：
+          * 只把 `_section_title` 认得的标题行当作章节边界；
+          * 一个章节 = 它的标题行到下一个标题行之前；
+          * 同一分页内、标题字面相同的第二段起，整段丢弃；
+          * **跨 `\\x0c` 分页的重复保留**——分页重挂表头是设计，不是重复；
+          * 不以标题开头的行（表头、脚注、续行）永远保留，不参与合并；
+          * 纯散文（全篇没有章节标题）原样返回，不做猜测性合并。
+        """
+        raw = str(text or '')
+        if not raw.strip():
+            return raw
+        # 按分页符切片，逐页合并；分页符原样保留（send_tg 靠它分段）。
+        return '\x0c'.join(
+            DeepSeekAnalyzer._collapse_within_page(page)
+            for page in raw.split('\x0c')
+        )
+
+    @staticmethod
+    def _collapse_within_page(page: Any) -> str:
+        """单页内的同名章节合并。空白与换行结构原样保留。"""
+        text = str(page or '')
+        if not text.strip():
+            return text
+        chunks: list[tuple[str, list[str]]] = []
+        current_title = ''
+        current_lines: list[str] = []
+        for line in text.split('\n'):
+            title = DeepSeekAnalyzer._section_title(line)
+            if title:
+                if current_lines:
+                    chunks.append((current_title, current_lines))
+                current_title = title
+                current_lines = [line]
+            else:
+                current_lines.append(line)
+        if current_lines:
+            chunks.append((current_title, current_lines))
+
+        seen: set[str] = set()
+        kept: list[str] = []
+        for title, block in chunks:
+            if title:
+                if title in seen:
+                    # 同名章节的第二段起：标题与它的正文一起丢弃。
+                    continue
+                seen.add(title)
+            kept.extend(block)
+        return '\n'.join(kept)
 
     @staticmethod
     def snap_score_pair(first: Any, second: Any = None,
