@@ -95,5 +95,55 @@
     "captured": "2026-11-26",
     "note": "23 jsMatchItem rows, `var oddsData` at byte 174385. Three matches verified end-to-end: 1328189 (orderid 5006), 1328592 (5007), 1328914 (5003) each parse to 31/31 including the nine 市均-uncoverable options. This is the page that stays reachable while /match/cs.php, /match/odds.php and /match/history.php answer 405 from the Aliyun WAF.",
     "used_by": "test_jczq_list_* (23 cards, 23 MatchIDs, 31 JC score odds each, full DOM selectors) and test_jczq_list_fixture_* (oddsData -> parse_jczq_score_odds -> 31/31) plus the 31-pool self-heal tests"
+  },
+  "live500_board_20261127.html": {
+    "url": "https://live.500.com/",
+    "status": 200,
+    "bytes": 129069,
+    "sha256": "07fae9620175939468a82f338a89163f3c03b5bc408a23d938c743fd222c8a26",
+    "encoding": "gb2312 (declared in <meta http-equiv=\"Content-Type\">; decode through okooo_mobile_cs.decode_okooo_html, which maps it to gb18030)",
+    "captured": "2026-11-27",
+    "note": "竞彩比分盘, 39 match rows `<tr id=\"a<fid>\" order=\"<jczq order>\" …>`. order ids 5001..5011, 6001..6023, 7002..7022. The `order` attribute is the same key Okooo uses in `oddsData`, and the same `<tr>` carries `fid` — so one board fetch yields the whole day's join map.",
+    "used_by": "test_live500_board_* (39 rows, 39 unique orders, 5002 -> fid 1430592), test_live500_join_key_*"
+  },
+  "live500_zqdc_20261127.html": {
+    "url": "https://live.500.com/zqdc.php",
+    "status": 200,
+    "bytes": 700459,
+    "sha256": "d241f930652b00fe1c25bc1b443c7d4090488e85b652efdd7a02185775dbe29f",
+    "encoding": "gb2312 (declared)",
+    "captured": "2026-11-27",
+    "note": "单场/北单比分盘, 308 match rows. Its rows carry `fid` but **no `order` attribute** and only a bare sequence number in the first cell, so this page cannot join to `oddsData`. It does carry three 参考SP values per row in the `bf_op` cell, which `live.500.com/` leaves empty.",
+    "used_by": "test_live500_zqdc_* (308 rows, 0 joinable orders, sp bonus parsed)"
+  },
+  "live500_detail_1450871_20261127.html": {
+    "url": "https://live.500.com/detail.php?fid=1450871&r=1",
+    "status": 200,
+    "bytes": 17447,
+    "sha256": "0d484536de4039a0500c424f4644e12009c260c1e9dc36a67684708f6b06779c",
+    "encoding": "gb2312 (declared)",
+    "captured": "2026-11-27",
+    "note": "Played match (2-0). 11/11 starters + 7 subs per side, 12 球队技术统计 rows (射门/射正/犯规/角球/越位/红牌/黄牌/进攻/威胁进攻/任意球/救球/控球). Both sides' lineups use the same `div.title` wording and appear in home-then-away order.",
+    "used_by": "test_live500_detail_* (score, both lineups 11/11, 12 stat rows, 控球 49/51)"
+  },
+  "live500_detail_1503754_20261127.html": {
+    "url": "https://live.500.com/detail.php?fid=1503754&r=1",
+    "status": 200,
+    "bytes": 17917,
+    "sha256": "3382e9d1f63d4d85eb310307127a8b7972e6a7f1fef6a01793907bde44665d59",
+    "encoding": "gb2312 (declared)",
+    "captured": "2026-11-27",
+    "note": "Not-started match (0 - 0), 解放者杯决赛. The empty center column (`tr2`/`time` cells) is the pre-match state, not a parse failure. Title decodes to `帕尔梅拉斯VS拉普拉塔大学生足球比赛直播…` only through decode_okooo_html.",
+    "used_by": "test_live500_detail_not_started_*"
+  },
+  "live500_detail_1430592_20261127.html": {
+    "url": "https://live.500.com/detail.php?fid=1430592&r=1",
+    "status": 200,
+    "bytes": 17362,
+    "sha256": "8c5f2d6f51adfa26ede0237c7ed50005f55ee7d521f3279cad50ed308e56082a",
+    "encoding": "gb2312 (declared)",
+    "captured": "2026-11-27",
+    "note": "fid for order 5002 = the user's match 1338958 (海登海姆 vs 纽伦堡). This is the merge example: 500 gives fid/order/score slot, Okooo gives match_id 1338958 and the odds tabs.",
+    "used_by": "test_match_matrix_merged_row_* (one row joining both sources on order 5002)"
   }
 }

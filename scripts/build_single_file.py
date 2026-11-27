@@ -28,6 +28,9 @@ MODULES = [
     'tg_goal_table',
     'score_matrices',
     'market_guardrails',
+    'okooo_analysis_tabs',
+    'live500_board',
+    'match_data_matrix',
 
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'

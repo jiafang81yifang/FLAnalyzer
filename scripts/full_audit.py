@@ -39,6 +39,9 @@ MODULES = [
     'tg_goal_table',
     'score_matrices',
     'market_guardrails',
+    'okooo_analysis_tabs',
+    'live500_board',
+    'match_data_matrix',
 
 ]
 
@@ -331,6 +334,13 @@ def audit_modules(audit: Audit, root: Path) -> None:
     expectations = {
         'blade_ml_engine': ['ml_predict_enabled', 'predict_match_ml', 'train_from_history', 'calc_bivariate_poisson_matrix'],
         'okooo_mobile_cs': ['jingcai_board_row_finished', 'mobile_vs_full_time_score', 'build_score_market_heat_ranking'],
+        'okooo_analysis_tabs': ['scrape_okooo_analysis_tabs', 'parse_ah_tab', 'parse_ou_tab',
+                                'parse_eu_tab', 'parse_pnl_tab', 'tab_url', 'parse_zuizhi_block'],
+        'live500_board': ['parse_board', 'parse_detail', 'scrape_500_board', 'scrape_500_detail',
+                          'normalize_order', 'decode_500_html'],
+        'match_data_matrix': ['build_match_matrix', 'build_matrix', 'dedupe_rows',
+                              'format_matrix_tg_lines', 'FIELD_PRECEDENCE', 'REASON_CODES',
+                              'REASON_TEXT', 'reason_text', 'format_gap_banner'],
         'odds_index_math': ['calc_return_rate', 'calc_instant_probs', 'calc_kelly_index'],
         'odds_fallback': ['build_heat_from_odds_map', 'ensure_dual_source_before_judgment'],
         'sporttery_jc': ['get', 'build_merged_market_heat_jc_table'],
