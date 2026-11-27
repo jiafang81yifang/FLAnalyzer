@@ -29,8 +29,9 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 4e32405 = 热度席位改按排名位次(前8名8..1席) + 三套矩阵接进TG报告
-$PinCommit = 'b736b326428929ea7d19dd92c5832af875d7b9c8'
+# 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
+# 7e0d128 = 四道护栏 + 五阶段清算(已定义的两个阶段)作为纯函数落到 market_guardrails.py
+$PinCommit = '947aca04f363622717c7d03f6e67d5dd65208835'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
