@@ -31,7 +31,7 @@ try {
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
 # 29c1450 = 幽灵节点注入真接线(不压缩31池,.injected自填,evicted完整,候选限竞彩31项) + 粘度锚点source=unavailable
-$PinCommit = '5d30e7a831426df66cabf165b1863a58b3a8c151'
+$PinCommit = '7ca6ad3345c7f44916c8b5241942df4faf10e758'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
