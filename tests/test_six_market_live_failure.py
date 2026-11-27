@@ -855,6 +855,31 @@ def test_review_success_is_marked_model_produced(monkeypatch) -> None:
     assert '真实正文' in report
 
 
+def test_review_does_not_write_into_the_repository(monkeypatch, tmp_path) -> None:
+    """A review must leave the checkout untouched.
+
+    `analyze_and_generate` writes `improvements_<date>.py` on every call. Before the
+    shared `tests/conftest.py` fixture, each gate run left an untracked
+    `code_improvements/` in the repository root, so the side effect dirtied every diff
+    we looked at — and patching only this file's three call sites was not enough,
+    because `scan_report_surfaces` reaches the same write through `post_match_review`.
+    This asserts both halves: nothing appears in the repository, and the write still
+    happens (redirected) rather than being dropped.
+    """
+    monkeypatch.setattr(
+        app, '_ds_flash_takeover',
+        lambda *a, **k: '模型表现自动分析报告\n台账01 真实正文',
+    )
+    repo_dir = ROOT / 'code_improvements'
+    before = repo_dir.exists()
+    app.ModelPerformanceAnalyzer.analyze_and_generate(_review_completed())
+    assert repo_dir.exists() == before, 'the review wrote code_improvements/ into the repo'
+    # And the write really happened, just redirected: one dated file under tmp_path.
+    redirected = tmp_path / 'code_improvements'
+    assert redirected.is_dir(), 'the write was dropped entirely instead of redirected'
+    assert list(redirected.glob('improvements_*.py')), 'the review wrote no improvement file'
+
+
 def test_review_log_line_only_says_generated_when_model_spoke(monkeypatch) -> None:
     """`✅ [模型复盘] …已生成并推送` 只许在 model_produced 时出现。"""
     src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')

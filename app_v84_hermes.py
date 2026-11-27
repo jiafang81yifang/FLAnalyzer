@@ -30966,7 +30966,12 @@ def seed_direction_lock_from_cs(rec):
     if not (isinstance(heat, dict) and heat.get('ranking') and jc):
         return {}
     try:
-        table = build_merged_market_heat_jc_table(
+        # 必须就地 import：`sporttery_jc` 原先只在模块顶部的一个 try 块里绑定，
+        # 块内嵌套的 import 不构成函数作用域外的名字。删除那块兜底后，本函数成了
+        # 唯一没有 import 就近的调用点——`except Exception: return {}` 会把
+        # NameError 一起吞掉，于是市短方向锁永远静默为空（ruff F821 是唯一的信号）。
+        from sporttery_jc import build_merged_market_heat_jc_table as _build_merged_heat
+        table = _build_merged_heat(
             heat,
             _fixed_bonus_from_okooo_jc_official(jc),
         )
