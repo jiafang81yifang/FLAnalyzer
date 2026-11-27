@@ -113,6 +113,84 @@ CASES: tuple[tuple[str, str, str, str, str], ...] = (
         'tests/test_match_data_matrix.py::test_gap_reasons_are_enumerated',
     ),
     (
+        'matrix-not-started-is-not-a-gap',
+        'match_data_matrix.py',
+        "        if not chosen.filled and chosen.reason not in NON_GAP_REASONS:",
+        "        if not chosen.filled:",
+        'tests/test_matrix_reason_codes.py::test_pre_match_scores_are_not_a_gap',
+    ),
+    (
+        'matrix-not-started-status-line',
+        'match_data_matrix.py',
+        "    status_lines = [\n        _premarket_status_line(status_fields[code], code, max_items)\n        for code in sorted(status_fields)\n    ]",
+        "    status_lines = []  # 回退：赛前状态整条不印",
+        'tests/test_matrix_reason_codes.py::test_pre_match_banner_has_a_status_line_and_no_gap_line_for_it',
+    ),
+    (
+        'matrix-not-started-status-not-unconditional',
+        'match_data_matrix.py',
+        "            if code in NON_GAP_REASONS:\n                status_fields.setdefault(code, []).append(str(field))",
+        "            if True:\n                status_fields.setdefault('not_started', []).append(str(field))",
+        'tests/test_matrix_reason_codes.py::test_post_match_banner_has_no_status_line',
+    ),
+    (
+        'matrix-tab-not-fetched-keeps-its-source',
+        'match_data_matrix.py',
+        "        return _Cell(None, source=SRC_OKOOO, reason=TAB_NOT_FETCHED_REASON,\n                     stage=TAB_NOT_FETCHED_REASON)",
+        "        return _Cell(None, reason='source_blocked', stage='tab_not_fetched')",
+        'tests/test_matrix_reason_codes.py::test_unfetched_tab_keeps_its_source_so_pick_finds_it',
+    ),
+    (
+        'matrix-tab-not-fetched-is-not-a-block',
+        'match_data_matrix.py',
+        "        return _Cell(None, source=SRC_OKOOO, reason=TAB_NOT_FETCHED_REASON,\n                     stage=TAB_NOT_FETCHED_REASON)",
+        "        return _Cell(None, source=SRC_OKOOO, reason='source_blocked', stage='tab_not_fetched')",
+        'tests/test_matrix_reason_codes.py::test_unfetched_tab_is_not_labelled_as_an_ip_block',
+    ),
+    (
+        'matrix-absent-match-not-called-unfetched',
+        'match_data_matrix.py',
+        "        if not src_okooo_present and not isinstance(tab_entry, dict):\n            return None",
+        "        if False:\n            return None",
+        'tests/test_match_data_matrix.py::test_matrix_keeps_match_absent_from_one_source',
+    ),
+    (
+        'matrix-stage-reason-mapping',
+        'match_data_matrix.py',
+        "    token = str(stage or '').strip()\n"
+        "    for known in sorted(STAGE_REASON_CODES, key=len, reverse=True):\n"
+        "        if token == known or token.endswith(known):\n"
+        "            return STAGE_REASON_CODES[known]\n"
+        "    return 'not_in_source'",
+        "    return 'panel_js_rendered' if 'js_rendered' in str(stage or '') else 'not_in_source'",
+        'tests/test_matrix_reason_codes.py::test_every_parse_stage_maps_to_its_own_reason_code',
+    ),
+    (
+        'matrix-405-page-not-said-to-have-no-data',
+        'match_data_matrix.py',
+        "    token = str(stage or '').strip()\n"
+        "    for known in sorted(STAGE_REASON_CODES, key=len, reverse=True):\n"
+        "        if token == known or token.endswith(known):\n"
+        "            return STAGE_REASON_CODES[known]\n"
+        "    return 'not_in_source'",
+        "    return 'panel_js_rendered' if 'js_rendered' in str(stage or '') else 'not_in_source'",
+        'tests/test_matrix_reason_codes.py::test_http_405_page_is_reported_as_blocked_not_as_no_data',
+    ),
+    (
+        'matrix-empty-cell-also-reads-the-stage',
+        'match_data_matrix.py',
+        "        reason = reason_for_stage(stage)\n        return _Cell(None, source=SRC_OKOOO, reason=reason, **{**ev, 'stage': stage})",
+        "        reason = 'panel_js_rendered' if 'js_rendered' in stage else 'not_in_source'\n        return _Cell(None, source=SRC_OKOOO, reason=reason, **{**ev, 'stage': stage})",
+        'tests/test_matrix_reason_codes.py::test_panel_level_stages_go_through_the_same_mapping',
+    ),
+    (
+        'matrix-panel-stage-uses-the-shared-mapping',
+        'match_data_matrix.py',
+        "        if field_path and field_path[0] == 'handicap':\n            stage = str(tab_entry.get('handicap_stage') or stage)",
+        "        if False:\n            stage = stage",
+        'tests/test_matrix_reason_codes.py::test_panel_level_stages_go_through_the_same_mapping',
+    ),
+    (
         'dedupe-merges-per-cell',
         'match_data_matrix.py',
         "            if isinstance(cell, dict) and cell.get('reason') == 'ok':\n                merged_fields[field] = cell",
@@ -199,8 +277,8 @@ CASES: tuple[tuple[str, str, str, str, str], ...] = (
     (
         'reason-text-covers-codes',
         'match_data_matrix.py',
-        "    'not_started': '比赛未开赛，比分/半场尚未产生',",
-        "    'not_started_renamed': '比赛未开赛，比分/半场尚未产生',",
+        "    'not_started': '比赛未开赛，比分/半场/技术统计/首发按赛程尚未产生（非抓取缺失）',",
+        "    'not_started_renamed': '比赛未开赛，比分/半场/技术统计/首发按赛程尚未产生（非抓取缺失）',",
         'tests/test_match_data_matrix_wiring.py::test_reason_text_covers_every_reason_code',
     ),
     (

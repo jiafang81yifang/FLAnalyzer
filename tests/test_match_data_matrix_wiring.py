@@ -547,6 +547,8 @@ def test_gap_banner_header_is_a_shared_constant() -> None:
     assert isinstance(mdm.GAP_BANNER_HEADER, str) and mdm.GAP_BANNER_HEADER.strip()
     banner = mdm.format_gap_banner({'rows': [{'gaps': [{'field': 'x', 'reason': 'not_started'}]}]})
     assert banner[0] == mdm.GAP_BANNER_HEADER
+    # `not_started` 是赛前状态行，不是缺口行：横幅表头仍然共用，但那一行不带 `  · `
+    assert banner[1].startswith(mdm.PREMARKET_STATUS_PREFIX), banner
     # 源码里不再有第二份相同的表头字面量
     source = inspect.getsource(mdm)
     assert source.count(mdm.GAP_BANNER_HEADER) == 1, '表头被写成了多份字面量'
