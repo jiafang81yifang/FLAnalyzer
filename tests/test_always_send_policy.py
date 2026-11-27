@@ -364,7 +364,65 @@ def test_no_code_path_emits_a_standalone_refusal() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 7. 缺的盘口绝不出现在正文里被「补」出来
+# 7. 两源矩阵只装配一次（横幅第三组与正文矩阵段必须是同一份）
+# --------------------------------------------------------------------------- #
+def test_matrix_is_built_once_and_shared_by_banner_and_section(
+    telegram: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """同一场比赛只许装配一次矩阵。
+
+    横幅第三组与正文的 `🧩【两源合并数据矩阵】` 若各建一次，两遍之间只要有一处
+    输入不同，横幅说缺的和正文印的就是两回事。这里数真实调用次数，并断言
+    正文里出现的那份矩阵就是横幅读到的那一份。
+    """
+    calls: list[dict[str, Any]] = []
+    real_build = app.build_match_matrix_once
+
+    def _counting(*a, **k):
+        out = real_build(*a, **k)
+        calls.append({'matrix': out[0], 'err': out[1]})
+        return out
+
+    monkeypatch.setattr(app, 'build_match_matrix_once', _counting)
+    rec = _record(_missing_six())
+    _saved, _lines = _run_emit(monkeypatch, tmp_path, rec)
+    assert len(calls) == 1, f'矩阵被装配了 {len(calls)} 次，应为 1 次'
+    body = _bodies(telegram)
+    assert '🧩【两源合并数据矩阵】' in body, '正文的矩阵段不见了'
+    built = calls[0]['matrix']
+    if built is not None:
+        assert calls[0]['matrix'] is built
+
+
+def test_matrix_build_failure_yields_no_third_group_and_no_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """矩阵装配失败：第三组自然缺席，但正文照发，绝不因为矩阵拖垮报告。"""
+    monkeypatch.setattr(app, 'build_match_matrix_once',
+                        lambda *a, **k: (None, 'RuntimeError: matrix exploded'))
+    sent: list[str] = []
+    monkeypatch.setattr(app, '_tg_post',
+                        lambda url, payload: sent.append(str(payload.get('text') or '')) or True)
+    monkeypatch.setattr(app, 'SNIPER_BOT_TOKEN', '123456789:' + 'A' * 30)
+    monkeypatch.setattr(app, 'AUTO_CHAT_ID', '-1001234567890')
+    monkeypatch.setattr(app, 'TG_PROXIES', None)
+    monkeypatch.setattr(app, 'JUDGMENT_TG_REPORT_OUTPUT', True)
+    monkeypatch.setattr(app, '_TG_CHAT_CAPTURE_STATE',
+                        {'captured': '-1001234567890', 'printed': ''})
+    app.reset_tg_delivery_state()
+    try:
+        rec = _record(_missing_six())
+        _run_emit(monkeypatch, tmp_path, rec)
+        body = '\n'.join(sent)
+        assert body, '矩阵失败不能连累正文'
+        assert '· 六盘口缺：' in body
+        assert 'matrix exploded' in body  # 矩阵段的降级行写明原因
+    finally:
+        app.reset_tg_delivery_state()
+
+
+# --------------------------------------------------------------------------- #
+# 8. 缺的盘口绝不出现在正文里被「补」出来
 # --------------------------------------------------------------------------- #
 def test_no_fabricated_value_appears_for_a_missing_board(
     telegram: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,

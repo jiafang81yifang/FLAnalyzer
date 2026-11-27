@@ -566,8 +566,14 @@ def test_emit_still_sends_when_the_gate_passes(
     saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
     joined = '\n'.join(lines)
     assert '[TG质量门] 拒发' not in joined, joined
-    assert '本场缺口' not in '\n'.join(reports)
     assert reports, 'a passing gate must still push the report'
     assert any(pipe_mod.DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in r for r in reports), reports
     assert not saved.get('tg_quality_gate_reject')
     assert not saved.get('tg_quality_gate_disclosure')
+    # 本模块拥有的两组必须整组不出现。#20 的「数据源缺」组不在此断言范围内：
+    # 未开赛场次的比分位本来就是 `not_started`，那边把它当作要印出来的缺口
+    # 是 #20 自己的决定（其测试明确断言），与「本场缺六盘口/31 表」无关。
+    banner_start = '\n'.join(reports).find('⚠️【本场缺口')
+    banner = '\n'.join(reports)[banner_start:].split('\n\n')[0] if banner_start >= 0 else ''
+    assert '· 六盘口缺：' not in banner, banner
+    assert '· 31 表缺：' not in banner, banner

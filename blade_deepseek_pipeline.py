@@ -1486,7 +1486,7 @@ class DeepSeekAnalyzer:
                 detail.append('结构性不可达：' + '/'.join(structural)
                               + '（博彩公司盘口线，不在竞彩赔率源）')
             if transient:
-                detail.append('本次未解析：' + '/'.join(transient)
+                detail.append('本次未解析出：' + '/'.join(transient)
                               + '（竞彩 oddsData 里有，属解析/抓取问题）')
             board_line = '  · 六盘口缺：' + bits[0]
             if detail:
