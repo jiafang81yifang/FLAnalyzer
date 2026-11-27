@@ -29,8 +29,9 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
-$PinCommit = '7e87590d7ee8134149e9b9f2f5ef2e18834c0b03'
+# 6504d0e = 31池统一基准(7e87590) + λ guard 修复(2834fe6) + 安装路径测试(c9e5234) 的合并点
+# 与 #5 同源：本分支已把 cursor/fix-lambda-guard 的 bd8e556 合入，安装器新增的取件重试也在这里
+$PinCommit = '6504d0e90ee72a37d102fcbe72a1d919dbbe25c3'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
