@@ -56,6 +56,7 @@ import sys
 import tempfile
 import time
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -392,6 +393,22 @@ def _build_case(seed: int) -> dict[str, Any]:
     home = f'主队{rng.randint(1, 40)}'
     away = f'客队{rng.randint(1, 40)}'
     lock = _build_lock(rng, list(merged_scores))
+    # A fixed window, and a fixed clock to read it against.
+    #
+    # Hard-coding a date is only a defect when the app judges that date against
+    # the real wall clock: stage 2 refuses to re-send once kickoff has passed
+    # (`is_history_match_not_started` -> `datetime.now()`), so a literal
+    # `2026-11-27..30` window silently became "already kicked off" the moment
+    # the run crossed 18:00 UTC. Two 100k runs were green only because they
+    # finished before then; the next one reported 2,853 failures that were the
+    # gate working correctly.
+    #
+    # Shifting the window to "today + 2 days" would only move that cliff, and
+    # would make every seed's record depend on the day it ran. Instead the
+    # kickoff stays a pure function of the seed, and `_frozen_clock` pins what
+    # the app reads as "now" to `SWEEP_FROZEN_NOW`, which is before every
+    # kickoff this generator can produce. Same seed, same record, same verdict
+    # at 09:00 and at 23:59.
     kickoff = f'2026-11-{rng.randint(27, 30):02d} {rng.randint(18, 23):02d}:{rng.choice((0, 15, 30, 45)):02d}'
     rec: dict[str, Any] = {
         'id': match_id,
@@ -664,6 +681,61 @@ class _NetworkBlocked(RuntimeError):
     """Raised by every stubbed transport: the sweep never touches a socket."""
 
 
+# Every kickoff `_build_case` can generate is on or after this instant, so a
+# reader pinned here sees all generated cases as unstarted. It is deliberately
+# *before* the earliest generated kickoff (2026-11-27 18:00) rather than "now",
+# which is what makes the run reproducible: the same seed produces the same
+# verdict at 09:00 and at 23:59.
+SWEEP_FROZEN_NOW = datetime(2026, 11, 27, 12, 0, 0)
+# A kickoff that is unambiguously in the past at the frozen instant. Used only
+# by the gate control: freezing the clock must not stop the gate from firing.
+SWEEP_STARTED_KICKOFF = '2026-11-27 09:00'
+# The verdict text stage 2 prints when it declines to re-send a started match.
+# The harness treats it as a designed exit, not a swallowed exception, and only
+# ever generates such a case through the gate control.
+_STARTED_SKIP_MARKER = '已开赛/完场，按规则跳过补发'
+
+
+@contextlib.contextmanager
+def _frozen_clock(now: datetime | None = None):
+    """Pin what the app reads as "now", so runs do not depend on the hour.
+
+    Stage 2 has a real gate: a match whose kickoff has passed is not re-sent
+    (`is_history_match_not_started` compares the kickoff to `datetime.now()`).
+    That gate is correct and must stay live — but a harness that feeds it the
+    real clock makes its own headline number a function of when it ran. Two
+    100k runs looked green only because they finished before 18:00 UTC; the
+    next one failed 2,853 cases at a gate that was working as designed.
+
+    Patching `app_v84_hermes.datetime` rather than each call site covers every
+    `datetime.now()` in that module, including the ones inside
+    `get_inferred_match_status` that the gate consults after the kickoff check.
+    `datetime` stays a real class (subclassed, not replaced by a stub), so
+    anything doing `isinstance(..., datetime)` or `.strptime` still works.
+    """
+    frozen_now = now or SWEEP_FROZEN_NOW
+    app = APP
+    real_datetime = app.datetime
+
+    class _FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return frozen_now.replace(tzinfo=tz) if frozen_now.tzinfo is None else frozen_now
+            return frozen_now
+
+        @classmethod
+        def utcnow(cls):
+            return frozen_now
+
+        @classmethod
+        def today(cls):
+            return frozen_now
+
+    with mock.patch.object(app, 'datetime', _FrozenDateTime):
+        yield frozen_now
+
+
 def _netblock() -> Any:
     """Context manager that kills every outbound path and every sleep.
 
@@ -777,7 +849,10 @@ def _run_once(case: dict[str, Any], hist_path: str,
     buf = io.StringIO()
     # Only the transport is stubbed: `analyze_match_judgment` runs for real, so
     # its available/error contract and placeholder behaviour stay live.
+    # `_frozen_clock` pins the app's notion of "now" so the started-match gate
+    # judges every case at the same instant, whichever hour the sweep runs at.
     with _netblock(), \
+         _frozen_clock(), \
          mock.patch.object(app, 'HISTORY_FILE', hist_path), \
          mock.patch.object(app, 'send_tg',
                            side_effect=_capture), \
@@ -825,6 +900,9 @@ def _run_once(case: dict[str, Any], hist_path: str,
 _DESIGNED_REFUSALS = (
     '31全表未齐', '跳过系统分析', '质量门', '拒发', '阶段2缺省',
     '无法重建研判包', '暂不分析',
+    # Stage 2's started-match gate. It is a designed exit, not a swallowed
+    # exception: the pipeline decided this record must not be re-sent.
+    _STARTED_SKIP_MARKER,
 )
 
 
@@ -862,6 +940,25 @@ def _sections_of(text: str) -> dict[str, str]:
 
 def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tuple[str, str]]:
     defects: list[tuple[str, str]] = []
+
+    # A started/finished match is a *designed* exit: stage 2 will not re-send a
+    # stale pre-match report after kickoff, and that is correct. It must be
+    # recognised as such — the always-send policy is about incomplete data (a
+    # thin 31 table, missing boards), not about replaying a report for a match
+    # that has already begun. The harness only ever produces such a case
+    # through its own gate control, so any *other* case reaching here means the
+    # gate fired when it should not have.
+    started_skip = _STARTED_SKIP_MARKER in stdout
+    if started_skip and not case.get('started_control'):
+        defects.append(('E1', 'unexpected_started_skip'))
+    if case.get('started_control'):
+        # The control asserts the opposite: the gate must fire, and nothing
+        # may be delivered. That is what keeps the frozen clock honest.
+        if not started_skip:
+            defects.append(('E1', 'gate_control_did_not_fire'))
+        if [t for t in sent if isinstance(t, str) and t.strip()]:
+            defects.append(('E1', 'gate_control_still_delivered'))
+        return defects
 
     # E1 holds for every case: never crash, never swallow an exception, and when
     # the record has a full legal market, something must actually go out.
@@ -1356,7 +1453,7 @@ def _expected_coverage_classes() -> tuple[str, ...]:
         render = ('render_fallback_raise',)
     elif _FORCE_RENDER_EMPTY:
         render = ('render_fallback_empty',)
-    return _BASE_COVERAGE_CLASSES + _PACK_ABSENT_CLASSES + render
+    return _BASE_COVERAGE_CLASSES + _PACK_ABSENT_CLASSES + render + ('started_gate_control',)
 
 
 def _zero_coverage() -> Counter:
@@ -1373,6 +1470,25 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
     coverage: Counter = _zero_coverage()
     produced = 0
     tmpdir = tempfile.mkdtemp(prefix='sweep100k-')
+    # Gate control, once per shard and outside the case budget: a match that
+    # kicked off before the frozen "now" must be refused, and nothing may be
+    # delivered. Without this, pinning the clock would quietly disable a real
+    # production gate and every other invariant would still look green.
+    _gate = _build_case(seed_base)
+    _gate['started_control'] = True
+    _gate['rec']['match_time'] = SWEEP_STARTED_KICKOFF
+    _gate['rec']['time'] = SWEEP_STARTED_KICKOFF
+    _gate['rec']['kickoff_time'] = SWEEP_STARTED_KICKOFF
+    try:
+        _gate_sent, _gate_out = _run_once(_gate, os.path.join(tmpdir, 'gate.json'))
+        for invariant, detail in _check_report(_gate, _gate_sent, _gate_out):
+            failures.append({'invariant': invariant,
+                             'detail': f'gate_control:{detail}', 'case': _gate})
+        coverage['started_gate_control'] += 1
+    except BaseException as exc:  # noqa: BLE001 - the control must never kill a shard
+        failures.append({'invariant': 'E1',
+                         'detail': f'gate_control_crash:{type(exc).__name__}',
+                         'case': _gate})
     for index, seed in enumerate(cases):
         case = _build_case(seed_base + seed)
         # Which coverage class a case takes is decided by `seed`, the *global*

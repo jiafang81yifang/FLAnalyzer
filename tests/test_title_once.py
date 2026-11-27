@@ -391,3 +391,93 @@ def test_e14_fires_on_the_empty_render_fallback() -> None:
                 for pm, b in modes]
     defects = S._check_render_fallback_html(case, stripped)
     assert any('31' in d for _inv, d in defects), defects
+
+
+def test_generated_cases_are_unstarted_at_the_frozen_clock() -> None:
+    """Every generated case must be unstarted at the instant the harness pins.
+
+    Stage 2 refuses to re-send a match whose kickoff has passed. That judgement
+    must be made against `SWEEP_FROZEN_NOW`, not the real clock — the assertion
+    is deliberately *not* "unstarted right now", because "right now" is exactly
+    what made the headline number depend on the hour. The separate gate control
+    proves the same predicate still returns False for a genuinely started match.
+    """
+    S = _harness()
+    started = []
+    for seed in (20261127, 20265890, 20269999, 20265000, 20261234):
+        rec = dict(S._build_case(seed)['rec'])
+        if not S.APP.is_history_match_not_started(rec, now=S.SWEEP_FROZEN_NOW):
+            started.append((seed, rec.get('match_time')))
+    assert not started, (
+        f'generated cases have kicked off before SWEEP_FROZEN_NOW={S.SWEEP_FROZEN_NOW}: '
+        f'{started}')
+
+
+# ---------------------------------------------------------------------------
+# The harness must not depend on what time it runs.
+#
+# Stage 2 refuses to re-send a match whose kickoff has passed, judged against
+# `datetime.now()`. `_build_case` generates kickoffs in a fixed
+# 2026-11-27..30 window, so passing real time through made the headline number
+# a property of the hour: two 100k runs were green at 17:00 UTC and the same
+# cases failed 2,853 times at 18:00. `_frozen_clock` pins what the app reads.
+# ---------------------------------------------------------------------------
+def test_same_seed_delivers_identical_text_at_two_wall_clocks() -> None:
+    """Build one seed twice on machines whose real clock reads 09:00 and 23:59.
+
+    The axis the old harness leaked on was the *process's* clock. `_frozen_clock`
+    must win over it: the app still sees one fixed instant, so the same seed
+    produces the same delivery no matter when the sweep is started.
+
+    Note this patches the real clock the app module would read, then lets the
+    harness's own `_frozen_clock` override it — that ordering is the property
+    under test. Patching the *frozen* instant instead would just be a different
+    test (and at 23:59 the generated matches really have started).
+    """
+    from datetime import datetime as _dt
+    import tempfile
+
+    S = _harness()
+    real_datetime = S.APP.datetime
+    outputs = []
+    for wall in (_dt(2026, 11, 27, 9, 0), _dt(2026, 11, 27, 23, 59)):
+        class _RealClockAt(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return wall
+
+        with mock.patch.object(S.APP, 'datetime', _RealClockAt):
+            case = S._build_case(20261127)
+            hist = str(Path(tempfile.mkdtemp()) / 'h.json')
+            sent, _out = S._run_once(case, hist)
+            outputs.append([t for t in sent if t])
+    assert outputs[0] == outputs[1], (
+        'delivery depends on what time the process started: '
+        f'{len(outputs[0])} vs {len(outputs[1])} messages')
+    assert outputs[0], 'nothing was delivered at all'
+
+
+def test_frozen_clock_keeps_the_started_gate_live() -> None:
+    """Freezing "now" must not disable the started-match gate.
+
+    The gate control asserts that a kickoff before the frozen instant is
+    refused and nothing is delivered. Forcing the gate open must make it fail.
+    """
+    S = _harness()
+    import tempfile
+    case = S._build_case(20261127)
+    case['started_control'] = True
+    for key in ('match_time', 'time', 'kickoff_time'):
+        case['rec'][key] = S.SWEEP_STARTED_KICKOFF
+    hist = str(Path(tempfile.mkdtemp()) / 'h.json')
+    sent, out = S._run_once(case, hist)
+    assert not [t for t in sent if t], 'the started match was delivered anyway'
+    assert S._STARTED_SKIP_MARKER in out, 'the gate did not report its refusal'
+    assert S._check_report(case, sent, out) == [], S._check_report(case, sent, out)
+
+    # And the control has teeth: with the gate forced open it must complain.
+    with mock.patch.object(S.APP, 'is_history_match_not_started',
+                           lambda *a, **k: True):
+        sent2, out2 = S._run_once(case, hist)
+    details = [d for _i, d in S._check_report(case, sent2, out2)]
+    assert 'gate_control_did_not_fire' in details, details
