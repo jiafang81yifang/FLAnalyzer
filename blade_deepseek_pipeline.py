@@ -1261,8 +1261,53 @@ class DeepSeekAnalyzer:
                 'reason': 'no_lock_in_payload'}
 
     @staticmethod
-    def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {'available': False, 'direction': ''}
+    def build_operator_direction_lock(direction: Any = '', existing_lock: Any = None,
+                                      *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Build the lock an operator's `/方向 胜|平|负` command pins a match to.
+
+        The command's whole promise is "比分只从指定方向里出". It used to call
+        this name, which answered `{'available': False, 'direction': ''}`: the
+        record's previously valid lock was *replaced* by a stub without a
+        `locked` key, so every reader (`matrix_direction_lock`,
+        `lookup_direction_lock_payload`, `preload_direction_lock`) saw no lock at
+        all. Re-specifying a direction therefore destroyed a lock that worked.
+
+        The returned dict has to satisfy `matrix_direction_lock`'s read
+        contract, because that is what every downstream filter consults:
+        `locked` truthy, `direction` one of 胜/平/负, and `scores` already
+        restricted to that direction. Rather than re-implement that filter, the
+        candidate goes through `matrix_direction_lock` itself and its `scores`
+        are taken back from that answer — one classifier (`_score_wdl`), one
+        place that decides membership.
+
+        Scores are only ever *inherited* from `existing_lock` and filtered: a
+        new direction that the old lock had no scores for yields an empty
+        `scores` list, never invented ones. The direction still locks (the model
+        is told which way to answer), the score pool is simply empty until real
+        data supplies one.
+        """
+        dir_text = str(direction or '').strip()
+        if dir_text not in ('胜', '平', '负'):
+            return {
+                'available': False, 'locked': False, 'direction': '',
+                'scores': [], 'reason': f'direction_not_wdl:{dir_text or "empty"}',
+            }
+        existing = existing_lock if isinstance(existing_lock, dict) else {}
+        inherited = [
+            str(score) for score in (existing.get('scores') or []) if str(score or '').strip()
+        ]
+        read_back = DeepSeekAnalyzer.matrix_direction_lock(
+            {'direction_lock': {'locked': True, 'direction': dir_text, 'scores': inherited}}
+        )
+        return {
+            'available': True,
+            'locked': True,
+            'direction': dir_text,
+            'scores': list(read_back.get('scores') or []),
+            # Distinguishable from 'payload' / 'market' locks: this one exists
+            # because a human typed the direction, not because data implied it.
+            'source': 'operator',
+        }
 
     @staticmethod
     def build_direction_lock_score_close(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1946,6 +1991,48 @@ class DeepSeekAnalyzer:
         }
 
     @staticmethod
+    def format_operator_direction_recalc_line(recalc: Any, drawn_first: Any = '',
+                                              drawn_second: Any = '') -> str:
+        """One line saying what the operator asked for vs what the report shows.
+
+        `emit_pipeline_deepseek_tg_report` used to delete the stored scores after
+        an operator direction so downstream would recompute them. That deletion
+        never reached the report (the body reads the bundle/record, not those
+        payload keys) and, had it worked, it would have replaced a real stored
+        score with 「无数据」 whenever the recompute produced nothing. So the
+        stored score is kept and this line is printed instead: the reader sees
+        the requested direction, the score that is on screen, and — when they
+        disagree — that the score is the pre-command one and not a recompute.
+
+        `drawn_*` are the scores actually rendered in this report, so the line
+        cannot claim 「已按 X 重算」 while showing a Y-direction score.
+        """
+        info = recalc if isinstance(recalc, dict) else {}
+        wanted = str(info.get('direction') or '').strip()
+        if wanted not in ('胜', '平', '负'):
+            return ''
+        prev_first = str(info.get('previous_first') or '').strip()
+        prev_second = str(info.get('previous_second') or '').strip()
+        shown = [str(s or '').strip() for s in (drawn_first, drawn_second) if str(s or '').strip()]
+        shown_dirs = {_score_wdl(s) for s in shown if _score_wdl(s)}
+        if shown and shown_dirs == {wanted}:
+            return f'🔒 已按操作员指定方向【{wanted}】重算：①={shown[0]}' + (
+                f' ②={shown[1]}' if len(shown) > 1 else '')
+        prev_text = '／'.join(s for s in (prev_first, prev_second) if s) or '无'
+        head = f'🔒 操作员已指定方向【{wanted}】'
+        if not shown:
+            return (
+                f'{head}，但本次重算未产出该方向的比分（无数据）。'
+                f'记录里原有的比分 {prev_text} 未被清空，仅供参考，不是按【{wanted}】算出的结果。'
+            )
+        return (
+            f'{head}，本次重算未产出该方向的比分；下面展示的 '
+            f'①={shown[0]}' + (f' ②={shown[1]}' if len(shown) > 1 else '')
+            + f' 是**指令下达前**的比分（原 {prev_text or "未记录"}），'
+            f'不是按【{wanted}】重算的结果。'
+        )
+
+    @staticmethod
     def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:
         return []
 
@@ -1985,8 +2072,30 @@ class DeepSeekAnalyzer:
         return str(text or '')
 
     @staticmethod
-    def apply_operator_direction(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
+    def apply_operator_direction(payload: Any, direction: Any = '',
+                                 *args: Any, **kwargs: Any) -> dict[str, Any] | Any:
+        """Write an operator direction lock **into** the payload, in place.
+
+        Callers use this as "mutate the payload" — `emit_pipeline_deepseek_tg_report`
+        passes `_ds_payload` and drops the return value, then sends that same
+        dict to the model. The name and the call site both say in-place; the body
+        used to be `return str(text or '')`, i.e. it stringified the payload,
+        returned it to a caller that ignores returns, and left
+        `direction_lock` untouched. Nothing downstream ever saw 负.
+
+        So: the payload is mutated and handed back. Non-dict input is returned
+        unchanged so a caller that passes a string by mistake gets its input
+        back rather than a `TypeError` inside the `except` that surrounds every
+        call site.
+        """
+        dir_text = str(direction or '').strip()
+        if not isinstance(payload, dict) or dir_text not in ('胜', '平', '负'):
+            return payload
+        existing = payload.get('direction_lock')
+        payload['direction_lock'] = DeepSeekAnalyzer.build_operator_direction_lock(
+            dir_text, existing if isinstance(existing, dict) else {}
+        )
+        return payload
 
     @staticmethod
     def bold_tg_match_title_html(text: Any) -> str:
