@@ -620,9 +620,15 @@ class DeepSeekAnalyzer:
                         if odd is None:
                             continue
                         f = float(odd)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
+                        # `10**400` is a legal JSON number and json.load hands it
+                        # over as an int; float() raises OverflowError on it.
+                        # Letting that escape aborted the collector, so one
+                        # hostile value cost the whole 31 table for that match.
                         continue
-                    if f > 1:
+                    if math.isfinite(f) and f > 1:
+                        # inf > 1 is true, so a non-finite value used to win
+                        # `setdefault` and mask a legal copy from a later source.
                         odds.setdefault(_norm_score(score), f)
         return odds
 
