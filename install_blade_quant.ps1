@@ -32,7 +32,7 @@ try {
 # 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
 # 0725f23 = 冻结λ落到记录(31表theory不再整列空) + 市均页405时竞彩31仍抓/自愈补齐那9项
 # daa0ad1 = 发报质量门真的会拦(缺六盘口/缺DeepSeek外壳拒发) + 空HTML不再顶掉整份正文
-$PinCommit = '63ffc038765a0b5aa64694d98a593109e041a822'
+$PinCommit = '435319477120536793ec95283f4da3df024e9c43'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
