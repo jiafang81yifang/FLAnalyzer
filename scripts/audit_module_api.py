@@ -148,13 +148,45 @@ def audit(root: Path) -> list[str]:
     return sorted(set(problems))
 
 
+def undefined_names(root: Path) -> list[str]:
+    """报出 app 里未绑定的名字（ruff F821）。
+
+    为什么单独守：这类错误几乎总落在 `except Exception` 里，于是运行时不炸、
+    只是那条路径永远返回空——#19 删掉 `sporttery_jc` 的顶层兜底 import 之后，
+    市短方向锁就这样静默变空了一整天，唯一信号是 ruff F821 从 0 变成 1。
+    门禁必须能自己看见它，不能靠某次顺手跑 ruff 才发现。
+    """
+    import subprocess  # nosec B404 - fixed argv, no shell
+
+    try:
+        proc = subprocess.run(  # nosec B603
+            [sys.executable, '-m', 'ruff', 'check', '--select', 'F821', '--output-format', 'concise', APP],
+            cwd=str(root), capture_output=True, text=True, timeout=120, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f'ruff 无法运行，未定义名检查形同虚设: {exc}']
+    if proc.returncode == 0:
+        return []
+    lines = [ln.strip() for ln in (proc.stdout or '').splitlines() if 'F821' in ln or 'Undefined' in ln]
+    if not lines:
+        detail = (proc.stderr or proc.stdout or '').strip().splitlines()
+        lines = [detail[-1] if detail else f'ruff 退出码 {proc.returncode}']
+    return lines
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).resolve().parents[1])
     problems = audit(root)
+    undefined = undefined_names(root)
     if problems:
         print(f'FAIL module-api ({len(problems)} mismatches)')
         for problem in problems:
             print(f'  - {problem}')
+        return 1
+    if undefined:
+        print(f'FAIL module-api (undefined name, {len(undefined)})')
+        for line in undefined:
+            print(f'  - {line}')
         return 1
     print('PASS module-api (all sibling module calls match their signatures)')
     return 0
