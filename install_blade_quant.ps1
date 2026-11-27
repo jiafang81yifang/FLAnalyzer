@@ -29,11 +29,16 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 299fb3f = 落盘写入 docstring 与行为对齐 + 钉子测试
-$PinCommit = '932735b1d36e493a6b83828906eb579209f84bc5'
+# 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
+$PinCommit = '29e67ff835a0df5b10720abcbaf7fc167f04b005'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
+# 独立抓取器 + 它复用的模块。安装器只下发 app 与向导，所以这两个文件必须单独取：
+# okooo_jczq_scraper.py 在模块级 import okooo_mobile_cs 的私有符号（_http_attempt 等），
+# 磁盘上没有同名 .py 时它会撞上 app 里的内嵌副本，而内嵌副本没有这些新符号。
+$ScraperName = 'okooo_jczq_scraper.py'
+$ScraperDepName = 'okooo_mobile_cs.py'
 $DepsImportList = 'streamlit, pandas, numpy, requests, plotly, schedule, openai, scipy, bs4, httpx, urllib3, tornado'
 
 $RunClock = [System.Diagnostics.Stopwatch]::StartNew()
@@ -73,6 +78,8 @@ if ($OnWindows) {
 }
 $AppFile = Join-Path $InstallDir $AppName
 $ConfigScript = Join-Path $InstallDir $ConfigName
+$ScraperFile = Join-Path $InstallDir $ScraperName
+$ScraperDepFile = Join-Path $InstallDir $ScraperDepName
 $StartBat = Join-Path $InstallDir 'start.cmd'
 $ConfigEnv = Join-Path $InstallDir 'config.env'
 
@@ -334,6 +341,25 @@ if (-not (Get-RemoteArtifact -FileName $ConfigName -OutFile $ConfigScript)) {
 }
 $cfgKb = [math]::Round((Get-Item $ConfigScript).Length / 1KB, 1)
 Write-Ok "$ConfigName ($cfgKb KB)"
+
+Write-Step "下载独立抓取器"
+# 抓取器是给用户手动跑的 CLI（python okooo_jczq_scraper.py --html ...）。
+# 它依赖同目录下真实的 okooo_mobile_cs.py，所以两个文件都要落盘。
+#
+# 覆盖语义：这两个文件**每次安装/刷新都无条件覆盖**（Save-RemoteFile 用
+# [System.IO.File]::Create，会截断重写）。理由：抓取器在模块级绑定
+# okooo_mobile_cs 的私有符号（_http_attempt 等），用户本地若残留一个改过或
+# 旧版的同名文件，抓取器会在 import 阶段直接崩，而且失败原因看起来像代码 bug。
+# 程序化依赖不做「保留用户改动」——要改请改仓库或另存副本，不要改这两个文件。
+# config.env / knowledge_base 是用户数据，走的是「已存在就不动」的相反语义。
+if (-not (Get-RemoteArtifact -FileName $ScraperName -OutFile $ScraperFile)) {
+    Fail "下载 okooo_jczq_scraper.py 失败。请检查网络，或打开 Clash 后重跑这条命令。"
+}
+Write-Ok "$ScraperName"
+if (-not (Get-RemoteArtifact -FileName $ScraperDepName -OutFile $ScraperDepFile)) {
+    Fail "下载 okooo_mobile_cs.py 失败。请检查网络，或打开 Clash 后重跑这条命令。"
+}
+Write-Ok "$ScraperDepName"
 
 # ---------- 8. 校验程序文件 ----------
 Write-Step "校验程序文件"

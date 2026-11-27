@@ -214,73 +214,168 @@ def _warm_session(proxies: Any = None, mobile: bool = False, referer: str | None
         return requests.Session()
 
 
+_BLOCK_MARKERS = (
+    'your request has been blocked',
+    'block_message',
+    '滑动验证',
+    'aliycaptcha',
+)
+
+
+def _cache_evidence(headers: Any) -> dict[str, Any]:
+    """从响应头里取「是否命中 CDN 缓存」的原始证据。
+
+    2026-11-26 现场结论：澳客源站按出口 IP 信誉拦截机房/云段，客户端指纹/UA/
+    Referer/cookie 全部无效；唯一决定成败的是 CDN 缓存是否命中。
+      * 命中：`age` 有值（列表页实测 age: 20 / server: Lego Server）→ 200
+      * 回源：`x-cache-status: EXPIRED` 且无 age（子页实测）→ 405 WAF 拦截页
+    所以这里如实记录 age / x-cache-status / server，供不可用原因直接引用。
+    """
+    get = getattr(headers, 'get', None)
+    if not callable(get):
+        return {'age': '', 'x_cache_status': '', 'server': '', 'traceid': ''}
+    return {
+        'age': str(get('age') or get('Age') or '').strip(),
+        'x_cache_status': str(
+            get('x-cache-status') or get('X-Cache-Status')
+            or get('x-cache') or get('X-Cache') or ''
+        ).strip(),
+        'server': str(get('server') or get('Server') or '').strip(),
+        # 阿里云 WAF 拦截页会带 traceid；日志里贴它能直接对到一次具体拦截。
+        'traceid': str(
+            get('traceid') or get('Traceid') or get('EagleEye-TraceId')
+            or get('eagleeye-traceid') or ''
+        ).strip(),
+    }
+
+
+def _cache_hit(evidence: dict[str, Any]) -> bool:
+    """命中缓存的唯一判定：age 有值且非零，或 x-cache-status 明确是 HIT。"""
+    age = str(evidence.get('age') or '').strip()
+    if age.isdigit() and int(age) > 0:
+        return True
+    return str(evidence.get('x_cache_status') or '').strip().upper() == 'HIT'
+
+
+def _http_attempt(url: str, *, proxies: Any, session: Any, referer: str,
+                  timeout: int) -> dict[str, Any]:
+    """单次 HTTP 往返：只记录「实际发生了什么」，不做任何重试决策。
+
+    这是本模块唯一的取字节入口，`_fetch_detail` 的重试循环也走它，
+    因此缓存证据、blocked 文案、解码口径全仓库只有一份。
+    """
+    is_mobile = 'm.okooo.com' in url
+    headers = {
+        'User-Agent': _MOBILE_UA if is_mobile else _DESKTOP_UA,
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': referer,
+    }
+    info: dict[str, Any] = {
+        'ok': False, 'url': url, 'status': 0, 'bytes': 0,
+        'title': '', 'blocked': False, 'origin_blocked': False, 'cache_hit': False,
+        'error': '', 'html': '', 'encoding': '', 'referer': referer,
+        'age': '', 'x_cache_status': '', 'server': '', 'traceid': '', 'transport_error': '',
+    }
+    try:
+        sess = session or requests
+        resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - 抓取失败只回报原因，绝不外抛
+        info['transport_error'] = f'{type(exc).__name__}: {str(exc)[:100]}'
+        info['error'] = info['transport_error']
+        return info
+
+    info.update(_cache_evidence(getattr(resp, 'headers', None)))
+    info['status'] = int(resp.status_code)
+    info['bytes'] = len(resp.content or b'')
+    info['encoding'] = str(resp.encoding or '').lower()
+    info['cache_hit'] = _cache_hit(info)
+    html = decode_okooo_html(resp.content or b'', resp.headers)
+    info['html'] = html
+    title = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL | re.IGNORECASE)
+    info['title'] = re.sub(r'\s+', ' ', title.group(1)).strip()[:80] if title else ''
+    lowered = html.lower()
+    blocked_body = any(marker in lowered for marker in _BLOCK_MARKERS if marker.isascii())
+    if not blocked_body:
+        blocked_body = any(marker in html for marker in _BLOCK_MARKERS if not marker.isascii())
+    info['blocked'] = bool(resp.status_code in (403, 405) or blocked_body)
+    # 源站按出口 IP 拦截 = 403/405 **且** 响应体是 WAF 拦截页 **且** 没命中缓存。
+    # 只凭状态码不算：那是「页面没了」，不是「这台机器被拦」，两者处置完全不同。
+    info['origin_blocked'] = bool(
+        resp.status_code in (403, 405) and blocked_body and not info['cache_hit']
+    )
+    info['ok'] = bool(resp.status_code == 200 and html)
+    if not info['ok']:
+        info['error'] = f'HTTP {resp.status_code}'
+    return info
+
+
 def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: int = 1, timeout: int = 15) -> dict[str, Any]:
     """抓一个页面并把「实际发生了什么」原样带回来，供不可用原因使用。
 
-    返回 {ok, url, status, bytes, title, blocked, error, html, encoding, referer}。
-    手机页自动用手机 UA 并带手机赛程页来源；桌面页按 _referers_for 逐个试——
-    波胆页对 Referer 敏感，来源页不对就是 405，这不是站点不可用。
+    返回 {ok, url, status, bytes, title, blocked, error, html, encoding, referer}
+    外加缓存证据 `origin_blocked` / `cache_hit` / `age` / `x_cache_status` / `server`。
+
+    **`origin_blocked` 只有在 `_referers_for` 的候选全部试过之后才成立。**
+    桌面波胆页的现实（仓库 `_referers_for` 文档记载的现场核对）：首页作 Referer 是
+    405，换成同场次页/`/odds/` 是 200。两种 405 的响应体一模一样（都是那句
+    `your request has been blocked`），所以**只看响应体无法区分「Referer 不对」和
+    「出口 IP 被拦」**，必须先沿候选把 Referer 换完：
+      * 换 Referer 后能成功 → 这是可恢复错误，绝不能被判成终态；
+      * 全部候选都 405 → 才是源站按出口 IP 拦截。
+    有界性：桌面页通常 2 个候选、手机页 1 个，所以最多 2 次往返，不会无限重试。
+    过程中**不换 UA、不换 session、不改 URL**，只沿 `_referers_for` 的顺序换 Referer。
+
+    真正的 IP 拦截（全部候选都 405）也不再重试：2026-11-26 逐条实测证明客户端侧
+    全部无效（TLS 指纹、真实 Chrome CDP、Googlebot UA、随机 query、双 A 记录直连、
+    POST/HEAD/OPTIONS、带 acw_tc cookie、第三方 r.jina.ai 出口，都是同一个拦截页）。
+    返回里带 `referers_tried`，日志能看出试过哪些、不是一次就放弃。
     """
-    info: dict[str, Any] = {
-        'ok': False, 'url': url, 'status': 0, 'bytes': 0,
-        'title': '', 'blocked': False, 'error': '', 'html': '', 'encoding': '', 'referer': '',
-    }
     is_mobile = 'm.okooo.com' in url
-    referers = _referers_for(url)
-    last_error = ''
-    attempts = max(1, retries) * (len(referers) + 1)
+    referers = _referers_for(url) or [_WARMUP_URL]
     active_session = session
-    referer = referers[0] if referers else _WARMUP_URL
-    for attempt in range(attempts):
-        headers = {
-            'User-Agent': _MOBILE_UA if is_mobile else _DESKTOP_UA,
-            'Accept-Language': 'zh-CN,zh;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': referer,
-        }
-        try:
-            sess = active_session or requests
-            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)
-            info['status'] = int(resp.status_code)
-            info['bytes'] = len(resp.content or b'')
-            info['referer'] = referer
-            info['encoding'] = str(resp.encoding or '').lower()
-            html = decode_okooo_html(resp.content or b'', resp.headers)
-            info['html'] = html
-            title = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL | re.IGNORECASE)
-            info['title'] = re.sub(r'\s+', ' ', title.group(1)).strip()[:80] if title else ''
-            info['blocked'] = bool(
-                resp.status_code in (403, 405)
-                or 'your request has been blocked' in html.lower()
-                or '滑动验证' in html
-                or 'aliyuncaptcha' in html.lower()
+    info: dict[str, Any] = {}
+    last_error = ''
+    tried: list[str] = []
+    referers_tried: list[str] = []
+    for referer in referers:
+        referers_tried.append(referer)
+        info = _http_attempt(
+            url, proxies=proxies, session=active_session, referer=referer, timeout=timeout,
+        )
+        info['referers_tried'] = list(referers_tried)
+        if info['ok']:
+            info['error'] = ''
+            return info
+        last_error = str(info.get('error') or 'empty response')
+        tried.append(f'{referer} → {last_error}')
+        if info['origin_blocked']:
+            # 这个 Referer 被拦：先别下结论，换下一个候选；全部试完才算 IP 拦截。
+            continue
+        if not info.get('transport_error') and 400 <= int(info['status']) < 500:
+            # 非 WAF 的 4xx（404 等）：换 Referer 也不会让页面回来，直接返回。
+            break
+        time.sleep(min(3, 2 ** len(referers_tried)))
+    # 非 WAF 的可重试错误（超时/5xx）再按 retries 走退避；IP 拦截不再重试。
+    if not info.get('ok') and not info.get('origin_blocked') and info.get('transport_error'):
+        for attempt in range(max(0, max(1, retries) - 1)):
+            active_session = active_session or _warm_session(
+                proxies, mobile=is_mobile, referer=referers_tried[-1],
             )
-            info['ok'] = bool(resp.status_code == 200 and html)
+            info = _http_attempt(
+                url, proxies=proxies, session=active_session,
+                referer=referers_tried[-1], timeout=timeout,
+            )
+            info['referers_tried'] = list(referers_tried)
             if info['ok']:
                 info['error'] = ''
                 return info
-            last_error = f'HTTP {resp.status_code}'
-            if info['blocked']:
-                # 被拦：换一个 Referer 再试；还有候选就继续，别在同一组合上死等。
-                nxt = _next_referer(referers, referer)
-                if nxt:
-                    referer = nxt
-                    active_session = _warm_session(proxies, mobile=is_mobile, referer=referer)
-                    continue
-                if active_session is None:
-                    active_session = _warm_session(proxies, mobile=is_mobile, referer=referer)
-                    continue
+            last_error = str(info.get('error') or 'empty response')
+            if info['origin_blocked'] or not info.get('transport_error'):
                 break
-            if 400 <= resp.status_code < 500:
-                break
-        except requests.RequestException as exc:
-            last_error = f'{type(exc).__name__}: {str(exc)[:100]}'
-        except Exception as exc:  # noqa: BLE001 - 详情抓取的任何失败都只回报原因
-            last_error = f'{type(exc).__name__}: {str(exc)[:100]}'
-            break
-        if attempt + 1 < attempts:
-            time.sleep(min(3, 2**attempt))
+            time.sleep(min(3, 2 ** attempt))
     info['error'] = last_error or 'empty response'
+    info['attempted'] = tried
     return info
 
 
@@ -833,38 +928,70 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
         ]
     fetch: dict[str, Any] = {}
     tried: list[str] = []
-    # 波胆页的 405 是间歇的：现场核对过「同 Referer 等 35s 再要就 200」。
-    # 所以对第一候选做有界耐心重试（默认 2 轮、每轮间隔 35s），
-    # 仍然拿不到才如实报失败。绝不在这里编数据。
+    # 源站按出口 IP 拦截时**一次都不重试**：2026-11-26 已逐条证明客户端侧
+    # （TLS 指纹 / 真实 Chrome CDP / Googlebot UA / 随机 query / 双 A 记录直连 /
+    # POST-HEAD-OPTIONS / acw_tc cookie / r.jina.ai 第三方出口）全部无效。
+    # 这里的耐心重试只对「非 IP 拦截」的间歇失败生效（历史上「等 35s 再要就 200」
+    # 的现象，实际是那次刚好命中了 CDN 缓存）。
     patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_CS_PATIENCE') or 2) or 0)
     gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_CS_PATIENCE_GAP') or 35) or 35)
+    origin_blocked = False
     for url in urls:
         fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+        if fetch.get('origin_blocked'):
+            origin_blocked = True
         for _attempt in range(patience if url == urls[0] else 0):
             if fetch.get('ok'):
+                break
+            if fetch.get('origin_blocked'):
+                # 出口 IP 被拦：再等再试都是同一个 405，立刻收手。
                 break
             if not fetch.get('blocked'):
                 # 不是被 WAF 拦（例如 404）就没必要等，直接换下一条来源。
                 break
             time.sleep(gap)
             fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+            if fetch.get('origin_blocked'):
+                origin_blocked = True
+                break
         tried.append(
             f'{url} → '
             + (f'HTTP {fetch.get("status")}' if fetch.get('status') else str(fetch.get('error') or 'no-response'))
             + (f', title={fetch.get("title")}' if fetch.get('title') else '')
             + (', blocked' if fetch.get('blocked') else '')
+            + (f', x-cache-status={fetch.get("x_cache_status")}' if fetch.get('x_cache_status') else '')
+            + (f', age={fetch.get("age")}' if fetch.get('age') else '')
             + ', stage=fetch_failed'
         )
         if fetch.get('ok'):
             html = fetch.get('html')
             break
     if not html:
+        if origin_blocked:
+            # 原因写死为「源站按出口 IP 拦截」而不是「页面结构变了」：
+            # 这两者的处置完全不同，日志里必须一眼能分清。
+            return _unavailable(
+                'cs_origin_ip_blocked: 源站按出口 IP 拦截（阿里云 WAF 405，响应体 '
+                'block_message）；CDN 未命中、请求回源，机房/云段 IP 一律被拦，'
+                '客户端指纹/UA/Referer/cookie 均无效，需要住宅 IP 或缓存命中。',
+                match_id=str(match_id or ''),
+                error='; '.join(tried)[:300],
+                fetch_urls=list(urls),
+                parse_stage='origin_blocked',
+                origin_blocked=True,
+                cache_hit=bool(fetch.get('cache_hit')),
+                age=str(fetch.get('age') or ''),
+                x_cache_status=str(fetch.get('x_cache_status') or ''),
+                traceid=str(fetch.get('traceid') or ''),
+                attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
+            )
         return _unavailable(
             'external_okooo_mobile_cs_fetch_failed',
             match_id=str(match_id or ''),
             error='; '.join(tried)[:300],
             fetch_urls=list(urls),
             parse_stage='fetch_failed',
+            origin_blocked=False,
             attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
         )
     parsed = _parse_cs_datatable(html)

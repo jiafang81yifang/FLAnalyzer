@@ -2509,3 +2509,77 @@ def test_every_fixture_declares_its_source() -> None:
         assert entry.get('url'), name
         assert entry.get('status') == 200, name
         assert entry.get('captured'), name
+
+
+def test_app_cs_chain_survives_a_blocked_first_referer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """App-level: a WAF 405 on the first Referer must not kill the market average.
+
+    The two 405 causes (wrong Referer vs blocked egress IP) share one response body,
+    so the request layer walks `_referers_for`. This asserts the **app's own call
+    chain** (`app.scrape_okooo_detail` -> scrape_okooo_mobile_cs_zuizhi -> the
+    request layer) still ends up with usable market-average data instead of
+    degrading. Only the HTTP transport is faked; the real parser, the real Referer
+    ladder and the real cache logic all run.
+    """
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path / 'cache'))
+    monkeypatch.setenv('OKOOO_CS_PATIENCE', '0')
+    for name in ('scrape_okooo_mobile_six_markets', 'scrape_okooo_mobile_ah_ou_books',
+                 'scrape_okooo_mobile_exchange_pnl', 'scrape_okooo_mobile_lineup'):
+        monkeypatch.setattr(app, name, lambda *a, **k: {'available': False})
+    monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+    monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+
+    blocked = (
+        '<html><head><title>405</title></head><body><script>'
+        'var block_message = "Sorry, your request has been blocked...";'
+        '</script></body></html>'
+    )
+    cs_page = (Path(__file__).parent / 'fixtures' / 'okooo_desktop_cs_1347776.html').read_bytes()
+
+    url = 'https://www.okooo.com/soccer/match/1347776/cs/'
+    referers = okooo._referers_for(url)
+    assert len(referers) >= 2, referers
+    seen: list[str] = []
+
+    class _Resp:
+        def __init__(self, status: int, body: bytes, headers: dict[str, str]) -> None:
+            self.status_code = status
+            self.content = body
+            self.encoding = 'utf-8'
+            self.headers = headers
+
+    def fake_get(target, *args, **kwargs):
+        if '/cs/' not in str(target):
+            return _Resp(404, b'<html><body>n/a</body></html>', {})
+        referer = str((kwargs.get('headers') or {}).get('Referer') or '')
+        seen.append(referer)
+        if referer == referers[0]:
+            # First candidate: WAF block page, exactly like the live site.
+            return _Resp(405, blocked.encode('utf-8'),
+                         {'x-cache-status': 'EXPIRED', 'server': 'nginx'})
+        return _Resp(200, cs_page, {'age': '42', 'server': 'Lego Server'})
+
+    monkeypatch.setattr(requests, 'get', fake_get)
+
+    result = app.scrape_okooo_detail('1347776')
+
+    # The app must come out with a usable market average, not a degraded payload.
+    assert result.get('correct_score_available') is True, result.get('cs_block_reason')
+    assert result.get('correct_score_channel') == 'okooo_cs', result.get('correct_score_channel')
+    books_avg = result.get('correct_score_books_avg') or {}
+    assert len(books_avg) == 25, sorted(books_avg)[:5]
+    assert result.get('correct_score_books_n') == 27, result.get('correct_score_books_n')
+    assert result.get('cs_block_reason') in (None, ''), result.get('cs_block_reason')
+    # Never give up on the first candidate. scrape_okooo_detail may refetch in more
+    # than one phase, so assert the *pattern*: every block is immediately followed by
+    # the next candidate, and every successful fetch sits on candidate 2.
+    assert seen, 'the app never reached the market-average request'
+    assert seen[0] == referers[0], seen
+    for index, referer in enumerate(seen):
+        if referer == referers[0]:
+            assert seen[index + 1:index + 2] == [referers[1]], (
+                f'a blocked first Referer was not followed by the second: {seen}'
+            )
+    assert seen.count(referers[1]) >= 1, seen

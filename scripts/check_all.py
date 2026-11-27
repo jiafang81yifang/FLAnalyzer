@@ -11,6 +11,7 @@ PYTHON_FILES = [
     'blade_deepseek_pipeline.py',
     'blade_ml_engine.py',
     'okooo_mobile_cs.py',
+    'okooo_jczq_scraper.py',
     'odds_index_math.py',
     'odds_fallback.py',
     'sporttery_jc.py',
