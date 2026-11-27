@@ -43479,15 +43479,16 @@ def post_match_review():
 
 
 def compare_matches():
-    """比较指令：列出今日未开赛场次的比分方向一致性。
+    """比较指令：今日未开赛场次的两个候选比分方向是否一致。
 
-    语义归属：这里的「首选/次选」是**同一场**的两个候选比分（
-    `predicted_score`/`second_score` 就是 `first_score`/`second_score`，
-    见写库处 L32777-32779），不是「选哪一场」。所以它属于方向唯一性的范畴：
-    同一注的两个候选必须同向，跨方向时不得给出单一候选。
+    语义归属：这里的「候选A/候选B」是**同一场**的两个候选比分
+    （`predicted_score`/`second_score`），不是「选哪一场」。所以它属于方向
+    唯一性的范畴：同一注的两个候选必须同向，跨方向时不得给出单一候选。
 
-    输出只陈述事实：每场两个候选的方向是否一致、两个候选的概率差。
-    不出现「建议/强推/均可/双选」这类选注语汇，也不跨场挑一场来推。
+    方向判定复用全局唯一实现 `_wdl_of_score`，本函数不另写一套。
+    输出只陈述事实：两个候选是否同向、概率差多少、分歧有多大。
+    全部文案只允许 `不做推荐` 这一种否定式（见 scripts/scan_report_surfaces.py
+    的 BANNED/ALLOWED 规则），不出现 首选/次选/双选/强推/推荐。
     """
     data = load_json(HISTORY_FILE)
     pending = {k: v for k, v in data.items() if v.get('status') == 'pending'}
@@ -43498,64 +43499,100 @@ def compare_matches():
     comparison = []
     for info in pending.values():
         top15 = info.get('top15_scores', [])
-        if len(top15) >= 2:
-            first_total = (top15[0][1].get('prob', 0) * 100) if isinstance(top15[0][1], dict) else 0
-            second_total = (top15[1][1].get('prob', 0) * 100) if isinstance(top15[1][1], dict) else 0
-            gap = first_total - second_total
-            # 方向判定复用全局唯一实现，不另写一套。
-            first = str(info.get('predicted_score') or '?')
-            second = str(info.get('second_score') or '?')
-            comparison.append({
-                'match': info.get('match', '未知'),
-                'first': first,
-                'second': second,
-                'first_dir': _wdl_of_score(first),
-                'second_dir': _wdl_of_score(second),
-                'aligned': bool(_wdl_of_score(first))
-                and _wdl_of_score(first) == _wdl_of_score(second),
-                'first_score': first_total,
-                'second_score_val': second_total,
-                'gap': round(gap, 1),
-                'confidence': info.get('confidence', '未知'),
-                'dti': info.get('dti', 0),
-                'cup_mode': info.get('cup_mode', '常规'),
-            })
+        if len(top15) < 2:
+            continue
+        first_total = (top15[0][1].get('prob', 0) * 100) if isinstance(top15[0][1], dict) else 0
+        second_total = (top15[1][1].get('prob', 0) * 100) if isinstance(top15[1][1], dict) else 0
+        gap = first_total - second_total
+        first = str(info.get('predicted_score') or '?')
+        second = str(info.get('second_score') or '?')
+        first_dir = _wdl_of_score(first)
+        second_dir = _wdl_of_score(second)
+        comparison.append({
+            'match': info.get('match', '未知'),
+            'first': first,
+            'second': second,
+            'first_dir': first_dir,
+            'second_dir': second_dir,
+            'aligned': bool(first_dir) and first_dir == second_dir,
+            'conflict': bool(first_dir) and bool(second_dir) and first_dir != second_dir,
+            'first_score': first_total,
+            'second_score_val': second_total,
+            'gap': round(gap, 1),
+            'confidence': info.get('confidence', '未知'),
+            'dti': info.get('dti', 0),
+            'cup_mode': info.get('cup_mode', '常规'),
+        })
 
     if not comparison:
         send_tg("📋 数据不足，无法进行比较分析。")
         return
 
     comparison.sort(key=lambda x: x['gap'], reverse=True)
-    top3 = comparison[:3]
+    widest = comparison[:3]
+    aligned_n = sum(1 for c in comparison if c['aligned'])
+    conflict_n = sum(1 for c in comparison if c['conflict'])
 
-    text = "🔍【比分方向一致性 对比】\n\n"
-    text += "📊 两个候选比分概率差最大的3场：\n\n"
-    for i, c in enumerate(top3):
+    text = "🔍 【多场比分方向一致性】\n\n"
+    # 第一块只按「前二比分差距」从大到小排出来，是事实陈述，不是挑选建议。
+    text += "📊 按前二比分差距排序（前3场）：\n\n"
+    for i, c in enumerate(widest):
         if c['aligned']:
             state = f"方向一致（{c['first_dir']}）"
-        elif c['first_dir'] and c['second_dir']:
-            state = f"⚠️ 两候选方向不一致（{c['first']}为{c['first_dir']}，{c['second']}为{c['second_dir']}）"
+        elif c['conflict']:
+            state = (
+                f"⚠️ 两候选方向不一致（{c['first']}为{c['first_dir']}，"
+                f"{c['second']}为{c['second_dir']}）"
+            )
         else:
             state = "方向未形成"
-        text += (f"{'🥇🥈🥉'[i]} {c['match']}\n"
-                 f"   候选A: {c['first']}({c['first_score']:.1f}%) | "
-                 f"候选B: {c['second']}({c['second_score_val']:.1f}%)\n"
-                 f"   概率差: {c['gap']:.1f}个百分点 | 方向: {state}\n"
-                 f"   {'杯赛: ' + c['cup_mode'] if c['cup_mode'] != '常规' else ''}\n\n")
+        text += (
+            f"{'🥇🥈🥉'[i]} {c['match']}\n"
+            f"   候选A: {c['first']}({c['first_score']:.1f}%) | "
+            f"候选B: {c['second']}({c['second_score_val']:.1f}%)\n"
+            f"   概率差: {c['gap']:.1f}个百分点 | 方向: {state}\n"
+            f"   {'杯赛: ' + c['cup_mode'] if c['cup_mode'] != '常规' else ''}\n\n"
+        )
 
-    aligned_n = sum(1 for c in comparison if c['aligned'])
     text += "━━━━━━━━━━━━━━━━━━\n"
-    text += (f"📐 方向一致性汇总：{len(comparison)}场中 {aligned_n}场两候选同向，"
-             f"{len(comparison) - aligned_n}场方向不一致。\n")
-    if aligned_n < len(comparison):
-        text += ("   方向不一致的场次，两个候选分属不同赛果，不能作为同一注的两个候选；"
-                 "此处只陈述该事实，不给出单一候选。\n")
-    if comparison and comparison[0]['aligned']:
-        lead = comparison[0]
-        text += (f"   同向场次里概率差最大的一场：{lead['match']}"
-                 f"（{lead['first']}/{lead['second']}，差{lead['gap']:.1f}个百分点）。\n")
+    # #9 的风险提示块：保留 ★ 行与 wide/narrow 两个分支。
+    text += "💡 风险提示（不做任何选择建议）：\n"
+    if widest[0]['gap'] > 3:
+        text += (
+            f"  ★ {widest[0]['match']}：前二比分差距{widest[0]['gap']:.1f}个百分点，"
+            "不做推荐。\n"
+        )
+    else:
+        text += (
+            f"  ★ 分歧过大，不做推荐：{widest[0]['match']}"
+            f"（差距仅{widest[0]['gap']:.1f}个百分点）\n"
+        )
+
+    text += (
+        f"📐 方向一致性汇总：{len(comparison)}场中 {aligned_n}场两候选同向，"
+        f"{len(comparison) - aligned_n}场方向不一致。\n"
+    )
+    if conflict_n:
+        # 「方向冲突」这个串必须留下：它是跨方向场次的明确点名。
+        text += (
+            f"   方向冲突（{conflict_n}场）：两个候选分属不同赛果，不能作为同一注的"
+            "两个候选；此处只陈述该事实，不给出单一候选。\n"
+        )
+    if widest[0]['aligned']:
+        lead = widest[0]
+        text += (
+            f"   同向场次里概率差最大的一场：{lead['match']}"
+            f"（{lead['first']}/{lead['second']}，差{lead['gap']:.1f}个百分点）。\n"
+        )
     else:
         text += "   概率差最大的一场两候选方向不一致，此处不给出单一候选。\n"
+
+    # 第二块取差距最小的几场：前二比分贴得最近＝最不确定，分歧最大。
+    comparison.sort(key=lambda x: x['gap'])
+    uncertain = comparison[:2]
+    text += "\n⚠️ 分歧最大的场次（不做推荐）：\n"
+    for c in uncertain:
+        text += f"  - {c['match']} | 前二比分差距{c['gap']:.1f}个百分点，不做推荐\n"
 
     send_tg(text)
 

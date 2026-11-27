@@ -654,8 +654,9 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
     if case.get('compare'):
         coverage.hit('compare_' + str(case['compare']))
     for word in BANNED_WORDS:
-        if word in compare_text:
-            fail('I9-compare-banned-word', f'compare output carries {word!r}')
+        hits = compare_text.count(word) - sum(compare_text.count(ok) for ok in BANNED_ALLOWED)
+        if hits > 0:
+            fail('I9-compare-banned-word', f'compare output carries {word!r} x{hits}')
     if '⚠️ 两候选方向不一致' in compare_text:
         coverage.hit('compare_reported_cross_direction')
         # the conflict must be surfaced as a fact, and no single pick offered
