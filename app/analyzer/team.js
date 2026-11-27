@@ -1,8 +1,5 @@
-var _           = require('lodash'),
-    eventproxy  = require('eventproxy'),
-    converter   = require('../utils/converter');
+var eventproxy  = require('eventproxy');
 var Match       = require('../models/match');
-var printer     = require('../printer').spider.day();
 
 var FACTOR  = [0,0.618,0,1],
     RECENT_NUM = 10;

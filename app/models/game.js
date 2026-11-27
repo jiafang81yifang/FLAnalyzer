@@ -14,7 +14,7 @@ var GameSchema = new Schema({
 GameSchema.statics.getById = function (gid, callback){
   this.findOne({gid: gid}, callback);
 }
-GameSchema.statics.getByName = function (Name, callback){
+GameSchema.statics.getByName = function (name, callback){
   this.findOne({name: name}, callback);
 }
 GameSchema.statics.getAll = function (callback){

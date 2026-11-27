@@ -1,0 +1,12 @@
+pandas
+streamlit
+numpy
+requests
+plotly
+schedule
+openai
+scipy
+beautifulsoup4
+httpx
+urllib3
+tornado

@@ -33,7 +33,7 @@ module.exports = function (day, next, force, skip){
   printer.header(day);
 
   var day_arr = day.split('-'),
-      data    = { gameCount:0, teamCount:0, bwinCount:0, tradeCount:0, match:{}, shortcut:{}, iid:{}, hid:{}, aid:{}, home:{}, away:{}, game:{}, team:{} },
+      data    = { count:0, doneCount:0, gameCount:0, teamCount:0, bwinCount:0, tradeCount:0, match:{}, shortcut:{}, iid:{}, hid:{}, aid:{}, home:{}, away:{}, game:{}, team:{} },
       ep      = new eventproxy();
 
   //处理抓取错误
@@ -140,9 +140,11 @@ module.exports = function (day, next, force, skip){
           data.doneCount++;
           obj.done = true;
           var score = parser.score($(this).find('td.eng').eq(2).text());
-          obj.score = {
-            half:{  home: parser.int(score[1]), away: parser.int(score[2])},
-            full:{  home: parser.int(score[3]), away: parser.int(score[4])}};
+          if(score){
+            obj.score = {
+              half:{  home: parser.int(score[1]), away: parser.int(score[2])},
+              full:{  home: parser.int(score[3]), away: parser.int(score[4])}};
+          }
         }
         var iid = parser.int($(this).find('td.eng').eq(3).find('span').attr('zid'));
         if(iid){
@@ -180,7 +182,7 @@ module.exports = function (day, next, force, skip){
       }
     });
     //不安全的方法，执行抓取到页面中的脚本，获取对应的赔率数组
-    eval(script);
+    eval(script || '');
     if(!liveOddsList){
       var liveOddsList ={};
     }

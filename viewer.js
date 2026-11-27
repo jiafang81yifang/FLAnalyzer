@@ -12,6 +12,8 @@ var dbconfig    = require('./app/configs/database'),
 
 var program     = require('commander');
 
+mongoose.set('strictQuery', false);
+
 program
   .version('0.5.0')
   .option('-d, --date [value]', '按日期[value]筛选')
@@ -21,7 +23,7 @@ program
   .option('-a, --away [value]', '按客场球队[value]筛选')
   .parse(process.argv);
 
-mongoose.connect(dbconfig.url);
+mongoose.connect(dbconfig.url).catch(function () {});
 mongoose.connection.on('error', function (err) {
   printer.error('mongo_conn',err);
 });
