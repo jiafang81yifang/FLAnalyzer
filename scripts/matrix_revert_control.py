@@ -1,0 +1,213 @@
+"""守卫红绿矩阵：每条守卫在回退对应实现后必须**失败**。
+
+做法：对被测源文件做一处定点回退（只改那一处的语义），跑指定测试，
+断言它失败，然后原样恢复。守卫若在回退后仍然通过，说明它测的不是那件事。
+
+用法：
+    python scripts/matrix_revert_control.py [--keep]
+
+`--keep` 保留现场（调试用），默认无论如何都恢复原文件。
+"""
+from __future__ import annotations
+
+import argparse
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# (标签, 文件, 原文, 回退成, 必须因此失败的测试)
+CASES: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        'ah-pid-from-row-attributes',
+        'okooo_analysis_tabs.py',
+        "            'pid': _pid_of(tr_attrs + inner),",
+        "            'pid': _pid_of(inner),",
+        'tests/test_okooo_analysis_tabs.py::test_ah_tab_keeps_the_company_pid_from_the_row_attributes',
+    ),
+    (
+        'ah-summary-labels-itself-derived',
+        'okooo_analysis_tabs.py',
+        "        'provenance': 'derived_from_company_rows',",
+        "        'provenance': 'page_native',",
+        'tests/test_okooo_analysis_tabs.py::test_ah_summary_is_labelled_as_derived_not_page_native',
+    ),
+    (
+        'zuizhi-reports-js-rendered',
+        'okooo_analysis_tabs.py',
+        "        'stage': 'zuizhi_panel_js_rendered',",
+        "        'stage': 'ok',",
+        'tests/test_okooo_analysis_tabs.py::test_zuizhi_panel_is_reported_as_js_rendered',
+    ),
+    (
+        'handicap-panel-empty-stage',
+        'okooo_analysis_tabs.py',
+        "            out['handicap_stage'] = 'handicap_panel_empty_js_rendered'",
+        "            out['handicap_stage'] = 'no_company_rows'",
+        'tests/test_okooo_analysis_tabs.py::test_rq_handicap_panel_is_empty_in_the_server_html',
+    ),
+    (
+        'betfair-not-substituted',
+        'okooo_analysis_tabs.py',
+        "            out['betfair_available'] = bool(has_value)",
+        "            out['betfair_available'] = True",
+        'tests/test_okooo_analysis_tabs.py::test_pnl_betfair_is_reported_missing_not_substituted',
+    ),
+    (
+        'one-fetch-per-tab',
+        'okooo_analysis_tabs.py',
+        "    tabs = tuple(only) if only else tuple(TAB_CLICK_PATHS)",
+        "    tabs = tuple(only) if only else ('ah',)",
+        'tests/test_okooo_analysis_tabs.py::test_scrape_records_one_fetch_per_tab_with_url_status_bytes',
+    ),
+    (
+        'order-normalization-collapses-spellings',
+        'live500_board.py',
+        "    try:\n        return str(int(token))",
+        "    try:\n        return token",
+        'tests/test_live500_board.py::test_normalize_order_collapses_every_spelling',
+    ),
+    (
+        'board-row-keeps-both-handles',
+        'live500_board.py',
+        "            'fid': fid,",
+        "            'fid': '',",
+        'tests/test_live500_board.py::test_board_row_carries_both_handles_and_the_score',
+    ),
+    (
+        'zqdc-has-no-order',
+        'live500_board.py',
+        "            out['order_missing'] += 1",
+        "            order = fid  # 回退：拿 fid 冒充 order\n            out['order_missing'] += 0",
+        'tests/test_live500_board.py::test_zqdc_rows_have_no_order_attribute',
+    ),
+    (
+        'detail-lineups-side-by-order',
+        'live500_board.py',
+        "        if kind == 'starters' and last_kind == 'subs':\n            side_index = min(side_index + 1, 1)",
+        "        if kind == 'starters' and last_kind == 'subs':\n            side_index = side_index",
+        'tests/test_live500_board.py::test_detail_reads_score_both_lineups_and_all_stats',
+    ),
+    (
+        'odds-precedence-okooo-only',
+        'match_data_matrix.py',
+        "    'asian_handicap': (SRC_OKOOO, SRC_500),",
+        "    'asian_handicap': (SRC_500, SRC_OKOOO),",
+        'tests/test_match_data_matrix.py::test_odds_precedence_wins_when_both_sources_offer_the_field',
+    ),
+    (
+        'every-filled-cell-has-a-url',
+        'match_data_matrix.py',
+        "        if value in (None, ''):",
+        "        if value in (None, ''):\n            return _Cell(None, source=SRC_500, reason='ok')",
+        'tests/test_match_data_matrix.py::test_every_filled_cell_carries_a_traceable_url',
+    ),
+    (
+        'gap-reason-not-started',
+        'match_data_matrix.py',
+        "            reason = 'not_started' if board.get('started') is False else 'not_in_source'",
+        "            reason = 'not_in_source'",
+        'tests/test_match_data_matrix.py::test_gap_reasons_are_enumerated',
+    ),
+    (
+        'dedupe-merges-per-cell',
+        'match_data_matrix.py',
+        "            if isinstance(cell, dict) and cell.get('reason') == 'ok':\n                merged_fields[field] = cell",
+        "            if False:\n                merged_fields[field] = cell",
+        'tests/test_match_data_matrix.py::test_dedupe_merges_rows_by_normalized_order',
+    ),
+    (
+        'js-rendered-reason-survives',
+        'match_data_matrix.py',
+        "        if field_path and field_path[0] == 'handicap':\n            stage = str(tab_entry.get('handicap_stage') or stage)",
+        "        if False:\n            stage = stage",
+        'tests/test_match_data_matrix.py::test_js_rendered_panel_reason_survives_into_the_gap_list',
+    ),
+    (
+        'stage1-loop-calls-collector',
+        'app_v84_hermes.py',
+        "            collect_match_matrix_facts(rec, board=_matrix_500_board())",
+        "            pass  # 回退：阶段1 不采集矩阵",
+        'tests/test_match_data_matrix_wiring.py::test_stage1_loop_body_calls_the_collector',
+    ),
+    (
+        'round-board-cached-once',
+        'app_v84_hermes.py',
+        "    if _MATRIX_500_BOARD_CACHE is not None and not force:\n        return _MATRIX_500_BOARD_CACHE",
+        "    if False:  # 回退：每场都重抓盘面\n        return _MATRIX_500_BOARD_CACHE",
+        'tests/test_match_data_matrix_wiring.py::test_round_board_is_fetched_once_not_once_per_match',
+    ),
+    (
+        'reason-text-covers-codes',
+        'match_data_matrix.py',
+        "    'not_started': '比赛未开赛，比分/半场尚未产生',",
+        "    'not_started_renamed': '比赛未开赛，比分/半场尚未产生',",
+        'tests/test_match_data_matrix_wiring.py::test_reason_text_covers_every_reason_code',
+    ),
+    (
+        'collector-writes-both-sources',
+        'app_v84_hermes.py',
+        "            rec['live500_match'] = {**match, 'report': board.get('report') or {}}",
+        "            rec['live500_match'] = {}",
+        'tests/test_match_data_matrix_wiring.py::test_collector_writes_both_sources_onto_the_record',
+    ),
+    (
+        'matrix-section-is-wired',
+        'app_v84_hermes.py',
+        "    _final_sections = append_match_matrix_section(\n        _final_sections,\n        rec if isinstance(rec, dict) else {},",
+        "    _final_sections = (_final_sections,)\n    if False:\n        pass\n    _unused = append_match_matrix_section(\n        [],\n        rec if isinstance(rec, dict) else {},",
+        'tests/test_match_data_matrix_wiring.py::test_emit_calls_the_matrix_section',
+    ),
+    (
+        'matrix-builder-degrades-to-one-line',
+        'app_v84_hermes.py',
+        "        lines = [f\"🧩【两源合并数据矩阵】\\n  未形成（{type(_mdm_err).__name__}: {_mdm_err}）\"]",
+        "        lines = []",
+        'tests/test_match_data_matrix_wiring.py::test_matrix_append_survives_a_broken_builder',
+    ),
+)
+
+
+def run_case(label: str, rel: str, old: str, new: str, test: str) -> tuple[bool, str]:
+    """回退一处 → 跑测试 → 必须失败；随后无条件恢复。"""
+    path = ROOT / rel
+    original = path.read_text(encoding='utf-8')
+    if old not in original:
+        return False, f'anchor not found in {rel}'
+    backup = pathlib.Path(tempfile.mkstemp(suffix=path.suffix)[1])
+    try:
+        shutil.copy2(path, backup)
+        path.write_text(original.replace(old, new, 1), encoding='utf-8')
+        proc = subprocess.run(
+            [sys.executable, '-m', 'pytest', test, '-q', '-p', 'no:cacheprovider'],
+            cwd=ROOT, text=True, capture_output=True, timeout=300, check=False,
+        )
+        if proc.returncode == 0:
+            return False, 'guard stayed GREEN after revert'
+        return True, 'guard went RED as required'
+    finally:
+        shutil.copy2(backup, path)
+        backup.unlink(missing_ok=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--only', default='')
+    args = parser.parse_args()
+    failures = 0
+    for label, rel, old, new, test in CASES:
+        if args.only and args.only not in label:
+            continue
+        ok, detail = run_case(label, rel, old, new, test)
+        print(f"{'PASS' if ok else 'FAIL'} {label}: {detail}")
+        if not ok:
+            failures += 1
+    print(f'\n{len(CASES) - failures}/{len(CASES)} guards verified red on revert')
+    return 0 if failures else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
