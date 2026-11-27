@@ -33,7 +33,7 @@ try {
 # 057c455 = 统一赔率评估器 unified_odds_evaluator.py（含 CN/INTL 同场按名对齐、
 #           走水凯利修正说明、保本概率别名）+ 单文件内嵌同步
 # ce23836 = 说明 EV 为何不含走水项（push*0 精确为 0，只有凯利用 1/(1-push_prob)）
-$PinCommit = '7c27d88d5ec3fb5d60362aaa3e806f972ed9c6e5'
+$PinCommit = 'fd41b97339fea2ce01229d1f25508e3f2d8a9431'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
