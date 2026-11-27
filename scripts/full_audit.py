@@ -134,13 +134,14 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
         marker = f'"{module}"'
         audit.record(f'embed:{module}', marker in block, 'module not referenced in embedded payload')
         first_line = source.read_text(encoding='utf-8').lstrip().splitlines()[0]
-        # The block is emitted with json.dumps(..., ensure_ascii=False), so the
-        # fingerprint must use the same setting; ensure_ascii=True mis-reports any
-        # module whose first line contains non-ASCII text as stale.
-        escaped = json.dumps(first_line, ensure_ascii=False)[1:-1]
+        # The builder serialises with ensure_ascii=False, so CJK stays literal while
+        # quotes/newlines are still escaped. Try both forms: whichever matches, the
+        # check stays a real staleness probe rather than a false negative on a
+        # module whose first line happens to contain Chinese.
+        forms = (json.dumps(first_line, ensure_ascii=False)[1:-1], json.dumps(first_line)[1:-1])
         audit.record(
             f'embed-in-sync:{module}',
-            any(form in block for form in escaped_forms),
+            any(form in block for form in forms),
             'embedded copy is stale; run scripts/build_single_file.py',
         )
 
