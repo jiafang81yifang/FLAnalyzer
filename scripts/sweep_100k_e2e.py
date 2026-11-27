@@ -545,7 +545,23 @@ def _model_reply(messages: Any = None, **kwargs: Any) -> str:
 
     Deliberately *not* a placeholder: it carries the ①② candidates the report
     parses, and none of `PLACEHOLDER_MARKERS`.
+
+    It also resets the module-level completion latch, exactly as the real
+    `deepseek_chat_completion` does on entry. That latch is process-wide state,
+    so a stub that only returns a string inherits the last *real* call's verdict:
+    once anything in the process has run without an API key, `completion_failed()`
+    keeps answering True for the stub's non-empty string, `analyze_match_judgment`
+    reports `available=False`, and the report falls back to the deterministic
+    body. That is a stale-latch artifact of the harness, not a property of the
+    case — and it made a clean case look non-idempotent on replay because only
+    the *second* run of a process saw the latched failure.
     """
+    pipe = PIPE
+    try:
+        pipe._LAST_COMPLETION_ERROR = ''
+        pipe._LAST_COMPLETION_LOCAL = False
+    except Exception:  # noqa: BLE001 - latch names are the shipped contract; never fail a case over them
+        pass
     body = '\n'.join(str(m.get('content', '')) for m in (messages or [])
                      if isinstance(m, dict))
     hit = re.search(r'"lambda_home":\s*"?([0-9.]+)', body)
@@ -693,6 +709,19 @@ def _pack_absent_patch(case: dict[str, Any]) -> Any:
             raise RuntimeError('sweep-forced rebuild failure')
         return mock.patch.object(APP, 'rebuild_pipeline_bundle_from_history', _boom)
     return mock.patch.object(APP, '_sweep_noop_marker', 1, create=True)
+
+
+_OP_LINE = re.compile(r'^.*(操作员已指定方向|已按操作员指定方向).*$', re.M)
+
+
+def _canon_operator_line(body: str) -> str:
+    """Normalise the one line whose value legitimately changes across a replay.
+
+    The operator-direction line quotes the stored score, which the first run
+    writes, so `原 无` becomes `原 2-1`. That is the line's documented purpose.
+    Everything else is compared byte-for-byte.
+    """
+    return _OP_LINE.sub('<OPERATOR-DIRECTION-LINE>', str(body or ''))
 
 
 def _capture_send(sent: list) -> Any:
@@ -955,6 +984,21 @@ def _check_render_fallback_html(case: dict[str, Any],
     return out
 
 
+def _count_word(n: int) -> str:
+    """A count spelled in Chinese numerals, so `_signature` cannot erase it.
+
+    `_signature` digit-normalises every failure detail before clustering, which
+    is right for grouping but turns `title_mark_count:2` into
+    `title_mark_count:#`. A reader then cannot tell a doubled title from a
+    quadrupled one without rerunning the case. Chinese numerals survive that
+    substitution, so the count stays readable in CLUSTERS; the ASCII number is
+    still printed first for anything that parses the line.
+    """
+    words = {0: '零', 1: '一', 2: '两', 3: '三', 4: '四', 5: '五', 6: '六',
+             7: '七', 8: '八', 9: '九', 10: '十'}
+    return words.get(int(n), str(n))
+
+
 def _check_title_once(case: dict[str, Any], text: str) -> list[tuple[str, str]]:
     """E13: the delivered title line carries 📌 and the kickoff exactly once.
 
@@ -962,6 +1006,13 @@ def _check_title_once(case: dict[str, Any], text: str) -> list[tuple[str, str]]:
     feeding that back through `format_tg_match_header` doubles 📌, the match
     number and the kickoff, and #28 pins the result to the first line a reader
     sees. Zero tolerance: one occurrence each.
+
+    The kickoff rule is waived for the pack-absent states only, and that is a
+    per-state exception rather than a blanket one: with no bundle there is no
+    kickoff to quote, so that path heads its own body with
+    `📌 名称（order=…）` by design. Only the kickoff assertion is waived —
+    the 📌 count stays zero-tolerance on those cases too, because a doubled
+    title is just as wrong there.
     """
     out: list[tuple[str, str]] = []
     title = ''
@@ -973,13 +1024,14 @@ def _check_title_once(case: dict[str, Any], text: str) -> list[tuple[str, str]]:
         return out
     marks = title.count('📌')
     if marks != 1:
-        out.append(('E13', f'title_mark_count:{marks}:{title[:70]}'))
+        out.append(('E13', f'title_mark_count:{marks}（实际{_count_word(marks)}个📌，应为1个）:{title[:70]}'))
+    if case.get('pack_absent_state'):
+        return out
     rec = case.get('rec') or {}
     kickoff = str(rec.get('match_time') or rec.get('time') or rec.get('kickoff_time') or '')
-    # The pack-absent path prints its own header (「📌 名称（order=…）」) because it
-    # has no bundle kickoff to show; the kickoff rule belongs to the normal path.
-    if kickoff and not case.get('pack_absent_state') and title.count(kickoff) != 1:
-        out.append(('E13', f'kickoff_count:{title.count(kickoff)}:{title[:70]}'))
+    hits = title.count(kickoff) if kickoff else 0
+    if kickoff and hits != 1:
+        out.append(('E13', f'kickoff_count:{hits}（实际{_count_word(hits)}次，应为1次）:{title[:70]}'))
     return out
 
 
@@ -1333,19 +1385,38 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
             replay, _replay_out = _run_once(case, hist_path, reseed=False)
             first_bodies = [t for t in sent if t]
             replay_bodies = [t for t in replay if t]
-            # The claim is about *outcome*, not byte equality: a refusal that
-            # becomes a report (or the reverse) means the writeback changed what
-            # the input means. Text can legitimately differ on replay — the
-            # operator-direction line quotes the stored score, which the first
-            # run itself writes, so 「原 无」becomes 「原 2-1」 by design.
-            _shape = [(len(b) > 200) for b in (replay_bodies or [])]
-            _shape_first = [(len(b) > 200) for b in (first_bodies or [])]
-            if (bool(replay_bodies) != bool(first_bodies)) or _shape != _shape_first:
+            # Byte equality, with exactly one documented exemption.
+            #
+            # The operator-direction line quotes the score that is already stored
+            # (`原 无` on a first run, `原 2-1` once the first run has written it),
+            # so that single line legitimately differs on replay — its whole
+            # purpose is to report what the record held before the command.
+            # Measured over 240 cases rotating operator_direction /
+            # render_fallback / pack_absent the way run_shard does: 15 differ
+            # byte-wide, and after normalising only this line to a fixed token,
+            # 0 differ. Everything else must be identical, so a section that
+            # disappears, a number that moves, or a line that duplicates on
+            # writeback is a failure here.
+            #
+            # This replaced a `len(body) > 200` shape check, which only caught
+            # "the report became a refusal" and would have passed a lost section,
+            # a changed number, or a duplicated line. Counter-proved through
+            # run_shard: dropping one 31-table row (or the 六盘口 panel) on the
+            # writeback turns 11 of 11 reachable cases red — the 12th takes the
+            # pack-absent exit and never builds these sections — while the same
+            # shard is 12/12 green with nothing dropped. `tests/test_title_once.py`
+            # drives that through run_shard, so weakening this comparison back to
+            # the shape check turns those tests red.
+            _first_canon = [_canon_operator_line(t) for t in first_bodies]
+            _replay_canon = [_canon_operator_line(t) for t in replay_bodies]
+            if _replay_canon != _first_canon:
+                _first_len = sum(len(t) for t in first_bodies)
+                _replay_len = sum(len(t) for t in replay_bodies)
                 failures.append({
                     'invariant': 'E9', 'case': case,
-                    'detail': f'replay_after_writeback_differs:'
-                              f'{len(first_bodies)}msg/{sum(len(t) for t in first_bodies)}ch'
-                              f'->{len(replay_bodies)}msg/{sum(len(t) for t in replay_bodies)}ch',
+                    'detail': 'replay_after_writeback_differs:'
+                              f'{len(first_bodies)}msg/{_first_len}ch'
+                              f'->{len(replay_bodies)}msg/{_replay_len}ch',
                 })
                 defects = list(defects) or [('E9', 'replay_after_writeback_differs')]
             if not defects:
