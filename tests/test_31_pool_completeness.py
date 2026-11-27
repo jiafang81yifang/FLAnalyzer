@@ -433,23 +433,26 @@ def test_emit_self_heals_a_22_item_jc31_from_the_list_page(
 def test_emit_reports_the_real_source_when_lambda_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """λ 真的没有：仍如实报「理论概率缺31项」，但日志必须点名上游拒绝补默认。"""
+    """λ 真的没有：仍如实报「理论概率缺31项」，但报告照发并披露。"""
     jc = _jc31_odds()
     rec = _history_record(jc, lam_keys={})
     saved, lines = _run_emit(monkeypatch, tmp_path, rec)
     joined = '\n'.join(lines)
-    assert '跳过系统分析' in joined
+    # 政策反转：31 表不齐不再「跳过系统分析」，改成日志+报告披露。
+    assert '跳过系统分析' not in joined, joined
+    assert '照常发研判' in joined
     assert '理论概率缺31项' in joined
     assert '冻结λ未形成' in joined
     assert '上游拒绝补默认进球期望' in joined
     # 市场侧是齐的：22 项市均 + 9 项竞彩，不许把市场也说成缺。
     assert '市场概率缺' not in joined, joined
-    assert saved['cs31_analysis_blocked'] is True
+    assert saved['cs31_analysis_blocked'] is False
+    assert saved['cs31_disclosed_incomplete'] is True
     assert saved['cs31_missing']
 
 
 # --------------------------------------------------------------------------- #
-# 发报硬闸：缺六盘口 / 缺 DeepSeek 外壳 → 拒绝发正文
+# 发报体检：缺六盘口 / 缺 DeepSeek 外壳 → 披露标签（不再拒发）
 # --------------------------------------------------------------------------- #
 def test_quality_gate_signature_matches_the_app_call() -> None:
     """app 用五个关键字调用，实现必须吃得下并返回 dict（曾经 TypeError 被吞）。"""
@@ -463,12 +466,15 @@ def test_quality_gate_signature_matches_the_app_call() -> None:
     )
     assert isinstance(gate, dict), type(gate)
     for key in ('text', 'ok', 'reject', 'reject_reason', 'missing_boards',
-                'missing_sections', 'section_status', 'passed_sections'):
+                'missing_sections', 'section_status', 'passed_sections',
+                'disclosure', 'banner', 'gap'):
         assert key in gate, key
-    # 没有六盘口就没有通过的理由。
-    assert gate['reject'] is True
+    # 没有六盘口：仍然点名，但结论是「披露」，不是「拒发」。
+    assert gate['reject'] is False
+    assert gate['disclosure'] == 'missing_boards'
     assert gate['ok'] is False
     assert '缺六盘口' in gate['reject_reason']
+    assert '本场缺口（先说清楚，不影响出报）' in gate['banner']
 
 
 def test_quality_gate_accepts_a_complete_payload() -> None:
@@ -493,10 +499,10 @@ def test_quality_gate_treats_zero_lines_as_present() -> None:
     assert gaps == ['胜平负', '总进球', '半全场']
 
 
-def test_emit_refuses_to_send_when_six_boards_are_missing(
+def test_emit_sends_when_six_boards_are_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """缺六盘口：不发研判正文，只发一条点名原因的告警。"""
+    """缺六盘口：研判正文**照发**，顶部横幅点名每一块，且绝不发拒发告警。"""
     jc = _jc31_odds()
     rec = _history_record(jc, lam_keys={'lam_h': 1.45, 'lam_a': 1.10})
     # 只剩亚盘：大小球/胜平负/竞彩让球/总进球/半全场全缺。
@@ -504,22 +510,28 @@ def test_emit_refuses_to_send_when_six_boards_are_missing(
     reports: list[str] = []
     saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
     joined = '\n'.join(lines)
-    assert '[TG质量门] 拒发' in joined, joined
-    assert '缺六盘口' in joined
-    # 正文一条都不能发出去；只允许那条「拒发」告警。
-    bodies = [r for r in reports if '阶段2质量门拒发' not in r]
-    assert bodies == [], bodies
-    assert len(reports) == 1, reports
-    assert '阶段2质量门拒发' in reports[0]
-    assert '缺六盘口' in reports[0]
-    # 记录里留下拒发原因，复盘能看到。
-    assert '缺六盘口' in str(saved.get('tg_quality_gate_reject') or '')
+    assert '[TG质量门] 拒发' not in joined, joined
+    assert '阶段2质量门拒发' not in '\n'.join(reports), reports
+    # 正文必须真的到了「Telegram」——而且带着模型研判段。
+    assert reports, '缺盘口也不许只发一条告警'
+    body = '\n'.join(reports)
+    assert pipe_mod.DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in body, body[:2000]
+    # 横幅点名每一块缺的盘口。
+    assert '本场缺口（先说清楚，不影响出报）' in body
+    for label in ('大小球', '胜平负', '竞彩让球', '总进球', '半全场'):
+        assert label in body, (label, body[:2000])
+    # 缺口在正文里的写法统一为「无数据（原因：…）」，绝不补占位数字。
+    assert '无数据（原因：' in body
+    # 记录里留下披露，复盘能看到。
+    assert saved.get('tg_quality_gate_disclosure')
+    assert '缺六盘口' in str(saved['tg_quality_gate_disclosure'].get('reason') or '')
+    assert not saved.get('tg_quality_gate_reject')
 
 
-def test_emit_refuses_to_send_when_the_deepseek_shell_is_missing(
+def test_emit_sends_when_the_deepseek_shell_is_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """六盘口齐但缺 DeepSeek 外壳：同样不发正文，并点名缺哪一段。"""
+    """六盘口齐但缺 DeepSeek 外壳：正文照发，并点名缺哪一段。"""
     jc = _jc31_odds()
     rec = _history_record(jc, lam_keys={'lam_h': 1.45, 'lam_a': 1.10})
     real_sections = pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections
@@ -534,24 +546,28 @@ def test_emit_refuses_to_send_when_the_deepseek_shell_is_missing(
     reports: list[str] = []
     _saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
     joined = '\n'.join(lines)
-    assert '[TG质量门] 拒发' in joined, joined
+    assert '[TG质量门] 拒发' not in joined, joined
+    assert '阶段2质量门拒发' not in '\n'.join(reports), reports
+    assert reports, '缺外壳也不许只发一条告警'
+    body = '\n'.join(reports)
+    # 缺的那一段由体检补上一条点名缺口的说明，正文本身照发。
     assert '缺DeepSeek外壳' in joined
-    bodies = [r for r in reports if '阶段2质量门拒发' not in r]
-    assert bodies == [], bodies
-    assert len(reports) == 1, reports
-    assert '缺DeepSeek外壳' in reports[0]
+    assert pipe_mod.DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in body
+    assert '无数据（原因：' in body
 
 
 def test_emit_still_sends_when_the_gate_passes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """完整 payload：门禁放行，正文照常发出。"""
+    """完整 payload：体检放行，正文照常发出，且没有降级横幅。"""
     jc = _jc31_odds()
     rec = _history_record(jc, lam_keys={'lam_h': 1.45, 'lam_a': 1.10})
     reports: list[str] = []
     saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
     joined = '\n'.join(lines)
     assert '[TG质量门] 拒发' not in joined, joined
+    assert '本场缺口' not in '\n'.join(reports)
     assert reports, 'a passing gate must still push the report'
     assert any(pipe_mod.DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in r for r in reports), reports
     assert not saved.get('tg_quality_gate_reject')
+    assert not saved.get('tg_quality_gate_disclosure')

@@ -456,8 +456,8 @@ def test_six_board_gate_passes_when_only_bookmaker_lines_present() -> None:
     assert gaps == []
 
 
-def test_six_board_gate_refusal_names_structural_vs_transient() -> None:
-    """拒发原因必须分清「结构性不可达」与「本次没解析出来」，但结论仍是拒发。"""
+def test_six_board_gate_names_structural_vs_transient() -> None:
+    """披露必须分清「结构性不可达」与「本次没解析出来」，但报告照发。"""
     boards = {
         'asian_handicap': None,
         'ou_line': None,
@@ -470,9 +470,11 @@ def test_six_board_gate_refusal_names_structural_vs_transient() -> None:
     gate = app.DeepSeekAnalyzer.ensure_judgment_standard_sections(
         'DeepSeek 数据分析研判报告 正文', payload={'six_market_mobile': boards},
     )
-    assert gate['reject'] is True, '门禁不许被这次修改放宽'
-    assert '结构性缺' in gate['reject_reason']
+    assert gate['reject'] is False, '缺盘口不再阻止发送'
+    assert gate['disclosure'] == 'missing_boards'
+    assert '结构性不可达' in gate['reject_reason']
     assert '亚盘让球' in gate['reject_reason']
+    assert '结构性不可达' in gate['banner']
 
     # 竞彩侧的项没解析出来时，必须标成「可修」而不是结构性缺
     boards2 = dict(boards, total_goals_odds={}, htft_odds={},
@@ -480,9 +482,9 @@ def test_six_board_gate_refusal_names_structural_vs_transient() -> None:
     gate2 = app.DeepSeekAnalyzer.ensure_judgment_standard_sections(
         'DeepSeek 数据分析研判报告 正文', payload={'six_market_mobile': boards2},
     )
-    assert gate2['reject'] is True
-    assert '本次未取到' in gate2['reject_reason']
-    assert '结构性缺' not in gate2['reject_reason']
+    assert gate2['reject'] is False
+    assert '本次未解析出' in gate2['reject_reason']
+    assert '结构性不可达' not in gate2['reject_reason']
 
 
 # ---------------------------------------------------------------------------
@@ -1064,13 +1066,15 @@ def test_verdict_line_has_three_distinct_outcomes() -> None:
     assert len({ok, alert_ok, alert_bad}) == 3
 
 
-def test_fuse_branch_reads_send_return_value() -> None:
-    """防盲区熔断分支必须看 send 的返回值，不能 try 后就当成功。"""
+def test_fuse_branch_no_longer_aborts_the_report() -> None:
+    """防盲区熔断不再是一条只发告警的出口：模型段跳过，确定性正文照发。"""
     src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
-    idx = src.index('防盲区熔断，未发研判正文')
-    window = src[max(0, idx - 900): idx]
-    assert 'is True' in window
-    assert 'alert_sent=_fuse_sent' in src
+    idx = src.index("== 'market_weight_fuse'")
+    # 熔断分支到下一个同级 if 之间不允许出现 return None
+    window = src[idx: idx + 1200]
+    assert 'return None' not in window.split('if isinstance(_ds_payload')[0]
+    assert '未发研判正文' not in window
+    assert '确定性正文照常发送' in window
 
 
 # ---------------------------------------------------------------------------
@@ -1079,8 +1083,10 @@ def test_fuse_branch_reads_send_return_value() -> None:
 
 def test_31_block_line_distinguishes_boards_from_score_options() -> None:
     src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
-    assert '这一关卡的是比分选项，不是盘口' in src
+    assert '这一节披露的是比分选项，不是盘口' in src
     assert '盘口齐不会让 31 表变齐' in src
+    # 31 表不齐不再是一条只发「暂不分析」的出口。
+    assert '【31全表未抓全·暂不分析】' not in src
 
 
 # ---------------------------------------------------------------------------
@@ -1148,8 +1154,8 @@ def test_complete_record_passes_gate_through_real_builder() -> None:
     ('total_goals_odds', '总进球'),
     ('htft_odds', '半全场'),
 ])
-def test_each_missing_board_rejects_with_its_own_name(board_key, label) -> None:
-    """六个盘口逐个缺失：闸门必须拒绝，且原因点名正是那一块。"""
+def test_each_missing_board_is_disclosed_with_its_own_name(board_key, label) -> None:
+    """六个盘口逐个缺失：必须披露，且点名正是那一块（不再是拒发）。"""
     pipe = _pipe()
     boards = _full_six_boards()
     boards.pop(board_key)
@@ -1159,9 +1165,11 @@ def test_each_missing_board_rejects_with_its_own_name(board_key, label) -> None:
     gate = pipe.DeepSeekAnalyzer.ensure_judgment_standard_sections(
         'DeepSeek 数据分析研判报告 正文', payload=payload,
     )
-    assert gate['reject'] is True
+    assert gate['reject'] is False, '缺盘口不该再阻止发送'
+    assert gate['disclosure'] == 'missing_boards'
     assert gate['missing_boards'] == [label], (board_key, gate['missing_boards'])
     assert label in gate['reject_reason']
+    assert label in gate['banner']
 
 
 # ---------------------------------------------------------------------------
@@ -1210,8 +1218,10 @@ def test_gate_passes_when_line_in_both_layers() -> None:
     assert gate['reject'] is False, gate['reject_reason']
 
 
-def test_gate_still_rejects_when_line_in_no_layer() -> None:
-    """三层都没有：必须仍然拒发，并点名这两块。"""
+def test_gate_still_flags_when_line_in_no_layer() -> None:
+    """三层都没有：必须点名这两块并给出横幅，但报告照发。"""
     gate = _gate_with({}, _GATE_NONE)
-    assert gate['reject'] is True
+    assert gate['reject'] is False
+    assert gate['disclosure'] == 'missing_boards'
     assert gate['missing_boards'] == ['亚盘让球', '大小球']
+    assert '亚盘让球' in gate['banner'] and '大小球' in gate['banner']
