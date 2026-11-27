@@ -27,6 +27,7 @@ MODULES = [
     'ProductionRunnerBridge',
     'blade_monitor_panel',
     'unified_odds_evaluator',
+    'score_convergence_engine',
 ]
 
 APP = 'app_v84_hermes.py'
