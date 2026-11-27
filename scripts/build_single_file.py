@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,57 @@ MODULES = [
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
 END = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'
+KB_DIR = ROOT / 'knowledge_base'
+KB_FILES = ['statistical_skills.json', 'strategy_skills.json']
+SEED_START = '# >>> FLANALYZER_EMBEDDED_KNOWLEDGE_BASE >>>'
+SEED_END = '# <<< FLANALYZER_EMBEDDED_KNOWLEDGE_BASE <<<'
+
+
+def knowledge_base_skills() -> dict[str, list[dict]]:
+    """Read the canonical knowledge_base JSON files that ship in the repository."""
+    out: dict[str, list[dict]] = {}
+    for name in KB_FILES:
+        path = KB_DIR / name
+        if not path.exists():
+            raise RuntimeError(f'knowledge base seed missing: {path}')
+        data = json.loads(path.read_text(encoding='utf-8'))
+        skills = data.get('skills') if isinstance(data, dict) else None
+        if not isinstance(skills, list) or not skills:
+            raise RuntimeError(f'knowledge base seed is empty: {path}')
+        out[name] = skills
+    return out
+
+
+def build_seed_block() -> str:
+    """Emit the `_SEED_SKILLS` class attribute body for SkillMatchingEngine."""
+    seeds = knowledge_base_skills()
+    payload = json.dumps(seeds, ensure_ascii=False, indent=4)
+    # indent under the class body (4 spaces) and keep it a single statement.
+    payload = payload.replace('\n', '\n    ')
+    return (
+        f'{SEED_START}\n'
+        f'    # Generated from knowledge_base/*.json by scripts/build_single_file.py. Do not hand-edit.\n'
+        f'    _SEED_SKILLS: ClassVar[dict[str, list[dict[str, Any]]]] = {payload}\n'
+        f'{SEED_END}'
+    )
+
+
+def refresh_seed_block(text: str) -> str:
+    """Replace (or insert) the embedded knowledge-base seed inside SkillMatchingEngine."""
+    block = build_seed_block()
+    if SEED_START in text and SEED_END in text:
+        before = text.split(SEED_START, 1)[0]
+        after = text.split(SEED_END, 1)[1]
+        return before + block + after
+    # 未带 sentinel 的旧文件：整段 `_SEED_SKILLS: ClassVar[...] = <literal>` 替换掉。
+    pattern = re.compile(
+        r'^[ \t]*_SEED_SKILLS: ClassVar\[dict\[str, list\[dict\[str, Any\]\]\]\] = \{[\s\S]*?\n(?=[ \t]*\n|class |[ \t]*@)',
+        re.MULTILINE,
+    )
+    match = pattern.search(text)
+    if not match:
+        raise RuntimeError('SkillMatchingEngine._SEED_SKILLS anchor not found')
+    return text[:match.start()] + block + '\n' + text[match.end():]
 
 
 def build_block() -> str:
@@ -76,6 +128,7 @@ def refresh_app() -> str:
         if anchor not in text:
             raise RuntimeError('typing import anchor not found')
         text = text.replace(anchor, anchor + '\n' + block + '\n', 1)
+    text = refresh_seed_block(text)
     APP.write_text(text, encoding='utf-8')
     return text
 

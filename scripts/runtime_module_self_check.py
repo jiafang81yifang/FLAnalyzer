@@ -58,7 +58,8 @@ def main() -> None:
     require_dict(fb.apply_fallback_cs_to_rec(rec), 'ranking')
     table = jc.build_merged_market_heat_jc_table({'ranking': [{'score': '1-0', 'heat': 0.2}]}, {'1-0': 6.0})
     require_dict(table, 'rows')
-    require(arb.resolve_direction(['1-0', '2-1']) == '胜', 'arbitration direction failed')
+    _dir, _res = arb.resolve_direction(['1-0', '2-1'])
+    require(_dir == '胜' and isinstance(_res, dict), 'arbitration direction failed')
     target: dict[str, Any] = {}
     require_dict(attach_engine_clearing(target), 'available')
     print(json.dumps({'ok': True, 'checked': 9}, ensure_ascii=False))

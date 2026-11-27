@@ -995,12 +995,17 @@ def audit_installer_refresh(audit: Audit, root: Path) -> None:
     audit.record('refresh:skips-pip-when-satisfied', 'depsReady' in text and '依赖已满足' in text)
     audit.record('refresh:skips-venv-creation', '跳过创建虚拟环境' in text)
 
-    # config.env must never be written by the installer.
+    # config.env must never be written by the installer. The only files it may
+    # write are the launcher and the throwaway knowledge-base seeding helper
+    # (written to `$KbHelper`, run, then deleted in the same block).
     writes = re.findall(r'\[System\.IO\.File\]::WriteAll\w+\(([^)]*)\)', text)
-    foreign = [w for w in writes if 'StartBat' not in w]
+    allowed_targets = ('StartBat', 'KbHelper')
+    foreign = [w for w in writes if not any(t in w for t in allowed_targets)]
     audit.record('refresh:never-writes-config-env', not foreign,
                  f'installer writes unexpected files: {foreign[:3]}')
-    audit.record('refresh:no-config-env-write', 'config.env' not in ' '.join(foreign))
+    audit.record('refresh:no-config-env-write',
+                 'ConfigEnv' not in ' '.join(writes) and 'config.env' not in ' '.join(writes),
+                 f'installer writes config.env: {[w for w in writes if "ConfigEnv" in w or "config.env" in w][:1]}')
 
     # Launcher regeneration and the guarded proxy default.
     audit.record('refresh:regenerates-start-cmd', 'blade_load_config' in text)
