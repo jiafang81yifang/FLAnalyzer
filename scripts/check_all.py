@@ -23,6 +23,11 @@ PYTHON_FILES = [
     'scripts/build_single_file.py',
     'scripts/full_audit.py',
     'scripts/runtime_module_self_check.py',
+    'unified_odds_evaluator.py',
+    'tg_goal_table.py',
+    'score_matrices.py',
+    'market_guardrails.py',
+
 ]
 
 GATES: list[tuple[str, list[str]]] = [
