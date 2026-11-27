@@ -365,7 +365,12 @@ class DeepSeekAnalyzer:
         def _pct_text(value: Any) -> str:
             """市均/竞彩/差三列都不许把缺失写成 0：缺失就写「-」。"""
             try:
-                return f'{float(value):.2f}'
+                number = float(value)
+                # float('1e400') 返回 inf 而不是抛异常：只捕异常会把 `inf`
+                # 原样印进制表。非有限值按缺失写「-」。
+                if not math.isfinite(number):
+                    return '-'
+                return f'{number:.2f}'
             except (TypeError, ValueError, OverflowError):
                 return '-'
 

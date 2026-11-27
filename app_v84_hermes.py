@@ -16507,7 +16507,7 @@ def calc_lambda_from_odds(odds_1x2_dict, asian_handicap=None, ou_line=None,
         lam_h = max(0.4, min(4.0, lam_h))
         lam_a = max(0.3, min(3.5, lam_a))
         return round(lam_h, 3), round(lam_a, 3)
-    except (TypeError, ValueError, KeyError, ZeroDivisionError, OverflowError, ArithmeticError) as _mle_err:
+    except (TypeError, ValueError, KeyError, ZeroDivisionError, ArithmeticError) as _mle_err:
         print(f"   ⚠️ [λ极大似然] {type(_mle_err).__name__}: {_mle_err}。本场不采用求解结果。")
         calc_lambda_from_odds.__dict__['last_mle_result'] = {'success': False, 'error': f'{type(_mle_err).__name__}: {_mle_err}'}
         return None, None
@@ -33438,7 +33438,12 @@ def _pct_text(value):
     try:
         if value is None or value == '':
             return ''
-        return f'{float(value):.2f}%'
+        number = float(value)
+        # `float('1e400')` 不抛异常，它返回 inf；只补 OverflowError 挡不住这个形状，
+        # 报告里就会出现 `inf%`。非有限值一律当「未形成」。
+        if not math.isfinite(number):
+            return ''
+        return f'{number:.2f}%'
     except (TypeError, ValueError, OverflowError):
         return ''
 
@@ -45372,7 +45377,10 @@ if not _CLI_HEADLESS:
         _c2.metric("审计日志", view.get('lock_type') or '未形成')
         _conf = view.get('final_confidence')
         try:
-            _conf_txt = f"{float(_conf) * 100:.1f}%" if _conf is not None else '未形成'
+            _conf_num = float(_conf) if _conf is not None else None
+            # float('1e400') 是 inf，不抛异常；不查有限性就会打出「inf%」。
+            _conf_txt = (f'{_conf_num * 100:.1f}%'
+                         if _conf_num is not None and math.isfinite(_conf_num) else '未形成')
         except (TypeError, ValueError, OverflowError):
             _conf_txt = '未形成'
         _c3.metric("置信度", _conf_txt)
