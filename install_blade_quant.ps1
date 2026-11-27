@@ -29,11 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 已并入 cursor/fix-live-log-gaps 的 0a7341d（#5/#6 血统），本 pin 指向该合并点
-# 260c102 = 内置六步比分收敛引擎（score_convergence_engine，含31项完备树/宏观裁决/
-#           全方向预判）；Step4 读结构化市热/市短（ranking/counts 优先，文本仅兜底），
-#           生产形态下可正常锁定 2 个比分；TG 新增「六步收敛」段。已过全套审计
-$PinCommit = 'd6680cf2d301fec766609282f8c8e7d563db168d'
+# d470f7d = 铁律 A–F 净化 + 用户两条裁决（多场汇总只作风险提示、_to_float 无默认值）
+$PinCommit = '71e41d99b4b402b4cba6d462b6085d1fe69691b3'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'

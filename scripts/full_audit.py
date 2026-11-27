@@ -483,15 +483,17 @@ def audit_ml(audit: Audit, root: Path, workdir: Path) -> None:
                 lambda v: abs(float(v) - 1.0) < 1e-6)
     audit.check('ml:poisson-matrix-keys', lambda: sorted(matrix)[:2] if isinstance(matrix, dict) else [],
                 lambda v: v == ['0-0', '0-1'])
+    # 铁律 2：λ 缺失/非数时不得编造 1.2/0.9 出一个归一矩阵——必须返回空矩阵。
     audit.check('ml:poisson-degenerate', lambda: engine.calc_bivariate_poisson_matrix(None, 'x'),
-                lambda v: isinstance(v, dict) and abs(sum(v.values()) - 1.0) < 1e-6)
+                lambda v: isinstance(v, dict) and v == {})
 
     audit.check('ml:train-empty-history', lambda: engine.train_from_history({}, save=False),
                 lambda v: isinstance(v, dict))
     audit.check('ml:predict-no-bundle', lambda: engine.predict_match_ml({}), lambda v: isinstance(v, dict))
     audit.check('ml:learn-bad-input', lambda: engine.learn_match_after_result(None), lambda v: isinstance(v, dict))
-    audit.check('ml:safe-float-none', lambda: engine._safe_float(None), lambda v: v == 0.0)
-    audit.check('ml:safe-float-garbage', lambda: engine._safe_float('abc'), lambda v: v == 0.0)
+    # 铁律 2：缺失/非数必须报缺失（None），不得回落 0.0 假装「数值是 0」。
+    audit.check('ml:safe-float-none', lambda: engine._safe_float(None), lambda v: v is None)
+    audit.check('ml:safe-float-garbage', lambda: engine._safe_float('abc'), lambda v: v is None)
 
 
 def audit_odds(audit: Audit, root: Path) -> None:
