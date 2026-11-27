@@ -3795,7 +3795,7 @@ def run_ventropy_pipeline(ranked_scores, pool15_enriched, league_name, anomaly_p
             secondary = _same_direction_pick(primary, tier_1[1:] + tier_2 + classified[1:])
             log = (
                 'Deviation>200且IBI处于2.0-6.58黄金防备区间，市场显著错价，双轨裁决锁定必杀层目标。'
-                + ('' if secondary != 'N/A' else f'（同向次选不足2个，只出{primary}一个比分）')
+                + ('' if secondary != 'N/A' else f'（同向且不同比分的候选不足2个，只出{primary}一个比分）')
             )
         elif tier_2:
             route = 'TIER_2_DEFENSE (冰封防御层)'
@@ -3803,7 +3803,7 @@ def run_ventropy_pipeline(ranked_scores, pool15_enriched, league_name, anomaly_p
             secondary = _same_direction_pick(primary, tier_2[1:] + classified[1:])
             log = (
                 '偏差为负且IBI冰封(<1.0)，机构压注防守痕迹明确，双轨裁决锁定防御层目标。'
-                + ('' if secondary != 'N/A' else f'（同向次选不足2个，只出{primary}一个比分）')
+                + ('' if secondary != 'N/A' else f'（同向且不同比分的候选不足2个，只出{primary}一个比分）')
             )
         else:
             route = 'NO_SIGNAL (双轨无信号)'
