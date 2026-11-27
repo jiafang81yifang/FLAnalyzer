@@ -29,10 +29,11 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
+# 已并入 cursor/fix-live-log-gaps 的 0a7341d（#5/#6 血统），本 pin 指向该合并点
 # 057c455 = 统一赔率评估器 unified_odds_evaluator.py（含 CN/INTL 同场按名对齐、
 #           走水凯利修正说明、保本概率别名）+ 单文件内嵌同步
 # ce23836 = 说明 EV 为何不含走水项（push*0 精确为 0，只有凯利用 1/(1-push_prob)）
-$PinCommit = 'ce23836403f20a3f60822fedc4339787e160ff72'
+$PinCommit = '7c27d88d5ec3fb5d60362aaa3e806f972ed9c6e5'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
