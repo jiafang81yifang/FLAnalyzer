@@ -72,19 +72,16 @@ def test_list_boards_parse_all_four_from_user_match() -> None:
 
     wdl = res['blocks']['胜平负']
     assert wdl['stage'] == 'ok'
-    # 13=主胜 11=平 10=客胜（页面行内「胜/平/负」顺序核对过）
-    assert wdl['odds_1x2'] == {
-        'home': 3.55, 'draw': 4.03, 'away': 1.64,
-        'Home': 3.55, 'Draw': 4.03, 'Away': 1.64,
-    }
+    # 胜平负 = SportteryNWDL 16/15/14（betway="0" 平手块），不是 WDL。
+    assert (wdl['odds_1x2']['home'], wdl['odds_1x2']['draw'], wdl['odds_1x2']['away']) == (1.91, 3.86, 2.8)
+    assert wdl['source_block'] == 'SportteryNWDL'
 
     jc = res['blocks']['竞彩让球']
     assert jc['stage'] == 'ok'
     assert jc['line'] == -1.0            # Boundary.SportteryWDL == '-1'
-    assert jc['odds'] == {
-        'home': 1.91, 'draw': 3.86, 'away': 2.8,
-        'Home': 1.91, 'Draw': 3.86, 'Away': 2.8,
-    }
+    # 竞彩让球 = SportteryWDL 13/11/10 + Boundary，不是 NWDL。
+    assert (jc['odds']['home'], jc['odds']['draw'], jc['odds']['away']) == (3.55, 4.03, 1.64)
+    assert jc['source_block'] == 'SportteryWDL+Boundary.SportteryWDL'
 
     tg = res['blocks']['总进球']
     assert tg['stage'] == 'ok'
@@ -125,11 +122,12 @@ def test_wdl_codes_are_not_home_first() -> None:
         assert (wdl['13'], wdl['11'], wdl['10']) == straight, oid_m.group(1)
         checked += 1
     assert checked >= 20, f'只用 {checked} 场核对，样本太少不足以断言编码顺序'
-    # 解析器必须按证据映射，而不是按「先主队」的直觉。
-    parsed = okooo.parse_jczq_list_boards(text, USER_MATCH_ID)['blocks']['胜平负']
-    slot_wdl = _slot()['OddsList']['SportteryWDL']
-    assert parsed['odds_1x2']['home'] == float(slot_wdl['13'])
-    assert parsed['odds_1x2']['away'] == float(slot_wdl['10'])
+    # 解析器必须按证据映射：胜平负取 NWDL(16/15/14)，竞彩让球取 WDL(13/11/10)。
+    # 块与市场的关系见下方 test_render_dom_pins_market_assignment。
+    blocks = okooo.parse_jczq_list_boards(text, USER_MATCH_ID)['blocks']
+    slot = _slot()['OddsList']
+    assert blocks['胜平负']['odds_1x2']['home'] == float(slot['SportteryNWDL']['16'])
+    assert blocks['竞彩让球']['odds']['home'] == float(slot['SportteryWDL']['13'])
 
 
 def test_half_full_group_one_is_strictly_ordered_by_price() -> None:
@@ -407,15 +405,18 @@ def test_ou_line_on_record_reaches_the_six_board_pack() -> None:
 
 
 def test_zero_line_is_a_real_line_not_a_gap() -> None:
-    """0.0 是平手盘 / 大小球 0 线，必须当成有值写回，不能被 `not value` 漏掉。"""
-    rec = {'asian_handicap': 0.0, 'ou_line': 0.0}
+    """0.0 是平手盘 / 大小球 0 线，必须当成有值写回，不能被 `not value` 漏掉。
+
+    但 0.0 仍须通过准入：亚盘 0.0（平手）在 ±5 内、是四分之一球刻度，
+    大小球 0.0 不在 0.5..6.5 内——这是主路径既有的口径，不在本轮放宽。
+    """
+    rec = {'asian_handicap': 0.0, 'ah_channel': 'mobile'}
     pack = {'asian_handicap': None, 'ou_line': None,
             'boards_hit': {}, 'missing': ['asian_handicap', 'ou_line']}
     out = app._backfill_six_board_lines_from_record(rec, pack)
-    assert out['asian_handicap'] == 0.0
-    assert out['ou_line'] == 0.0
+    assert out['asian_handicap'] == 0.0, '平手盘 0.0 必须算有值'
     assert out['boards_hit'].get('亚盘让球') is True
-    assert out['boards_hit'].get('大小球') is True
+    assert 'asian_handicap' not in out['missing']
 
 
 def test_six_board_gate_still_blocks_when_ah_and_ou_absent() -> None:
@@ -595,3 +596,535 @@ def test_successful_call_still_returns_body(monkeypatch) -> None:
     assert judged['available'] is True
     assert judged['error'] == ''
     assert judged['content'] == '真实研判正文'
+
+
+# ---------------------------------------------------------------------------
+# (a) 市场归属：DOM 是最终裁判
+# ---------------------------------------------------------------------------
+
+def _rendered_betway_blocks(block_html):
+    """从一条 jsMatchItem 里取出两个 betway 块：rangqiu 值与 (code, odds) 列表。
+
+    真实结构（fixture 逐字）：
+      betway="0" → <em class="rangqiu grayd">0</em>，随后每档
+                   <div class="listbetbtn ctrl_betopt" data-v="16"><p class="ctrl_txt">胜</p>
+                   <p class="ctrl_odds">1.27</p>
+      betway="1" → <em class="rangqiu fontred ctrl_special" data-type="rangfen" data-v="-1">-1</em>，
+                   各档 data-v 为 13/11/10
+    所以 DOM 自己就写着每档的编码，比按数值比对强得多。
+    """
+    out = []
+    marks = list(re.finditer(r'betway="(\d+)"', block_html))
+    for idx, m in enumerate(marks):
+        # 只切到下一个 betway 标记为止，绝不跨块取数。
+        end = marks[idx + 1].start() if idx + 1 < len(marks) else len(block_html)
+        seg = block_html[m.end(): end]
+        em = re.search(r'<em([^>]*)>\s*([+\-\d]+)\s*</em>', seg)
+        if not (em and 'rangqiu' in em.group(1)):
+            em = None
+        rq_attrs = em.group(1) if em else ''
+        rq_val = em.group(2) if em else ''
+        dv = re.search(r'data-v="([+\-\d]+)"', rq_attrs)
+        pairs = [
+            (code, float(odd))
+            for code, odd in re.findall(
+                r'data-v="(\d+)"[\s\S]{0,200}?class="[^"]*ctrl_odds"[^>]*>\s*([1-9][\d.]*)\s*<',
+                seg,
+            )
+        ]
+        out.append({
+            'betway': m.group(1),
+            'rangqiu': dv.group(1) if dv else rq_val,
+            'pairs': pairs,
+        })
+    return out
+
+
+def test_render_dom_pins_market_assignment() -> None:
+    """DOM 断言：平手块(betway=0) 的档位编码是 16/15/14 且等于胜平负；
+    让分块(betway=1) 的档位编码是 13/11/10 且等于竞彩让球。
+
+    这条测试是为「市场归属被写反」而加的：不看解析器输出，直接问渲染出来的
+    HTML 哪一块是平手、哪一块带让分、各自写着哪些编码，再要求解析器照此分配。
+
+    只有**开了让球**的场次才算样本：没有让球的场次（5011 那类）betway=1 块
+    自己也是 `rangqiu grayd` 且不带 data-v 让分值，那正是 block_absent 的形状。
+    """
+    text = _list_text()
+    data = okooo._decode_js_object(text)
+    checked = 0
+    for block in re.split(r'<div[^>]*class="[^"]*jsMatchItem[^"]*"', text)[1:]:
+        oid_m = re.search(r'orderid="(\d+)"', block)
+        if not oid_m:
+            continue
+        slot = (data.get(oid_m.group(1)) or {}).get('OddsList') or {}
+        if len(slot.get('SportteryWDL') or {}) != 3 or len(slot.get('SportteryNWDL') or {}) != 3:
+            continue
+        by_bw: dict = {}
+        for _b in _rendered_betway_blocks(block):
+            # 同一行里会出现两组 betway（列表摘要 + 展开明细），第一组才是
+            # 与 oddsData 对应的那一份；后一组是「更多玩法」面板里的其它玩法，
+            # 数值与 oddsData 无关。只认每组第一次出现的标记。
+            by_bw.setdefault(_b['betway'], _b)
+        if '0' not in by_bw or '1' not in by_bw:
+            continue
+        flat, hcap = by_bw['0'], by_bw['1']
+        if len(flat['pairs']) != 3 or len(hcap['pairs']) != 3:
+            continue
+        # 平手块：rangqiu 0，编码 16/15/14（= NWDL），数值等于 NWDL 赔率
+        assert flat['rangqiu'] in ('0', ''), (oid_m.group(1), flat)
+        assert [c for c, _ in flat['pairs']] == ['16', '15', '14'], (oid_m.group(1), flat)
+        nwdl = (float(slot['SportteryNWDL']['16']), float(slot['SportteryNWDL']['15']),
+                float(slot['SportteryNWDL']['14']))
+        assert tuple(v for _, v in flat['pairs']) == nwdl, (oid_m.group(1), flat, nwdl)
+        # 让分块：带真实让分值，编码 13/11/10（= WDL），数值等于 WDL 赔率
+        if hcap['rangqiu'] in ('', '0'):
+            continue  # 该场没开让球，属于 block_absent 样本，另行验证
+        assert [c for c, _ in hcap['pairs']] == ['13', '11', '10'], (oid_m.group(1), hcap)
+        wdl = (float(slot['SportteryWDL']['13']), float(slot['SportteryWDL']['11']),
+               float(slot['SportteryWDL']['10']))
+        assert tuple(v for _, v in hcap['pairs']) == wdl, (oid_m.group(1), hcap, wdl)
+        checked += 1
+    assert checked >= 20, f'只用 {checked} 场核对，样本不足以断言市场归属'
+    # 最后把 DOM 结论钉到解析器上：平手块必须喂给胜平负，让分块必须喂给竞彩让球。
+    blocks = okooo.parse_jczq_list_boards(text, USER_MATCH_ID)['blocks']
+    slot = (data.get(USER_ORDERID) or {}).get('OddsList') or {}
+    assert blocks['胜平负']['odds_1x2']['home'] == float(slot['SportteryNWDL']['16'])
+    assert blocks['胜平负']['odds_1x2']['away'] == float(slot['SportteryNWDL']['14'])
+    assert blocks['竞彩让球']['odds']['home'] == float(slot['SportteryWDL']['13'])
+    assert blocks['竞彩让球']['odds']['away'] == float(slot['SportteryWDL']['10'])
+    # 没有让球的场次：竞彩让球必须是 block_absent，胜平负不受影响
+    for oid in ('5001', '5011'):
+        res = okooo.parse_jczq_list_boards(text, {'5001': '1348444', '5011': '1350996'}[oid])
+        blocks = res['blocks']
+        if not (data.get(oid, {}).get('OddsList') or {}).get('SportteryWDL'):
+            assert blocks['竞彩让球']['stage'] == 'block_absent', oid
+            assert blocks['胜平负']['stage'] == 'ok', oid
+
+
+def test_handicap_line_attaches_to_handicap_market_not_straight() -> None:
+    """Boundary 挂在竞彩让球上，且**不**挂在胜平负上。"""
+    res = okooo.parse_jczq_list_boards(_list_text(), USER_MATCH_ID)
+    assert res['blocks']['竞彩让球']['line'] == -1.0
+    assert 'line' not in res['blocks']['胜平负']
+    assert 'line' not in res['blocks']['胜平负'].get('odds_1x2', {})
+    # 胜平负的三项赔率里不应出现让球后的数值
+    straight = res['blocks']['胜平负']['odds_1x2']
+    assert (straight['home'], straight['draw'], straight['away']) == (1.91, 3.86, 2.8)
+
+
+@pytest.mark.parametrize('oid,score,bnd', [
+    ('4005', (1, 2), 1),
+    ('4007', (2, 1), -1),
+    ('4009', (3, 1), -2),
+    ('4011', (2, 1), -1),
+])
+def test_result_oracle_confirms_swap_on_discriminating_matches(oid, score, bnd) -> None:
+    """Result 作 oracle（仅测试用，生产代码不读它）。
+
+    这四场直盘与让球盘赛果不同，能唯一确定两块的市场归属：
+      Result.SportteryWDL  == 让球盘赛果
+      Result.SportteryNWDL == 直盘赛果
+    """
+    data = okooo._decode_js_object(_list_text())
+    r = data[oid]['Result']
+    h, a = score
+    straight = 'Win' if h > a else ('Drawn' if h == a else 'Lost')
+    adj = (h - a) + bnd
+    handicap = 'Win' if adj > 0 else ('Drawn' if adj == 0 else 'Lost')
+    assert straight != handicap, '这一场才是有区分力的样本'
+    assert r['SportteryNWDL'] == straight
+    assert r['SportteryWDL'] == handicap
+
+
+# ---------------------------------------------------------------------------
+# (b) 准入闸门：只认手机通道的标量盘口线
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('rec,line_key,board', [
+    ({'ou_line': 2.75, 'ou_channel': '500'}, 'ou_line', '大小球'),
+    ({'asian_handicap': 1.25, 'ah_channel': '500'}, 'asian_handicap', '亚盘让球'),
+    ({'asian_handicap': 8.0, 'ah_channel': 'mobile'}, 'asian_handicap', '亚盘让球'),
+    ({'asian_handicap': {'rows': [], 'asian_handicap': 1.5}, 'ah_channel': 'mobile'},
+     'asian_handicap', '亚盘让球'),
+])
+def test_backfill_rejects_inadmissible_lines(rec, line_key, board) -> None:
+    """500 兜底 / 越界 / dict 一律不得进包、不得算命中、不得从 missing 剔除。"""
+    pack = {'asian_handicap': None, 'ou_line': None,
+            'boards_hit': {}, 'missing': [line_key]}
+    out = app._backfill_six_board_lines_from_record(dict(rec), pack)
+    assert out.get(line_key) is None
+    assert board not in (out.get('boards_hit') or {})
+    assert line_key in (out.get('missing') or [])
+
+
+def test_backfill_admits_proper_mobile_lines() -> None:
+    """手机通道、区间内、四分之一球刻度：正常写回。"""
+    rec = {'asian_handicap': -0.75, 'ah_channel': 'mobile',
+           'ou_line': 2.75, 'ou_channel': 'mobile'}
+    pack = {'asian_handicap': None, 'ou_line': None,
+            'boards_hit': {}, 'missing': ['asian_handicap', 'ou_line']}
+    out = app._backfill_six_board_lines_from_record(rec, pack)
+    assert out['asian_handicap'] == -0.75 and out['ou_line'] == 2.75
+    assert out['boards_hit']['亚盘让球'] and out['boards_hit']['大小球']
+    assert out['missing'] == []
+
+
+def test_mobile_ou_line_contract_unchanged() -> None:
+    """主路径契约不变：500 兜底仍不进六盘口。"""
+    assert app._mobile_ou_line({'ou_line': 2.75, 'ou_channel': '500'}) is None
+    assert app._mobile_ou_line({'ou_line': 2.75, 'ou_channel': 'mobile'}) == 2.75
+
+
+def test_admission_predicate_rejects_one_shared_rule() -> None:
+    """AH 与 OU 走同一条准入谓词（不是两套临时判断）。"""
+    bad = {'asian_handicap': float('inf'), 'ah_channel': 'mobile'}
+    assert app._mobile_ah_line_from_record(bad) is None
+    assert app._mobile_ah_line_from_record(
+        {'asian_handicap': -6.0, 'ah_channel': 'mobile'}) is None      # 越界
+    assert app._mobile_ah_line_from_record(
+        {'asian_handicap': '-1.25', 'ah_channel': 'mobile'}) == -1.25  # 字符串可接受
+
+
+# ---------------------------------------------------------------------------
+# (c) ModelPerformanceAnalyzer 不许把失败当正文
+# ---------------------------------------------------------------------------
+
+def _review_completed():
+    return {
+        'm1': {'status': 'completed', 'match': 'A vs B', 'time': '2026-11-26 20:00',
+               'predicted_score': '2-1', 'second_score': '1-0', 'actual_score': '2-1',
+               'big_small': '大',
+               'top15_scores': [('2-1', {'prob': 0.2}), ('1-0', {'prob': 0.1})]},
+        'm2': {'status': 'completed', 'match': 'C vs D', 'time': '2026-11-26 20:00',
+               'predicted_score': '1-0', 'second_score': '0-1', 'actual_score': '0-1',
+               'big_small': '小',
+               'top15_scores': [('1-0', {'prob': 0.18}), ('0-1', {'prob': 0.12})]},
+    }
+
+
+def test_review_exception_returns_empty_not_an_apology(monkeypatch) -> None:
+    """flash/事实包抛异常时，正文槽必须是空串，原因走 last_status()。
+
+    历史实现 `return f"⚠️ deepseek-flash 模型复盘失败: {e}", "", ""`，
+    调用方把它 send_tg 出去并打「已生成并推送」——用户日志里那条 ✅ 就是这么来的。
+    """
+    def _boom(*a, **k):
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(app, '_review_batch_facts', _boom)
+    report, code, skill = app.ModelPerformanceAnalyzer.analyze_and_generate(_review_completed())
+    assert report == ''
+    assert code == '' and skill == ''
+    st = app.ModelPerformanceAnalyzer.last_status()
+    assert st['ok'] is False
+    assert 'boom' in st['error']
+    assert '复盘失败' not in report
+
+
+def test_review_local_only_stub_is_labelled(monkeypatch) -> None:
+    """flash 返回空：本地补算段必须自带「非模型研判」标记，且状态是 local_only。"""
+    monkeypatch.setattr(app, '_ds_flash_takeover', lambda *a, **k: '')
+    report, _, _ = app.ModelPerformanceAnalyzer.analyze_and_generate(_review_completed())
+    st = app.ModelPerformanceAnalyzer.last_status()
+    assert st['model_produced'] is False
+    assert st['local_only'] is True
+    assert report.startswith(app.LOCAL_STUB_MARKER)
+    assert '非模型研判' in report.split('\n')[0]
+
+
+def test_review_success_is_marked_model_produced(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app, '_ds_flash_takeover',
+        lambda *a, **k: '模型表现自动分析报告\n市短市热对照 台账01 真实正文',
+    )
+    report, _, _ = app.ModelPerformanceAnalyzer.analyze_and_generate(_review_completed())
+    st = app.ModelPerformanceAnalyzer.last_status()
+    assert st['model_produced'] is True
+    assert st['local_only'] is False
+    assert not report.startswith(app.LOCAL_STUB_MARKER)
+    assert '真实正文' in report
+
+
+def test_review_log_line_only_says_generated_when_model_spoke(monkeypatch) -> None:
+    """`✅ [模型复盘] …已生成并推送` 只许在 model_produced 时出现。"""
+    src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
+    idx = src.index('✅ [模型复盘] deepseek-flash 表现分析')
+    window = src[max(0, idx - 600): idx]
+    assert "_mpa.get('model_produced')" in window
+    # 旧的无条件成功行不许留着
+    assert 'print("   ✅ [模型复盘] 表现分析+代码改进建议已生成并推送")' not in src
+
+
+def test_per_match_review_gaps_always_returns_list() -> None:
+    """`list + dict` 曾在**每一场**都抛 TypeError，导致推送的是那句 TypeError。"""
+    out = app._per_match_review_gaps('随便一段正文', 2)
+    assert isinstance(out, list)
+    # 与另外两个 gap 函数拼接必须成立（它们都是 list）
+    combined = app._model_report_view_gaps('') + app._ledger_gaps('', 2) + out
+    assert isinstance(combined, list)
+
+
+# ---------------------------------------------------------------------------
+# (d) 每场每阶段只采集一次
+# ---------------------------------------------------------------------------
+
+def _stub_six(monkeypatch, calls, incomplete=True):
+    """让记录「水位都齐」从而走主采集路径，并把真正抓取计到 calls 里。
+
+    水位不齐会先走「整场重抓」分支（那是另一套一次性闸门，由
+    `_WATER_FULL_SCRAPE_IDS` 管），这里要测的是主路径的阶段去重。
+    """
+    pack = {
+        'available': True, 'channel': 'mobile',
+        'asian_handicap': None, 'ou_line': None, 'odds_1x2': {},
+        'boards_hit': {}, 'missing': ['asian_handicap', 'ou_line'],
+        'source_report': {'ah': {'stage': 'fetch_failed', 'status': 405, 'bytes': 800,
+                                 'channel': 'desktop', 'error': 'HTTP 405',
+                                 'origin_blocked': True}},
+        'fetch_urls': ['https://m.okooo.com/match/handicap.php?MatchID=1'],
+    }
+    if not incomplete:
+        pack.update({
+            'asian_handicap': -0.75, 'ou_line': 2.75,
+            'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 3.5},
+            'jc_handicap': -1, 'total_goals_odds': {str(i): 5.0 for i in range(8)},
+            'htft_odds': {k: 5.0 for k in ('胜胜', '胜平', '胜负', '平胜', '平平', '平负', '负胜', '负平', '负负')},
+            'boards_hit': {}, 'missing': [],
+        })
+    def _fake(mid, *a, **k):
+        calls.append(mid)
+        return dict(pack)
+    monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets', _fake)
+    for name, repl in (
+        ('_attach_mobile_exchange_pnl', lambda *a, **k: {}),
+        ('_attach_mobile_lineup_if_missing', lambda *a, **k: {}),
+        ('_attach_mobile_ah_ou_books', lambda *a, **k: {}),
+        ('seed_mobile_ah_ou_books', lambda *a, **k: {}),
+        ('apply_mobile_books_lines', lambda *a, **k: {}),
+        ('detect_six_market_contradictions', lambda *a, **k: []),
+        ('load_six_market_contradictions', lambda *a, **k: []),
+        ('save_six_market_contradictions', lambda *a, **k: True),
+    ):
+        if hasattr(app, name):
+            monkeypatch.setattr(app, name, repl)
+
+
+def _water_complete_rec():
+    """水位齐全的记录：跳过「整场重抓」分支，直接进主采集路径。
+
+    通道标记必须写 'mobile'：准入闸门只认手机通道的标量盘口线
+    （这正是 (b) 收紧的地方），缺了标记的值会被如实拒绝。
+    """
+    return {
+        'okooo_match_id': '1338958',
+        'pipeline_phase': 'stage1',
+        'asian_handicap': -0.75, 'ah_channel': 'mobile',
+        'ou_line': 2.75, 'ou_channel': 'mobile',
+        'odds_1x2': {'home': 2.0, 'draw': 3.0, 'away': 3.5},
+        'odds_1x2_channel': 'mobile',
+        'jc_handicap': -1,
+        'total_goals_odds': {str(i): 5.0 for i in range(8)},
+        'htft_odds': {k: 5.0 for k in ('胜胜', '胜平', '胜负', '平胜', '平平', '平负', '负胜', '负平', '负负')},
+    }
+
+
+def test_three_calls_one_stage_scrape_once_and_print_once(monkeypatch, capsys) -> None:
+    """同阶段连续三次调用：只抓一次，只打一行 🔄。"""
+    calls = []
+    _stub_six(monkeypatch, calls)
+    app._WATER_FULL_SCRAPE_IDS.clear()
+    app._SIX_STAGE_PRINTS.clear()
+    rec = _water_complete_rec()
+    for _ in range(3):
+        app._ensure_mobile_six(rec, '1338958')
+    assert len(calls) == 1, f'scrape 调用了 {len(calls)} 次，应只 1 次'
+    out = capsys.readouterr().out
+    assert out.count('🔄 [手机六盘口]') == 1, out
+
+
+def test_two_stages_scrape_twice(monkeypatch) -> None:
+    """阶段变了才允许再抓一次。"""
+    calls = []
+    _stub_six(monkeypatch, calls)
+    app._WATER_FULL_SCRAPE_IDS.clear()
+    app._SIX_STAGE_PRINTS.clear()
+    rec = _water_complete_rec()
+    app._ensure_mobile_six(rec, '1338958')
+    rec['pipeline_phase'] = 'stage2'
+    app._ensure_mobile_six(rec, '1338958')
+    assert len(calls) == 2, f'scrape 调用了 {len(calls)} 次，应 2 次'
+
+
+def test_complete_pack_needs_no_extra_scrape(monkeypatch) -> None:
+    calls = []
+    _stub_six(monkeypatch, calls, incomplete=False)
+    app._WATER_FULL_SCRAPE_IDS.clear()
+    app._SIX_STAGE_PRINTS.clear()
+    rec = _water_complete_rec()
+    app._ensure_mobile_six(rec, '1338958')
+    app._ensure_mobile_six(rec, '1338958')
+    assert len(calls) == 1
+
+
+def test_failure_still_logged_once_with_reasons(monkeypatch, capsys) -> None:
+    """真失败时每阶段仍有一行，且带原因码。"""
+    calls = []
+    _stub_six(monkeypatch, calls)
+    app._WATER_FULL_SCRAPE_IDS.clear()
+    app._SIX_STAGE_PRINTS.clear()
+    rec = _water_complete_rec()
+    app._ensure_mobile_six(rec, '1338958')
+    out = capsys.readouterr().out
+    assert out.count('🔄 [手机六盘口]') == 1
+    assert 'origin_blocked' in out
+    assert 'fetch_failed/HTTP' not in out, '不许再出现状态码与阶段串台'
+
+
+# ---------------------------------------------------------------------------
+# (e) 没有 API key 时不许冒充研判
+# ---------------------------------------------------------------------------
+
+def test_no_api_key_is_not_a_judgment(monkeypatch) -> None:
+    pipe = _pipe()
+    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
+    monkeypatch.delenv('DEEPSEEK_KEY', raising=False)
+    raw = pipe.deepseek_chat_completion([{'role': 'user', 'content': 'x'}])
+    assert isinstance(raw, str) and raw.strip(), '本地确定性文本仍要返回（契约不变）'
+    assert pipe.completion_failed(raw) is True
+    assert pipe.completion_error() == 'deepseek_api_key_missing'
+    judged = pipe.DeepSeekAnalyzer.analyze_match_judgment({'match': 'A vs B'})
+    assert judged['available'] is False
+    assert judged['error'] == 'deepseek_api_key_missing'
+    assert '本地确定性分析' not in judged['content']
+    assert judged['content'] == ''
+    assert pipe.run_learning_report({'x': 1}) == ''
+
+
+def test_json_and_text_mode_agree_on_missing_key(monkeypatch) -> None:
+    """同一条件两种模式必须同一结论——这正是原来的不对称缺陷。"""
+    pipe = _pipe()
+    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
+    monkeypatch.delenv('DEEPSEEK_KEY', raising=False)
+    text_res = pipe.deepseek_chat_completion([{'role': 'user', 'content': 'x'}])
+    text_failed = pipe.completion_failed(text_res)
+    json_res = pipe.deepseek_chat_completion([{'role': 'user', 'content': 'x'}], json_mode=True)
+    json_failed = pipe.completion_failed(json_res)
+    assert text_failed is True
+    assert json_failed is True
+    assert text_failed == json_failed
+
+
+# ---------------------------------------------------------------------------
+# (f) 告警送达与否必须如实
+# ---------------------------------------------------------------------------
+
+def test_verdict_line_has_three_distinct_outcomes() -> None:
+    ok = app._stage2_verdict_line(True, '', 'A', '1')
+    alert_ok = app._stage2_verdict_line(False, '熔断', 'A', '1', alert_sent=True)
+    alert_bad = app._stage2_verdict_line(False, '熔断', 'A', '1', alert_sent=False)
+    assert '已推送' in ok
+    assert '仅发告警' in alert_ok and '已送达' in alert_ok
+    assert '❌' in alert_bad and '告警也没送达' in alert_bad
+    # 三种必须互不相同
+    assert len({ok, alert_ok, alert_bad}) == 3
+
+
+def test_fuse_branch_reads_send_return_value() -> None:
+    """防盲区熔断分支必须看 send 的返回值，不能 try 后就当成功。"""
+    src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
+    idx = src.index('防盲区熔断，未发研判正文')
+    window = src[max(0, idx - 900): idx]
+    assert 'is True' in window
+    assert 'alert_sent=_fuse_sent' in src
+
+
+# ---------------------------------------------------------------------------
+# (g) 盘口齐 ≠ 比分31项齐
+# ---------------------------------------------------------------------------
+
+def test_31_block_line_distinguishes_boards_from_score_options() -> None:
+    src = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
+    assert '这一关卡的是比分选项，不是盘口' in src
+    assert '盘口齐不会让 31 表变齐' in src
+
+
+# ---------------------------------------------------------------------------
+# (9) 缓存作废
+# ---------------------------------------------------------------------------
+
+def test_old_v2_six_pack_is_rejected_for_board_parser() -> None:
+    import okooo_mobile_cs as okooo
+    from pathlib import Path
+    old = {'cache_schema': 2, 'channel': 'mobile', 'match_id': '1', 'available': True,
+           'asian_handicap': -0.5, 'ou_line': 2.5, 'odds_1x2': {'home': 2},
+           'boards_hit': {}, 'missing': [], 'source_report': {}, 'fetch_urls': ['u']}
+    assert okooo._cache_reject_reason(Path('x.json'), old) == 'cache_schema_board_parser'
+
+
+def test_current_six_pack_with_new_boards_is_accepted() -> None:
+    import okooo_mobile_cs as okooo
+    from pathlib import Path
+    new = {'cache_schema': okooo.CACHE_SCHEMA, 'channel': 'mobile', 'match_id': '1',
+           'available': True, 'asian_handicap': -0.5, 'ou_line': 2.5,
+           'odds_1x2': {'home': 2}, 'jc_handicap': -1,
+           'total_goals_odds': {str(i): 5.0 for i in range(8)},
+           'htft_odds': {k: 5.0 for k in ('胜胜', '胜平', '胜负', '平胜', '平平', '平负', '负胜', '负平', '负负')},
+           'jc_list_boards': {'hit': ['胜平负']},
+           'boards_hit': {}, 'missing': [], 'source_report': {}, 'fetch_urls': ['u']}
+    assert okooo._cache_reject_reason(Path('x.json'), new) == ''
+    assert okooo.CACHE_SCHEMA >= 3
+
+
+# ---------------------------------------------------------------------------
+# (8, 测试部分) 六盘口闸门端到端：完整记录必须放行，缺任一必须拒绝
+# ---------------------------------------------------------------------------
+
+def _full_six_boards():
+    return {
+        'asian_handicap': -0.75, 'ou_line': 2.75,
+        'odds_1x2': {'home': 1.91, 'draw': 3.86, 'away': 2.8},
+        'jc_handicap': -1.0,
+        'total_goals_odds': {str(i): 5.0 for i in range(8)},
+        'htft_odds': {k: 5.0 for k in ('胜胜', '胜平', '胜负', '平胜', '平平', '平负', '负胜', '负平', '负负')},
+        'channel': 'mobile',
+        'fetch_urls': ['https://m.okooo.com/match/handicap.php?MatchID=1'],
+    }
+
+
+def test_complete_record_passes_gate_through_real_builder() -> None:
+    """完整记录经真实 payload 构建器 + build_cross_market_board + 闸门 => 放行。"""
+    pipe = _pipe()
+    rec = {'match': 'A vs B', 'six_market_mobile': _full_six_boards()}
+    rec.update(_full_six_boards())
+    payload = pipe.DeepSeekAnalyzer.build_jc_cross_only_payload(rec)
+    payload['cross_market_board'] = pipe.DeepSeekAnalyzer.build_cross_market_board(rec)
+    gate = pipe.DeepSeekAnalyzer.ensure_judgment_standard_sections(
+        'DeepSeek 数据分析研判报告 正文', payload=payload,
+    )
+    assert gate['reject'] is False, gate['reject_reason']
+    assert gate['missing_boards'] == []
+
+
+@pytest.mark.parametrize('board_key,label', [
+    ('asian_handicap', '亚盘让球'),
+    ('ou_line', '大小球'),
+    ('odds_1x2', '胜平负'),
+    ('jc_handicap', '竞彩让球'),
+    ('total_goals_odds', '总进球'),
+    ('htft_odds', '半全场'),
+])
+def test_each_missing_board_rejects_with_its_own_name(board_key, label) -> None:
+    """六个盘口逐个缺失：闸门必须拒绝，且原因点名正是那一块。"""
+    pipe = _pipe()
+    boards = _full_six_boards()
+    boards.pop(board_key)
+    rec = {'match': 'A vs B', 'six_market_mobile': boards}
+    payload = pipe.DeepSeekAnalyzer.build_jc_cross_only_payload(rec)
+    payload['cross_market_board'] = pipe.DeepSeekAnalyzer.build_cross_market_board(rec)
+    gate = pipe.DeepSeekAnalyzer.ensure_judgment_standard_sections(
+        'DeepSeek 数据分析研判报告 正文', payload=payload,
+    )
+    assert gate['reject'] is True
+    assert gate['missing_boards'] == [label], (board_key, gate['missing_boards'])
+    assert label in gate['reject_reason']

@@ -1531,8 +1531,9 @@ class DeepSeekAnalyzer:
                 'model': model or deepseek_config()['chat_model'],
             }
         if completion_failed(text):
-            # 调用失败：available 必须为假、error 必须带真实原因、content 必须为空。
-            # 绝不能让「调用失败」这句告警变成研判正文。
+            # 调用失败或没有 API key（本地占位）：available 必须为假、
+            # error 必须带真实原因、content 必须为空。
+            # 绝不能让占位串或告警串变成研判正文。
             return {
                 'available': False,
                 'content': '',
@@ -1744,22 +1745,43 @@ def _env(name: str, default: str = '') -> str:
 
 
 _LAST_COMPLETION_ERROR = ''
+# 最近一次调用是不是走了「没有 API key」的本地占位路径。
+# 与 `_LAST_COMPLETION_ERROR` 分开：本地占位不是传输失败，
+# 但它同样不是模型产出，下游据此决定 available。
+_LAST_COMPLETION_LOCAL = False
 
 
 def completion_failed(result: Any) -> bool:
     """这次 deepseek_chat_completion 调用是否失败。
 
-    失败信号是「空结果 + 模块级错误串」，不是「非空字符串」。
+    失败信号是「空结果」或「没有 API key 的本地占位」，不是「非空字符串」。
     文本模式成功返回 str，失败返回 {}；json_mode 成功返回 dict/str，
     失败返回 {'available': False, 'error': ...}。
+
+    没有 API key 时两种模式必须给出**同一个判断**：
+    json_mode 本来就说 available=False，文本模式以前拿一句像正文的
+    「本地确定性分析…」冒充成功，同一条件两种结论。现在文本模式也走
+    `_LAST_COMPLETION_LOCAL`，两边一致。
     """
     if isinstance(result, dict):
         if result.get('available') is False:
             return True
         return not result
     if isinstance(result, str):
-        return not result.strip()
-    return result is None
+        if not result.strip():
+            return True
+        # 文本模式的本地占位：内容仍在（调用方要用就用），但这次不是模型产出。
+        return _LAST_COMPLETION_LOCAL
+    if result is None:
+        return True
+    return False
+
+
+def completion_is_local(result: Any = None) -> bool:
+    """这次结果是不是「没有 API key 的本地占位」，而不是模型真的写了正文。"""
+    if isinstance(result, dict):
+        return str(result.get('provider') or '') == 'local'
+    return bool(_LAST_COMPLETION_LOCAL)
 
 
 def completion_error() -> str:
@@ -1816,10 +1838,16 @@ def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bo
     于是 `analyze_match_judgment` 把它当成非空正文，`available=True`、`error=''`，
     一份 API 故障被当成研判成功，并原样发进报告。
     """
-    global _LAST_COMPLETION_ERROR
+    global _LAST_COMPLETION_ERROR, _LAST_COMPLETION_LOCAL
     _LAST_COMPLETION_ERROR = ''
+    _LAST_COMPLETION_LOCAL = False
     cfg = deepseek_config()
     if not cfg['api_key']:
+        # 契约不变：没有 key 仍然返回确定性本地分析（测试与离线可用）。
+        # 但打上「这是本地占位」的标记，与 json_mode 的 available=False 对齐，
+        # 消费者据此不把它当研判正文。
+        _LAST_COMPLETION_LOCAL = True
+        _LAST_COMPLETION_ERROR = 'deepseek_api_key_missing'
         return _local_analysis(messages, json_mode=json_mode)
     import json
     import time
