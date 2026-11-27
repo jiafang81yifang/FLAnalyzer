@@ -163,3 +163,78 @@ def test_body_checker_separates_a_rendered_inf_from_a_diagnostic() -> None:
     assert not S._check_no_non_finite_in_body('赔率数值非法: inf'), (
         'naming the bad value is a correct diagnostic')
     assert not S._check_no_non_finite_in_body('置信度 12.3%')
+
+    # Not the helper alone: drive the real call site, `_check_report`, which is
+    # what every case goes through. A guard that only exercises the helper would
+    # pass even if `_check_report` stopped calling it.
+    case = S._build_case(20261127)
+    with_inf = S._check_report(case, ['置信度 inf%'], '')
+    assert any(inv == 'E11' for inv, _ in with_inf), (
+        f'_check_report must surface E11 for a rendered inf; got {with_inf}')
+    with_diag = S._check_report(case, ['赔率数值非法: inf'], '')
+    assert not any(inv == 'E11' for inv, _ in with_diag), (
+        f'_check_report must not flag a diagnostic; got {with_diag}')
+
+
+def test_scrubbed_section_is_never_a_plausible_verdict() -> None:
+    """A section made only of a non-finite value must not read as a real answer.
+
+    Replacing `inf%` with `-%` leaves a body that looks like a supplied figure.
+    The replacement has to say, in the text itself, that no usable number exists.
+    """
+    src = '🧠【DeepSeek 数据分析研判报告】\n  inf%'
+    out = app._scrub_non_finite_text(src)
+    body = out.split('】', 1)[1].strip()
+
+    assert body, 'the section must not be blanked: an empty section is worse'
+    assert '未形成' in body or '非有限' in body, (
+        f'a scrubbed section must self-describe as missing, got {body!r}')
+    # It must not masquerade as a figure: a bare '-' or '-%' reads as a value.
+    assert body.strip() not in ('-', '-%', '—'), f'scrubbed body looks like a value: {body!r}'
+    assert not __import__('re').fullmatch(r'-?\s*%?', body), body
+
+
+def test_scrubbing_leaves_a_searchable_trace(capsys) -> None:
+    """A silent rewrite hides the defect that caused it.
+
+    Revert tested: removing the print from `_scrub_non_finite_text` -> no line
+    matches '数值卫生' and this assertion fails.
+    """
+    app._scrub_non_finite_text('置信度 inf%')
+    printed = capsys.readouterr().out
+    assert '数值卫生' in printed, f'no trace of scrubbing; got {printed!r}'
+    assert 'non-finite' in printed, printed
+
+    # And a clean body must stay silent.
+    app._scrub_non_finite_text('置信度 12.3%')
+    assert '数值卫生' not in capsys.readouterr().out
+
+
+def test_emit_scrubs_a_non_finite_judgment_and_still_says_why(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys,
+) -> None:
+    """Drives the real call site: the scrub must run inside emit, not only in the helper.
+
+    Revert tested (three ways, all observed red):
+      * delete the whole clause  -> section becomes blank            -> assert body
+      * replace with '-' only    -> section looks like a value        -> assert 未形成
+      * drop the trace print     -> no '数值卫生' line                -> assert printed
+    """
+    import os
+    import sys as _sys
+    import tempfile
+    _scripts = str(ROOT / 'scripts')
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    import sweep_100k_e2e as S
+
+    case = S._build_case(20261127)
+    sent, _out = S._run_once(case, os.path.join(tempfile.mkdtemp(), 'h.json'))
+    body = max((t for t in sent if t), key=len) if sent else ''
+    # No case may leave a rendered non-finite figure in the body.
+    assert not S._check_no_non_finite_in_body(body), body[:200]
+    # And if scrubbing happened, the section must not be a bare placeholder.
+    if '非有限值·未形成' in body:
+        tail = body.split('DeepSeek 数据分析研判报告', 1)[-1]
+        assert tail.strip(), 'judgment section blanked by scrubbing'
+        assert '未形成' in tail, tail[:120]
