@@ -247,10 +247,12 @@ def test_every_filled_cell_carries_a_traceable_url(merged: dict[str, Any]) -> No
 def test_gap_reasons_are_enumerated(merged: dict[str, Any]) -> None:
     for gap in merged['gaps']:
         assert gap['reason'] in mdm.REASON_CODES, gap
-    # 未开赛场的比分位是 `not_started`，不是 `not_in_source`
-    assert [g['field'] for g in merged['gaps'] if g['reason'] == 'not_started'] == [
-        'home_score', 'away_score', 'half_time',
-    ]
+    # 未开赛场的比分位是 `not_started`，不是 `not_in_source`；但它是**赛程状态**，
+    # 不是缺口：留在 `fields` 里（矩阵段显示「未开赛」），不进 `gaps`。
+    # 以前这里断言它出现在 `gaps` 里，于是每份赛前报告都印出一条假缺口。
+    assert [g for g in merged['gaps'] if g['reason'] == 'not_started'] == []
+    for field in ('home_score', 'away_score', 'half_time'):
+        assert merged['fields'][field]['reason'] == 'not_started', merged['fields'][field]
 
 
 def test_zero_handicap_counts_as_present() -> None:

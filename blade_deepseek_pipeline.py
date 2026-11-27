@@ -21,6 +21,15 @@ JCZQ_AWAY_WIN_SCORES = ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', 
 JCZQ_ALL_OPTIONS = JCZQ_HOME_WIN_SCORES + JCZQ_DRAW_SCORES + JCZQ_AWAY_WIN_SCORES + ['胜其它', '平其它', '负其它']
 
 
+def _is_matrix_status_line(line: Any) -> bool:
+    """`format_gap_banner` 的赛前状态行（`ℹ️ 赛前状态：…`）——不是缺口。
+
+    合成横幅时它必须与「数据源缺」分开：赛前没有比分是赛程状态，接在
+    「数据源缺：」后面会让读者以为抓取出了问题。
+    """
+    return str(line or '').strip().startswith(DeepSeekAnalyzer.MATRIX_STATUS_PREFIX)
+
+
 def bind_hermes_runtime(**kwargs: Any) -> None:
     _RUNTIME.update(kwargs)
 
@@ -1447,6 +1456,10 @@ class DeepSeekAnalyzer:
     # 一个（不 import 任何兄弟模块），谁都能安全地从这里取常量。
     GAP_BANNER_HEADER: ClassVar[str] = '⚠️【本场缺口（先说清楚，不影响出报）】'
 
+    # `format_gap_banner` 里的赛前状态行前缀（与 `match_data_matrix` 的常量同值）。
+    # 这一行不是缺口：合成横幅时它必须另起一行，不能被接到「数据源缺：」后面。
+    MATRIX_STATUS_PREFIX: ClassVar[str] = 'ℹ️ 赛前状态：'
+
     @staticmethod
     def compose_gap_banner(boards_missing: Any = None,
                            cs31_missing: Any = None,
@@ -1499,28 +1512,37 @@ class DeepSeekAnalyzer:
             ln for ln in matrix_lines
             if ln.strip() and DeepSeekAnalyzer.GAP_BANNER_HEADER not in ln
         ]
+        # `format_gap_banner` 现在还会给出一条赛前状态行（`ℹ️ 赛前状态：…`）。
+        # 那不是缺口，不能塞到「数据源缺：」后面，否则读者会把赛程状态读成抓取问题。
+        gap_rows = [ln for ln in matrix_body if not _is_matrix_status_line(ln)]
+        status_rows = [ln for ln in matrix_body if _is_matrix_status_line(ln)]
         matrix_line = ''
-        if matrix_body:
+        if gap_rows:
             # #20 的渲染是「每行一个原因码」；并入本块时把首行接到
             # 「数据源缺：」后面，其余行保持缩进，读者仍然逐码可读。
-            first = matrix_body[0].strip()
+            first = gap_rows[0].strip()
             first = first[1:].strip() if first.startswith('·') else first
             matrix_line = '  · 数据源缺：' + first
-            if len(matrix_body) > 1:
+            if len(gap_rows) > 1:
                 matrix_line += '\n' + '\n'.join(
                     ('    ' + ln.strip()) if ln.strip().startswith('·') else ln
-                    for ln in matrix_body[1:]
+                    for ln in gap_rows[1:]
                 )
+        status_line = '\n'.join(ln.rstrip() for ln in status_rows)
 
         sub_lines = [ln for ln in (board_line, cs31_line, matrix_line) if ln]
         banner = ''
-        if sub_lines:
-            banner = '\n'.join([DeepSeekAnalyzer.GAP_BANNER_HEADER, *sub_lines])
+        if sub_lines or status_line:
+            banner = '\n'.join(
+                [DeepSeekAnalyzer.GAP_BANNER_HEADER, *sub_lines]
+                + ([status_line] if status_line else [])
+            )
         return {
             'header': DeepSeekAnalyzer.GAP_BANNER_HEADER,
             'boards_line': board_line,
             'cs31_line': cs31_line,
             'matrix_line': matrix_line,
+            'status_line': status_line,
             'lines': sub_lines,
             'banner': banner,
         }
@@ -1607,14 +1629,18 @@ class DeepSeekAnalyzer:
             summary_bits.append('31全表比分选项未齐')
         if gap.get('matrix_line'):
             summary_bits.append('数据源有缺口')
+        if gap.get('status_line'):
+            summary_bits.append('赛前状态已披露')
         summary = '、'.join(summary_bits)
 
         banner_lines: list[str] = []
         if gap.get('banner'):
             banner_lines.extend(gap['banner'].split('\n'))
-            banner_lines.append(
-                '  以上缺口在正文里逐条标为「无数据（原因：…）」，未估算、未补占位值。'
-            )
+            # 这句只对**缺口**成立：赛前状态行不是「缺」，正文里也没有对应占位。
+            if gap.get('lines'):
+                banner_lines.append(
+                    '  以上缺口在正文里逐条标为「无数据（原因：…）」，未估算、未补占位值。'
+                )
 
         prompt_lines: list[str] = []
         if boards:
