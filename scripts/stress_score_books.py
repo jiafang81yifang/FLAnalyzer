@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -69,6 +70,8 @@ REQUIRED_COUNTERS: tuple[str, ...] = (
     'aggregate_lossless_true',
     'aggregate_lossless_false',
     'book26_team_other_contradiction_warned',
+    # 缺陷 6 回归：合计行必须把不可比渲染成不可比
+    'other_total_rendered_incomparable',
 )
 
 #: 固定种子。报告里原样给出，任何两次同 seed 的运行必须逐字一致。
@@ -168,13 +171,25 @@ def _random_policy(rng: random.Random) -> sb.MarketBucketPolicy:
     return rng.choice(sb.ALL_POLICIES)
 
 
-def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
-    """跑一例，返回这一例的断言失败清单（空 = 通过）。"""
+def _run_one_case(
+    rng: random.Random,
+    counters: Counter,
+    *,
+    book_size: int | None = None,
+    policy: Any = None,
+) -> list[str]:
+    """跑一例，返回这一例的断言失败清单（空 = 通过）。
+
+    `book_size` / `policy` 可显式指定，供测试驱动一个确定的组合
+    （否则测试就得复制一份用例逻辑，而复制出来的逻辑证明不了实现正确）。
+    """
     failures: list[str] = []
 
-    book_size = rng.choice((25, 26))
+    if book_size is None:
+        book_size = rng.choice((25, 26))
     book = sb.market_book(book_size)
-    policy = _random_policy(rng)
+    if policy is None:
+        policy = _random_policy(rng)
     counters['book_26' if book_size == 26 else 'book_25'] += 1
 
     # ---- 样本完整性：完整 / 缺 1 / 缺多 / 全缺 -------------------------------
@@ -287,10 +302,23 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
     # 31 项要 sum(1/o) < 1 才得到 >100% 的返还率，故赔率取 34.0（隐含 91% 不到）
     impossible = {k: 34.0 for k in sb.JC_31_KEYS}
     imp_norm = sb.normalize_jc_odds(impossible)
-    if imp_norm.rtp is None and imp_norm.complete:
+    # 收紧前置：rtp is None 也可能是别名重复等其他原因造的，这里必须看到
+    # 「自相矛盾」那条告警才算走对了出口，否则就是空条件通过。
+    impossible_by_rate = (
+        imp_norm.rtp is None
+        and imp_norm.complete
+        and imp_norm.duplicate_inputs == ()
+        and any('自相矛盾' in w for w in imp_norm.warnings)
+    )
+    if impossible_by_rate:
         counters['rtp_impossible_rejected'] += 1
     elif imp_norm.rtp is not None and imp_norm.rtp >= 1.0:
         failures.append(f'jc: 给出了不可能的返还率 {imp_norm.rtp}')
+    elif imp_norm.rtp is None and imp_norm.complete:
+        failures.append(
+            'jc: 完整样本 rtp 为 None，但不是「返还率≥100%」这条出口'
+            f'（warnings={list(imp_norm.warnings)}）'
+        )
 
     # ---- 判据 3d：probs 键集必须等于 required，且和为 1 ------------------
     if jc_norm.complete:
@@ -344,16 +372,23 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
     if verdict['unreachable_buckets']:
         counters['unreachable_bucket_detected'] += 1
     # 它们必须在比较里被压成 delta=None 且不进行排序。
-    if jc_norm.probs:
+    # 不挂在 `if jc_norm.probs:` 下面：`bucket_deltas` 判「哪些桶不可达」
+    # 只看口径与盘面，与竞彩侧有没有概率无关。挂上去会让「全缺样本」的
+    # 不可达桶被检出却永远不被验证 —— 那正是检测/抑制计数不等的成因。
+    if True:
         tier = sb.bucket_deltas(jc_norm.probs, market_norm.probs, policy=policy, book=book)
         structural = {r['bucket'] for r in tier['structural_rows']}
-        if structural == set(verdict['unreachable_buckets']):
-            counters['unreachable_bucket_delta_suppressed'] += 1
-        elif structural != set(verdict['unreachable_buckets']):
+        expected_unreachable = set(verdict['unreachable_buckets'])
+        # 集合相等仍然要断言（不等 → failure），但**计数只在真有不可达桶时涨**：
+        # 否则 25 项盘面 / any_other / keep 口径下 `set() == set()` 也会 +1，
+        # 这个计数名说的是「Δ 被压成 None」，它在没有桶被压住时不该涨。
+        if structural != expected_unreachable:
             failures.append(
                 f'结构性行与不可达桶不一致：structural={sorted(structural)} '
-                f'unreachable={sorted(verdict["unreachable_buckets"])}'
+                f'unreachable={sorted(expected_unreachable)}'
             )
+        elif expected_unreachable:
+            counters['unreachable_bucket_delta_suppressed'] += 1
         for row in tier['structural_rows']:
             if row['delta'] is not None:
                 failures.append(f'不可达桶 {row["bucket"]} 仍有数值 delta')
@@ -364,6 +399,24 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
         ranked = [r['bucket'] for r in tier['rows'] if r['delta'] is not None]
         if set(ranked) & structural:
             failures.append('不可达桶进了排序')
+
+        # 缺陷 6：有结构性桶时，渲染出的「其他」合计行必须说不可比，
+        # 不许出现任何 Δ 数字（修前是 `市场-  Δ+0.00pp`）。
+        if structural and tier['other_delta'] is None:
+            text = sb.format_analysis_text(
+                sb.analyze_residuals(jc_odds, market_odds, book_size=book_size,
+                                     policy=policy),
+            )
+            total_lines = [ln for ln in text.splitlines() if '「其他」合计' in ln]
+            if not total_lines:
+                failures.append('渲染文本里找不到「其他」合计行')
+            for line in total_lines:
+                if re.search(r'Δ[+-]\d+\.\d{2}pp', line):
+                    failures.append(f'合计行把不可比渲染成数字：{line.strip()}')
+                elif '不可比' in line or 'Δ-' in line:
+                    counters['other_total_rendered_incomparable'] += 1
+                else:
+                    failures.append(f'合计行既不是数字也没说不可比：{line.strip()}')
 
     # 26 项 + TEAM_OTHER 自相矛盾必须告警。
     contradiction = (
@@ -529,6 +582,16 @@ def stress_report(num_cases: int = MIN_CASES, seed: int = STRESS_SEED) -> dict[s
     missing = [name for name in REQUIRED_COUNTERS if counters.get(name, 0) == 0]
     if missing:
         all_failures.append(f'计数器缺失（该类零命中即缺陷）: {sorted(missing)}')
+
+    # 计数升级成不变量：每个被检出的不可达桶都必须真被压住，一例不漏。
+    # 这两个数不等就说明有一例「检出了但没抑制」，或者「抑制了但没检出」。
+    detected = counters.get('unreachable_bucket_detected', 0)
+    suppressed = counters.get('unreachable_bucket_delta_suppressed', 0)
+    if detected != suppressed:
+        all_failures.append(
+            f'不可达桶检出/抑制计数不等：detected={detected} suppressed={suppressed}'
+            '（每个检出的不可达桶都必须被压成 delta=None）'
+        )
 
     return {
         'seed': seed,

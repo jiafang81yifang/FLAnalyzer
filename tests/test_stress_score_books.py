@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import random
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,8 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import stress_score_books as stress
+
+import score_books as sb
 
 
 def _small_report(cases: int = 300) -> dict:
@@ -122,6 +126,8 @@ def test_stress_covers_the_four_defect_regressions() -> None:
         'unreachable_bucket_detected', 'unreachable_bucket_delta_suppressed',
         'aggregate_lossless_true', 'aggregate_lossless_false',
         'book26_team_other_contradiction_warned',
+        # 缺陷 6：合计行的不可比渲染
+        'other_total_rendered_incomparable',
     ):
         assert counters.get(name, 0) > 0, name
 
@@ -149,3 +155,61 @@ def test_cli_exit_code_reflects_failures(monkeypatch) -> None:
 def test_hostile_kinds_map_to_their_own_counter(kind, expected) -> None:
     """敌意值分类必须落到各自的计数键上，不许都塞进「other」。"""
     assert stress._KIND_COUNTER[stress._hostile_kind(kind)] == expected
+
+
+# --------------------------------------------------------------------------- #
+# 缺陷 7：抑制计数不许被空集满足，且必须与检出计数相等
+# --------------------------------------------------------------------------- #
+def test_stress_suppression_counter_requires_a_real_unreachable_bucket() -> None:
+    """`unreachable_buckets == ()` 的用例不许让抑制计数上涨。
+
+    修前：`set() == set()` 为真，25 项盘面 / any_other / keep 口径下
+    抑制计数照样 +1，6020 里有 4710 是空集通过（1310 才是真的）。
+
+    反证：把 `elif expected_unreachable:` 的守卫去掉（回到 `if structural ==
+    set(...)` 无条件 +1）→ 本断言变红。
+    """
+    # 25 项 + TEAM_OTHER：逐桶无损、没有不可达桶
+    assert sb.verify_lossless(sb.POLICY_TEAM_OTHER, sb.market_book(25))['unreachable_buckets'] == ()
+
+    counters: Counter = Counter()
+    rng = random.Random(stress.STRESS_SEED)
+    # 驱动真实用例函数，只把盘面/口径钉死
+    failures = stress._run_one_case(
+        rng, counters, book_size=25, policy=sb.POLICY_TEAM_OTHER,
+    )
+    assert failures == [], failures
+    detected = counters.get('unreachable_bucket_detected', 0)
+    suppressed = counters.get('unreachable_bucket_delta_suppressed', 0)
+    assert detected == 0, '25 项 + TEAM_OTHER 不该检出不可达桶'
+    assert suppressed == 0, (
+        f'没有不可达桶时抑制计数不许涨，实际 {suppressed}（空集相等被误计）'
+    )
+
+
+def test_stress_suppression_counter_equals_detected_counter() -> None:
+    """跑一撮混合用例（两种盘面 × 三种口径），两个计数必须相等。
+
+    反证：让抑制分支漏一例（把 `elif expected_unreachable:` 改成
+    `elif False:`）→ 本断言变红（实测 detected=62 suppressed=0）。
+    """
+    report = stress.stress_report(num_cases=900, seed=stress.STRESS_SEED)
+    counters = report['counters']
+    assert counters['unreachable_bucket_detected'] > 0
+    assert counters['unreachable_bucket_detected'] == counters['unreachable_bucket_delta_suppressed'], (
+        f"detected={counters['unreachable_bucket_detected']} "
+        f"suppressed={counters['unreachable_bucket_delta_suppressed']}"
+    )
+    assert report['failure_count'] == 0, report['failures'][:5]
+
+
+def test_kl_zero_counter_is_not_the_same_class_as_suppression() -> None:
+    """`kl_zero_prob_key` 与抑制计数同值是共享外层守卫的巧合，不是缺陷。
+
+    这里只把「两者可以不等」钉住：KL 的 p=0 出口由 probe 显式构造，
+    与盘面尺寸/口径无关，因此它的计数不承担「等于 detected」的义务。
+    """
+    counters = stress.stress_report(num_cases=600, seed=stress.STRESS_SEED)['counters']
+    assert counters['kl_zero_prob_key'] > 0
+    # 两者同值时也不构成不变量；这里只断言各自非零，避免把巧合写成约束。
+    assert counters['unreachable_bucket_detected'] > 0

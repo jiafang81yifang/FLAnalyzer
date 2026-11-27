@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -156,3 +158,179 @@ def test_existing_per_row_numbers_are_unchanged() -> None:
     assert row['market_pct'] == pytest.approx(8.0, abs=1e-9)
     assert row['jc_pct'] == pytest.approx(round(100.0 / 31.0, 4), abs=1e-9)
     assert row['gap_pct'] == pytest.approx(8.0 - round(100.0 / 31.0, 4), abs=1e-9)
+
+
+def test_structural_buckets_reach_the_rendered_text() -> None:
+    """`structural_buckets` 必须出现在渲染文本里，不能只留在 dict 上。
+
+    修前：`_same_caliber_buckets` 把它算进 `same_caliber`，但
+    `format_mkt_short_wdl_matrix_tg_lines` 只读 rows/counts/share_pct，
+    读者一个字都看不到。
+
+    反证：删掉 `format_mkt_short_wdl_matrix_tg_lines` 里那段 structural 渲染
+    → `assert '结构性不可达' in joined` 变红。
+    """
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(_pack())
+    assert matrix['same_caliber']['structural_buckets'] == ['任何其他']
+    joined = '\n'.join(
+        bd.DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(matrix)
+    )
+    assert '结构性差异' in joined
+    assert '任何其他' in joined
+    assert 'Δ 不适用' in joined
+    assert '不是定价差' in joined
+
+
+def test_structural_line_absent_when_every_bucket_is_reachable() -> None:
+    """没有结构性桶时不许打印那一行（否则又变成「每场都喊狼来了」）。"""
+    pack = _pack()
+    # 把 31 表改成 25 项盘面的口径：改用 25 项市场键，任何其他可达
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    matrix['same_caliber'] = dict(matrix['same_caliber'])
+    matrix['same_caliber']['structural_buckets'] = []
+    matrix['same_caliber']['structural_rows'] = []
+    matrix['same_caliber']['warnings'] = []
+    matrix['same_caliber']['other_delta'] = 0.01
+    joined = '\n'.join(bd.DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(matrix))
+    assert '结构性差异' not in joined
+    assert 'Δ 不适用' not in joined
+
+
+# --------------------------------------------------------------------------- #
+# 缺陷 8：same_caliber 必须真的进报告
+# --------------------------------------------------------------------------- #
+def _sections_text(pack: dict, matrix: dict | None = None) -> str:
+    """走真实报告装配路径，取回渲染文本。"""
+    matrix = matrix if matrix is not None else bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    return '\n'.join(bd.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        title_line='📌 t',
+        theo_mkt_31_tg_lines=bd.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack),
+        ds_payload={'theo_mkt_31_pack': pack, 'mkt_short_wdl_matrix': matrix},
+        heat_tg_lines=['HEATMARK'],
+    ))
+
+
+def test_short_matrix_report_renders_the_same_caliber_section() -> None:
+    """同口径段必须出现在**真实报告装配**的输出里，不是只在 dict 上。
+
+    修前：`format_mkt_short_wdl_matrix_tg_lines` 只读 rows/counts，
+    `same_caliber` 算出来却一个字没进报告 —— 缺陷 5 在产品路径上是隐形的，
+    而报告照样打「差+5.00pp」这种逐项直减的差额。
+
+    反证：删掉 `format_mkt_short_wdl_matrix_tg_lines` 末尾
+    `+ DeepSeekAnalyzer._format_same_caliber_lines(m)` → 本断言变红。
+    """
+    pack = _pack()
+    text = _sections_text(pack)
+
+    assert '同口径桶比较' in text
+    assert '逐桶=' in text and '聚合=' in text
+    # 结构性差异小节里必须有「任何其他」
+    structural_lines = [ln for ln in text.splitlines() if 'Δ 不适用' in ln]
+    assert structural_lines, '结构性差异没有单列'
+    assert any('任何其他' in ln for ln in structural_lines), structural_lines
+
+    # 关键：段落必须由 **formatter** 产出，不能靠下游重算兜底。
+    # 直接喂一个矩阵给 formatter，它自己就得把这一段打出来。
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    direct = '\n'.join(
+        bd.DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(matrix)
+    )
+    assert '同口径桶比较' in direct, (
+        'formatter 没有渲染 same_caliber；下游能显示只是因为重算了一份'
+    )
+    assert '逐桶=' in direct and '聚合=' in direct
+    assert any('Δ 不适用' in ln for ln in direct.splitlines())
+
+
+def test_short_matrix_structural_bucket_never_renders_a_numeric_delta() -> None:
+    """结构性桶那一行不许出现 ±数字pp，只许「Δ 不适用」。
+
+    反证：把结构性桶塞回定价差行（`same['structural_rows']` 并进
+    `same['rows']`）→ 本断言变红。
+    """
+    pack = _pack()
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    structural = set(matrix['same_caliber']['structural_buckets'])
+    assert structural == {'任何其他'}
+
+    text = _sections_text(pack, matrix)
+    # 结构性桶只允许出现在两类行里：结构性差异小节、以及 ⚠️ 告警。
+    # 出现在任何别处（尤其定价差行）都说明它被塞回了数字比较。
+    for line in text.splitlines():
+        if not any(bucket in line for bucket in structural):
+            continue
+        if '结构性差异' in line or '⚠️' in line or '结构性不可达' in line:
+            continue
+        # 结构性小节里的行必须写「Δ 不适用」，且不许带数字 Δ。
+        if 'Δ 不适用' in line:
+            assert not re.search(r'Δ[+-]\d+\.\d{2}pp', line), line
+            continue
+        raise AssertionError(f'结构性桶出现在非结构性行里: {line!r}')
+
+    # 再钉一次：结构性小节那几行本身不许带 ±数字pp。
+    in_section = False
+    for line in text.splitlines():
+        if '结构性差异（不是定价差' in line:
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith(('  ·', '🧮', '📊')):
+                in_section = False
+                continue
+            assert not re.search(r'Δ[+-]\d+\.\d{2}pp', line), line
+
+
+def test_short_matrix_report_says_incomparable_when_caliber_unavailable() -> None:
+    """算不出同口径时，报告必须明说「不可用」+原因，不许静默跳过整段。
+
+    反证：把 `_format_same_caliber_lines` 的 `available is False` 分支
+    改成 `return []` → 本断言变红。
+    """
+    pack = _pack()
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    matrix = dict(matrix)
+    matrix['same_caliber'] = {'available': False, 'reason': '测试构造：没有竞彩概率'}
+
+    text = _sections_text(pack, matrix)
+    assert '同口径桶比较' in text
+    assert '不可用' in text
+    assert '没有竞彩概率' in text
+
+
+def test_short_matrix_caliber_section_survives_no_short_rows() -> None:
+    """一行市短都没有时，同口径段仍要打印（不许因为没行就整段跳过）。
+
+    反证：把 no-rows 分支改回只 `return [head, ...]` → 本断言变红。
+    """
+    pack = _pack()
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    matrix = dict(matrix)
+    matrix['rows'] = []
+    matrix['available'] = True
+    matrix['reason'] = ''
+    text = _sections_text(pack, matrix)
+    assert '同口径桶比较' in text
+
+
+def test_same_caliber_section_has_no_none_to_zero_number() -> None:
+    """同口径段里不许把缺值渲染成 0.00（与缺陷 6 同一规则）。"""
+    pack = _pack()
+    text = _sections_text(pack)
+    for line in text.splitlines():
+        if '不可比' in line or 'Δ 不适用' in line:
+            assert not re.search(r'Δ[+-]\d+\.\d{2}pp', line), line
+
+
+def test_same_caliber_is_persisted_in_the_bundle_payload() -> None:
+    """影响面记录：`same_caliber` 会随 `ds_payload` 一起落盘（不删字段）。
+
+    这条不改行为，只把「它会进 history 记录」这件事变成可核的断言，
+    免得以后有人以为它只是内存里的中间量。
+    """
+    pack = _pack()
+    matrix = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
+    ds_payload = {'theo_mkt_31_pack': pack, 'mkt_short_wdl_matrix': matrix}
+    blob = json.dumps(ds_payload, ensure_ascii=False, default=str)
+    assert 'same_caliber' in blob
+    assert 'structural_buckets' in blob

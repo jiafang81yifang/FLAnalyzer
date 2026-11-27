@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -1353,3 +1354,99 @@ def test_default_policy_choice_depends_on_book_size() -> None:
     assert v26['aggregate_lossless'] is True
     assert v25['per_bucket_lossless'] is True
     assert v25['aggregate_lossless'] is True
+
+
+# --------------------------------------------------------------------------- #
+# 17. 缺陷 6 回归：合计行不许把不可比渲染成 Δ+0.00pp
+# --------------------------------------------------------------------------- #
+def _other_total_line(text: str) -> str:
+    """渲染文本里「其他」合计那一行（测试自用，不复制渲染逻辑）。"""
+    return next(ln for ln in text.splitlines() if '「其他」合计' in ln)
+
+
+def test_other_total_line_says_incomparable_not_zero() -> None:
+    """26 项 + 默认口径：合计行必须说「不可比」，不许出 §+0.00pp。
+
+    修前：`market- Δ+0.00pp` —— 左边诚实打「-」，右边却给 0.00，
+    读者会当成两边合计相等。根因是 `(other_delta or 0) * 100`。
+
+    反证：把 `or 0` 加回（`num_text((other_delta or 0) * 100, ...)`）
+    → `assert '+0.00pp' not in line` 变红。
+    """
+    jc = {k: 20.0 for k in sb.JC_31_KEYS}
+    mk = {k: 20.0 for k in sb.MARKET_26_KEYS}
+    mk['任何其他'] = 2.0
+    analysis = sb.analyze_residuals(jc, mk)
+
+    assert analysis['tier_a']['other_delta'] is None
+    assert analysis['tier_a']['other_market'] is None
+
+    line = _other_total_line(sb.format_analysis_text(analysis))
+    assert '+0.00pp' not in line, line
+    assert '-0.00pp' not in line, line
+    assert ('不可比' in line) or ('Δ-' in line), line
+
+
+def test_other_total_line_still_prints_a_real_number_when_comparable() -> None:
+    """25 项 + 默认口径（逐桶无损、无结构性桶）：合计行必须有真数字。
+
+    这条防「把数字都删掉」——修不可比不许把可比情形一起变成不可比。
+
+    反证：把合计行改成无条件打印「不可比」→ 本断言变红。
+    """
+    jc = {k: 20.0 for k in sb.JC_31_KEYS}
+    mk = {k: 21.0 for k in sb.MARKET_25_KEYS}
+    analysis = sb.analyze_residuals(jc, mk, book_size=25)
+    tier_a = analysis['tier_a']
+    assert tier_a['per_bucket_lossless'] is True
+    assert tier_a['structural_rows'] == []
+    assert tier_a['other_delta'] is not None
+
+    line = _other_total_line(sb.format_analysis_text(analysis))
+    assert '不可比' not in line, line
+    match = re.search(r'Δ([+-]\d+\.\d{2})pp', line)
+    assert match, line
+    assert float(match.group(1)) == pytest.approx(tier_a['other_delta'] * 100, abs=0.01)
+
+
+def test_no_none_coerced_to_zero_ppt_in_renderer() -> None:
+    """全文扫一遍：凡是同一行出现「市场-」（市场侧缺值），Δ 位不许是数字。
+
+    反证：任一处回退 `or 0` 兜底 → 本断言变红。
+    """
+    cases = []
+    jc = {k: 20.0 for k in sb.JC_31_KEYS}
+    base = {k: 20.0 for k in sb.MARKET_26_KEYS}
+    cases.append((jc, {**base, '任何其他': 2.0}, 26))
+    missing = dict(base)
+    del missing['0:0']
+    cases.append((jc, missing, 26))
+    cases.append((jc, {k: 21.0 for k in sb.MARKET_25_KEYS}, 25))
+
+    for jc_odds, mk_odds, size in cases:
+        text = sb.format_analysis_text(sb.analyze_residuals(jc_odds, mk_odds, book_size=size))
+        for line in text.splitlines():
+            if '市场-' not in line and '竞彩-' not in line:
+                continue
+            # 该行有一侧缺值：Δ 位置不许是数字
+            assert not re.search(r'Δ[+-]\d+\.\d{2}pp', line), line
+
+
+def test_renderer_has_no_none_to_zero_coercion_anywhere() -> None:
+    """源码级守卫：渲染层不许出现 `(x or 0) * 100` 这类兜底。
+
+    行为测试只能抓到「已经走到那条分支」的回归。上面那条
+    `if other_delta is None:` 修好之后，`or 0` 即使写回 else 分支也不会被
+    行为测试触发（分支不可达）。所以再加一条源码级断言，把这类写法本身挡掉。
+
+    反证：把 `f"Δ{num_text((other_delta or 0) * 100, '+.2f')}pp"` 加回
+    → `assert not offenders` 变红（`test_renderer_has_no_none_to_zero_coercion_anywhere`）。
+    """
+    source = (ROOT / 'score_books.py').read_text(encoding='utf-8')
+    offenders = [
+        f'{lineno}: {line.strip()}'
+        for lineno, line in enumerate(source.splitlines(), 1)
+        if re.search(r'or\s+0(\.0)?\)\s*\*\s*100', line)
+        and '不许' not in line and '兜' not in line  # 允许文档里提到这个反模式
+    ]
+    assert not offenders, '渲染层出现 None→0 兜底: ' + '; '.join(offenders)

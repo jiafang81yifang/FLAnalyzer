@@ -1666,6 +1666,16 @@ def analyze_residuals(
 # --------------------------------------------------------------------------- #
 # 文本渲染
 # --------------------------------------------------------------------------- #
+def _scale_pct(value: Any) -> float | None:
+    """0..1 的分数 → 百分点数值；None/非有限返回 None（交给 num_text 打 '-'）。
+
+    存在的唯一理由：渲染层不许出现 `(x or 0) * 100`。那种写法把「不可比」
+    兜成 0.00pp，而同一行的另一侧常常正打着 '-'，读者会当成两边相等。
+    """
+    number = _finite_float(value)
+    return None if number is None else number * 100.0
+
+
 def _pct(value: Any, digits: int = 2) -> str:
     """分数（0..1）→ 百分比文本；缺失打印「-」而不是 0。"""
     from number_text import pct_text
@@ -1721,9 +1731,11 @@ def format_analysis_text(analysis: Mapping[str, Any], top_n: int = 10) -> str:
 
     lines.append("  · 定价差（|Δ| 排序）")
     for row in (analysis.get("top_deltas") or [])[:top_n]:
+        # top_deltas 上游已过滤 delta is None，这里不再 `or 0`：
+        # 那个兜底是死代码，但留着就等于给「None 兜成 0」留了先例。
         lines.append(
             f"    {row['bucket']:<6} 竞彩{_pct(row['jc']):>8} "
-            f"市场{_pct(row['market']):>8} Δ{num_text((row['delta'] or 0) * 100, '+.2f')}pp"
+            f"市场{_pct(row['market']):>8} Δ{num_text(_scale_pct(row['delta']), '+.2f')}pp"
         )
     structural = tier_a.get("structural_rows") or []
     if structural:
@@ -1731,12 +1743,23 @@ def format_analysis_text(analysis: Mapping[str, Any], top_n: int = 10) -> str:
         for row in structural:
             lines.append(
                 f"    {row['bucket']:<6} 竞彩{_pct(row['jc']):>8} "
-                f"市场{_pct(row['market']):>8} Δ不适用 — {row.get('reason') or ''}"
+                f"市场{_pct(row['market']):>8} Δ不可比 — {row.get('reason') or ''}"
             )
-    lines.append(
-        f"  「其他」合计：竞彩{_pct(tier_a.get('other_jc'))} 市场{_pct(tier_a.get('other_market'))}"
-        f" Δ{num_text((tier_a.get('other_delta') or 0) * 100, '+.2f')}pp"
-    )
+    # 合计行：other_delta 为 None 时**绝不出数字**。上一版 `or 0` 会把
+    # 不可比渲染成 Δ+0.00pp，而这行的左边恰好是「市场-」，读者会当成两边相等。
+    other_delta = tier_a.get("other_delta")
+    if other_delta is None:
+        why = "有结构性不可达桶，合计不可比" if structural else "市场侧缺值，合计不可比"
+        lines.append(
+            f"  「其他」合计：竞彩{_pct(tier_a.get('other_jc'))} "
+            f"市场{_pct(tier_a.get('other_market'))} Δ不可比（{why}）"
+        )
+    else:
+        lines.append(
+            f"  「其他」合计：竞彩{_pct(tier_a.get('other_jc'))} "
+            f"市场{_pct(tier_a.get('other_market'))} "
+            f"Δ{num_text(_scale_pct(other_delta), '+.2f')}pp"
+        )
     lines.append(
         f"  6 个 5 球格在竞彩侧合计 {_pct(analysis.get('five_goal_total'))}"
         "（市场侧无独立格）"
@@ -1773,7 +1796,7 @@ def format_analysis_text(analysis: Mapping[str, Any], top_n: int = 10) -> str:
         for row in worst:
             lines.append(
                 f"  {row['score']:<5} 竞彩{_pct(row['jc']):>8} "
-                f"模型{_pct(row['model']):>8} 残差{num_text((row['residual'] or 0) * 100, '+.2f')}pp"
+                f"模型{_pct(row['model']):>8} 残差{num_text(_scale_pct(row['residual']), '+.2f')}pp"
             )
     text = "\n".join(lines)
     assert_finite_text(text)

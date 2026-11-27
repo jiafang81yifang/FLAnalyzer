@@ -408,13 +408,20 @@ class DeepSeekAnalyzer:
     def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:
         """市短矩阵：市均隐含% > 竞彩隐含% 的选项逐项列出，再按胜平负汇总。
 
-        旧实现只回「状态: 可用 + 队名」，一行数据都没有。
+        末尾追加「同口径桶比较」段：数据**只从 `m['same_caliber']` 取**，
+        本函数不重算任何映射。上面那几行逐项差额是竞彩 31 项对市场的市均，
+        不是同一口径——竞彩的 5 球独立格与「其他」三桶在市场上没有对应的
+        独立格，逐项直减会把分桶差读成定价差。同口径段给的就是修正后的读法。
+
+        没有行的时候也要打印这一段（`available=False` 时说明原因），
+        不许因为「没有市短行」就把整个口径说明跳过。
         """
         m = matrix if isinstance(matrix, dict) else {}
         head = '📊【市短矩阵｜市均隐含 > 竞彩隐含】'
         rows = [r for r in (m.get('rows') or m.get('qualifying') or []) if isinstance(r, dict)]
         if not rows:
-            return [head, f"  未形成（{m.get('reason') or '没有市均高于竞彩的选项'}）"]
+            lines = [head, f"  未形成（{m.get('reason') or '没有市均高于竞彩的选项'}）"]
+            return lines + DeepSeekAnalyzer._format_same_caliber_lines(m)
         lines = [head, f"  输入={m.get('source') or '市均×竞彩31比分'} 项数={len(rows)}"]
 
         def _pct_text(value: Any) -> str:
@@ -444,6 +451,101 @@ class DeepSeekAnalyzer:
                 f"{k}={counts.get(k, 0)}({share.get(k, 0):.1f}%)" for k in ('胜', '平', '负')
             )
         )
+        return lines + DeepSeekAnalyzer._format_same_caliber_lines(m)
+
+    @staticmethod
+    def _format_same_caliber_lines(matrix: Any) -> list[str]:
+        """把 `same_caliber` 渲染成报告段落。只读该 dict，不重算映射。
+
+        必须做到四件事，缺一条这段就没有意义：
+
+        1. 两层无损分开说（逐桶 / 聚合，带并集尺寸）；
+        2. 定价差行按 |Δ| 排序，带 Δ 数字；
+        3. 结构性差异单列，「Δ 不适用」+ 原因，**绝不与定价差混排**；
+        4. 不可用 / 自相矛盾都说清楚，不许静默。
+
+        数字一律不做 `or 0` 兜底：缺失就是「-」，不可比就是「不可比」。
+        """
+        m = matrix if isinstance(matrix, dict) else {}
+        same = m.get('same_caliber') if isinstance(m.get('same_caliber'), dict) else {}
+
+        def _num(value: Any, spec: str = '+.2f') -> str:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return '-'
+            if not math.isfinite(number):
+                return '-'
+            return format(number, spec)
+
+        def _pct(value: Any) -> str:
+            try:
+                return f'{float(value) * 100:.2f}%'
+            except (TypeError, ValueError):
+                return '-'
+
+        head = '🧮【同口径桶比较｜31项聚合到市场桶】'
+        if not same:
+            return [head, '  不可用（原因：本记录没有同口径桶数据，只有逐项市短）']
+        if same.get('available') is False:
+            return [
+                head,
+                f"  不可用（原因：{same.get('reason') or '同口径比较未形成'}）",
+            ]
+
+        lines = [head]
+        policy_label = str(same.get('policy_label') or '').strip()
+        if policy_label:
+            lines.append(f"  口径：{policy_label}")
+        sizes = same.get('aggregate_sizes') if isinstance(same.get('aggregate_sizes'), dict) else {}
+        per_bucket = same.get('per_bucket_lossless')
+        aggregate = same.get('aggregate_lossless')
+        lines.append(
+            f"  无损性：逐桶={'是' if per_bucket else '否'}"
+            f" · 聚合={'是' if aggregate else '否'}"
+            f"（市场桶并集 {_num(sizes.get('market_buckets_union'), '.0f')}"
+            f" vs 竞彩其他类并集 {_num(sizes.get('jc_other_union'), '.0f')}）"
+        )
+
+        # 定价差：可达桶，按 |Δ| 排序。
+        priced = [
+            r for r in (same.get('rows') or [])
+            if isinstance(r, dict) and r.get('delta') is not None
+        ]
+        priced.sort(key=lambda r: abs(r['delta']), reverse=True)
+        if priced:
+            lines.append('  · 定价差（|Δ| 排序，同口径可比）')
+            for row in priced[:10]:
+                lines.append(
+                    f"    {row.get('bucket', '?')!s:<6} 竞彩{_pct(row.get('jc')):>8} "
+                    f"市场{_pct(row.get('market')):>8} Δ{_num(row.get('delta'))}pp"
+                )
+
+        # 结构性差异：盘面报了价、竞彩落不进任何键。不进上面那段，也不出 Δ 数字。
+        structural = {str(b) for b in (same.get('structural_buckets') or [])}
+        if structural:
+            lines.append('  · 结构性差异（不是定价差，Δ 不适用）')
+            for row in (same.get('structural_rows') or []):
+                if not isinstance(row, dict):
+                    continue
+                lines.append(
+                    f"    {row.get('bucket', '?')!s:<6} 竞彩{_pct(row.get('jc')):>8} "
+                    f"市场{_pct(row.get('market')):>8} Δ 不适用"
+                    f" — {row.get('reason') or '盘面报价，竞彩无法在此桶落概率'}"
+                )
+
+        other_delta = same.get('other_delta')
+        if other_delta is None:
+            why = '有结构性不可达桶' if structural else '市场侧缺值'
+            lines.append(f"  「其他」合计：Δ 不可比（{why}）")
+        else:
+            lines.append(f"  「其他」合计：Δ{_num(other_delta)}pp")
+
+        # 26 项 + 单队5球→方向桶 的自相矛盾：原样带出，别让读者以为只是缺数据。
+        for warning in (same.get('warnings') or []):
+            text = str(warning or '').strip()
+            if text:
+                lines.append(f"  ⚠️ {text}")
         return lines
 
     @staticmethod
@@ -1423,7 +1525,12 @@ class DeepSeekAnalyzer:
         sections.append('\n'.join(_t31 or DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)))
 
         # 2) 市短矩阵：市均 vs 竞彩（需要 jc_odds_pct，用 pack 现算）
+        # 三层取值，与上面 pack 的三层一致：显式 kwarg → ds_payload 里已算好的
+        # → 按 pack 现算。生产调用点只给 ds_payload，若这里不读第二层，
+        # 就会拿 pack 重算一份，与调用方已经渲染/落盘的那份分叉。
         short_matrix = kwargs.get('mkt_short_matrix')
+        if not isinstance(short_matrix, dict) and isinstance(payload, dict):
+            short_matrix = payload.get('mkt_short_wdl_matrix')
         if not isinstance(short_matrix, dict):
             short_matrix = DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)
         sections.append('\n'.join(DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(
