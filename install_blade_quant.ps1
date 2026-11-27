@@ -34,6 +34,11 @@ $PinCommit = '7e87590d7ee8134149e9b9f2f5ef2e18834c0b03'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
+# 独立抓取器 + 它复用的模块。安装器只下发 app 与向导，所以这两个文件必须单独取：
+# okooo_jczq_scraper.py 在模块级 import okooo_mobile_cs 的私有符号（_http_attempt 等），
+# 磁盘上没有同名 .py 时它会撞上 app 里的内嵌副本，而内嵌副本没有这些新符号。
+$ScraperName = 'okooo_jczq_scraper.py'
+$ScraperDepName = 'okooo_mobile_cs.py'
 $DepsImportList = 'streamlit, pandas, numpy, requests, plotly, schedule, openai, scipy, bs4, httpx, urllib3, tornado'
 
 $RunClock = [System.Diagnostics.Stopwatch]::StartNew()
@@ -73,6 +78,8 @@ if ($OnWindows) {
 }
 $AppFile = Join-Path $InstallDir $AppName
 $ConfigScript = Join-Path $InstallDir $ConfigName
+$ScraperFile = Join-Path $InstallDir $ScraperName
+$ScraperDepFile = Join-Path $InstallDir $ScraperDepName
 $StartBat = Join-Path $InstallDir 'start.cmd'
 $ConfigEnv = Join-Path $InstallDir 'config.env'
 
@@ -325,6 +332,18 @@ if (-not (Get-RemoteArtifact -FileName $ConfigName -OutFile $ConfigScript)) {
 }
 $cfgKb = [math]::Round((Get-Item $ConfigScript).Length / 1KB, 1)
 Write-Ok "$ConfigName ($cfgKb KB)"
+
+Write-Step "下载独立抓取器"
+# 抓取器是给用户手动跑的 CLI（python okooo_jczq_scraper.py --html ...）。
+# 它依赖同目录下真实的 okooo_mobile_cs.py，所以两个文件都要落盘。
+if (-not (Get-RemoteArtifact -FileName $ScraperName -OutFile $ScraperFile)) {
+    Fail "下载 okooo_jczq_scraper.py 失败。请检查网络，或打开 Clash 后重跑这条命令。"
+}
+Write-Ok "$ScraperName"
+if (-not (Get-RemoteArtifact -FileName $ScraperDepName -OutFile $ScraperDepFile)) {
+    Fail "下载 okooo_mobile_cs.py 失败。请检查网络，或打开 Clash 后重跑这条命令。"
+}
+Write-Ok "$ScraperDepName"
 
 # ---------- 8. 校验程序文件 ----------
 Write-Step "校验程序文件"
