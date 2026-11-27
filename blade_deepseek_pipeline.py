@@ -115,7 +115,7 @@ def audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]
     ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0
     try:
         ratio_f = float(ratio or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         ratio_f = 0.0
     return {'available': ratio_f > 0, 'mean_gap_ratio': ratio_f, 'tier': 'high' if ratio_f >= 5 else ('mid' if ratio_f >= 1.35 else 'low')}
 
@@ -273,10 +273,15 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def format_tg_match_header(match: Any, kickoff: Any = '', match_no: Any = '') -> str:
+        """组一行赛事标题：`📌 [赛号] 对阵 开赛时间`（幂等，不重复赛号）。"""
+        existing = str(match or '').strip()
+        if existing.startswith('📌'):
+            return existing
+        clean = re.sub(r'^\s*\[[^\]]{1,12}\]\s*', '', existing).strip() or existing
         bits = ['📌']
         if match_no:
             bits.append(f'[{match_no}]')
-        bits.append(str(match or '未知比赛'))
+        bits.append(clean or '未知比赛')
         if kickoff:
             bits.append(str(kickoff))
         return ' '.join(bits)
@@ -321,7 +326,7 @@ class DeepSeekAnalyzer:
                     continue
                 try:
                     value = float(raw_value)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if value > 1:
                     clean[_norm_score(score)] = value
@@ -360,14 +365,19 @@ class DeepSeekAnalyzer:
         def _pct_text(value: Any) -> str:
             """市均/竞彩/差三列都不许把缺失写成 0：缺失就写「-」。"""
             try:
-                return f'{float(value):.2f}'
-            except (TypeError, ValueError):
+                number = float(value)
+                # float('1e400') 返回 inf 而不是抛异常：只捕异常会把 `inf`
+                # 原样印进制表。非有限值按缺失写「-」。
+                if not math.isfinite(number):
+                    return '-'
+                return f'{number:.2f}'
+            except (TypeError, ValueError, OverflowError):
                 return '-'
 
         def _gap_text(value: Any) -> str:
             try:
                 return f'{float(value):+.2f}'
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return '-'
 
         for r in rows:
@@ -405,7 +415,7 @@ class DeepSeekAnalyzer:
             try:
                 market_f = float(market) if market is not None else None
                 jc_f = float(jc_pct) if jc_pct is not None else None
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if market_f is None or jc_f is None:
                 continue
@@ -460,7 +470,7 @@ class DeepSeekAnalyzer:
                 """缺失就是缺失：不再把 None 写成 0.00 / +0.00。"""
                 try:
                     return format(float(value), fmt)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return '-'
 
             market_txt = _num_text(r.get('market'), '.2f')
@@ -471,7 +481,7 @@ class DeepSeekAnalyzer:
                 if _market_v is None or _theory_v is None:
                     raise TypeError('missing market/theory')
                 delta_txt = f"{float(_market_v) - float(_theory_v):+.2f}pp"
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 delta_txt = '-'
             lines.append(
                 f"  {str(score)!s:<5} 市均{market_txt}% 理论{theory_txt}% Δ{delta_txt}"
@@ -527,7 +537,7 @@ class DeepSeekAnalyzer:
                 raw = odd.get('odds') if isinstance(odd, dict) else odd
                 try:
                     value = float(raw) if raw is not None else None
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     value = None
                 if key and value is not None and value > 1:
                     page_keys.add(key)
@@ -574,7 +584,7 @@ class DeepSeekAnalyzer:
         def _pos(value: Any) -> float | None:
             try:
                 number = float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
             return number if math.isfinite(number) and number > 0 else None
 
@@ -717,6 +727,17 @@ class DeepSeekAnalyzer:
             _page_only = {k: v for k, v in (extra_odds or {}).items() if _norm_score(k) not in _jc_keys}
             if _page_only:
                 _page_vec = _implied_vec(_page_only)
+                _fallback_keys = {
+                    key for key in _jc_keys
+                    if key not in _jc_vec and _norm_score(key) in {
+                        _norm_score(k) for k in (extra_odds or {})
+                    }
+                }
+                if _fallback_keys:
+                    _page_vec = _implied_vec({
+                        **{k: v for k, v in (extra_odds or {}).items()
+                           if _norm_score(k) not in (_jc_keys - _fallback_keys)},
+                    })
         # 生产记录里 `correct_score_page_avg` 已经是 merge_cs31 的 31 键合并结果，
         # 那 9 个市均没有的选项就在里面，光看数值分不出来自哪一边。出处必须由
         # 合并方给出的 `market_provenance`（{option: desktop_cs|jc_official}）覆盖，
@@ -765,7 +786,8 @@ class DeepSeekAnalyzer:
         for option, value in _mix.items():
             row = by_score.setdefault(option, {'score': option})
             if _f(row.get('market') or row.get('mkt')) in (None, 0.0):
-                row['market'] = round(value, 4)
+                share = value if value > 0 and round(value, 4) > 0 else (0.0001 if value > 0 else 0.0)
+                row['market'] = round(share, 4)
                 row['market_source'] = _mix_of.get(option, '')
         # 竞彩赔率本身始终要落盘（31 项的原生赔率），与 market 取不取自竞彩无关。
         for score, odd in jc_odds.items():
@@ -1015,7 +1037,7 @@ class DeepSeekAnalyzer:
             if gap_raw is not None:
                 try:
                     gap = float(gap_raw)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     gap = None
             if gap is not None and math.isfinite(gap):
                 discrete[score] = round(gap, 4)
@@ -1057,7 +1079,7 @@ class DeepSeekAnalyzer:
             return {'available': False, 'line': '大小球区间: 未形成（缺 ou_line）'}
         try:
             line_f = float(line)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {'available': False, 'line': f'大小球区间: 未形成（ou_line 非数值: {line!r}）'}
         if goals is None:
             return {
@@ -1098,7 +1120,7 @@ class DeepSeekAnalyzer:
         def _f(v):
             try:
                 return float(v)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
 
         lines = [head]
@@ -1401,8 +1423,11 @@ class DeepSeekAnalyzer:
             extra = _as_lines(kwargs.get(extra_key))
             if not extra and isinstance(payload, dict):
                 extra = _as_lines(payload.get(extra_key))
-            if extra:
-                sections.append('\n'.join(extra))
+            if not extra:
+                continue
+            if extra_key == 'wdl_matrix_tg_lines' and any('市短矩阵' in ln for ln in extra):
+                continue
+            sections.append('\n'.join(extra))
         return [s for s in sections if s.strip()]
 
     @staticmethod
@@ -1421,6 +1446,32 @@ class DeepSeekAnalyzer:
     )
     # 报告外壳：没有这一段就不是「DeepSeek 标准研判报告」。
     JUDGMENT_SHELL_MARKER: ClassVar[str] = 'DeepSeek 数据分析研判报告'
+
+    REQUIRED_TG_SECTIONS: ClassVar[tuple[str, ...]] = (
+        '31项市均×竞彩对比表', '市短矩阵', '市热矩阵', 'DeepSeek 数据分析研判报告',
+    )
+
+    @staticmethod
+    def _section_is_empty(text: str, name: str) -> bool:
+        """该段是否整段只有一句「未形成（…）」——段在但没有任何数据行。"""
+        start = text.find(name)
+        if start < 0:
+            return True
+        tail = text[start:]
+        end = len(tail)
+        for other in DeepSeekAnalyzer.REQUIRED_TG_SECTIONS:
+            if other == name:
+                continue
+            idx = tail.find(other)
+            if 0 <= idx < end:
+                end = idx
+        rows = [ln.strip() for ln in tail[:end].splitlines() if ln.strip()]
+        meaningful = [
+            ln for ln in rows
+            if name not in ln and '未形成' not in ln
+            and not ln.startswith(('输入=', '📈', '📊', '🔥', '📉', '🧠', '📌', '🏷', '📐'))
+        ]
+        return not meaningful
 
     @staticmethod
     def six_market_union(payload: Any = None) -> dict[str, Any]:
@@ -1808,6 +1859,13 @@ class DeepSeekAnalyzer:
             'deepseek_shell': bool(body) and DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in body,
             'six_market': not missing_boards,
         }
+        section_status.update({
+            name: (name in body) for name in DeepSeekAnalyzer.REQUIRED_TG_SECTIONS
+        })
+        empty_sections = [
+            name for name in DeepSeekAnalyzer.REQUIRED_TG_SECTIONS
+            if name in body and DeepSeekAnalyzer._section_is_empty(body, name)
+        ]
         missing_sections: list[str] = []
         if not section_status['deepseek_shell']:
             missing_sections.append(DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER)
@@ -1858,6 +1916,7 @@ class DeepSeekAnalyzer:
                 'theo_mkt_31_tg_lines': bool(theo_mkt_31_tg_lines),
                 'mkt_over_theo_tg_lines': bool(mkt_over_theo_tg_lines),
             },
+            'empty_sections': empty_sections,
         }
 
     @staticmethod

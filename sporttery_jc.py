@@ -16,7 +16,7 @@ def _odds_value(value: Any) -> float | None:
         if isinstance(value, dict): value = value.get('odds') or value.get('sp') or value.get('value')
         f=float(value)
         return f if f > 0 else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
