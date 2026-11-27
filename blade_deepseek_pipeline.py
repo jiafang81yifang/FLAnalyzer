@@ -33,12 +33,26 @@ def split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:
     """按行切块，绝不把一行（表格行/比分行）切断。
 
     原来的实现按固定字符数硬切，31 行表格会被从中间劈开。现在优先在换行处切。
+
+    ``\\x0c``（form feed）是**强制分页符**：调用方把已经分好页的块用它会聚，
+    每一块必须各自成为一条消息。不这么处理的话，上一页的尾巴会和下一页的
+    表头挤进同一条，下一页的前几行就丢了表头（send_tg 里「分页符即使正文未超长，
+    也拆成独立 Telegram 消息」说的就是这件事，但此前 splitlines 把它当普通换行）。
     """
     s = str(text or '')
     limit = max(100, int(max_len or 3900))
+    page_break = '\x0c'
+    if page_break in s:
+        chunks: list[str] = []
+        for page in s.split(page_break):
+            if not page.strip():
+                # 前置分页符会切出一个空串：它不是一页，别让调用方多发一条空消息
+                continue
+            chunks.extend(split_tg_html_preserving_pre(page, limit))
+        return chunks or ['']
     if len(s) <= limit:
         return [s] if s else ['']
-    chunks: list[str] = []
+    chunks = []
     current: list[str] = []
     current_len = 0
     for line in s.splitlines(keepends=True):
@@ -225,8 +239,19 @@ class DeepSeekAnalyzer:
     """Deterministic analyzer/formatter surface used by app_v84_hermes."""
 
     @staticmethod
-    def _classify_score_wdl(score: Any) -> str:
-        return _score_wdl(score)
+    def _classify_score_wdl(score: Any) -> tuple[str, str]:
+        """Score → `(normalised_score, wdl_direction)`.
+
+        Every call site in `app_v84_hermes` reads index `[1]` for the direction
+        (`胜`/`平`/`负`, `''` when the score cannot be classified), and 12 of them
+        sit inside `try/except` blocks that log and then carry on. Returning a
+        bare string made all 12 raise `IndexError` into those handlers, so the
+        direction-lock filters silently kept everything: a match locked to 负
+        still answered 胜. The 2-tuple shape is the contract those sites were
+        written against; the normalised score is returned in slot `[0]` so the
+        pair is useful rather than a duplicated label.
+        """
+        return _norm_score(score), _score_wdl(score)
 
     @staticmethod
     def _is_tg_match_title_line(line: Any) -> bool:
@@ -322,10 +347,24 @@ class DeepSeekAnalyzer:
         if not rows:
             return [head, f"  未形成（{m.get('reason') or '没有市均高于竞彩的选项'}）"]
         lines = [head, f"  输入={m.get('source') or '市均×竞彩31比分'} 项数={len(rows)}"]
+
+        def _pct_text(value: Any) -> str:
+            """市均/竞彩/差三列都不许把缺失写成 0：缺失就写「-」。"""
+            try:
+                return f'{float(value):.2f}'
+            except (TypeError, ValueError):
+                return '-'
+
+        def _gap_text(value: Any) -> str:
+            try:
+                return f'{float(value):+.2f}'
+            except (TypeError, ValueError):
+                return '-'
+
         for r in rows:
             lines.append(
-                f"  {str(r.get('score', '?'))!s:<5} 市均{float(r.get('market_pct') or 0):.2f}% "
-                f"竞彩{r.get('jc_pct', 0):.2f}% 差{r.get('gap_pct', 0):+.2f}pp"
+                f"  {str(r.get('score', '?'))!s:<5} 市均{_pct_text(r.get('market_pct'))}% "
+                f"竞彩{_pct_text(r.get('jc_pct'))}% 差{_gap_text(r.get('gap_pct'))}pp"
             )
         counts = m.get('counts')
         counts = counts if isinstance(counts, dict) else {}
@@ -407,13 +446,26 @@ class DeepSeekAnalyzer:
             label = _score_wdl(score)
             if label in counts:
                 counts[label] += 1
+
+            def _num_text(value: Any, fmt: str) -> str:
+                """缺失就是缺失：不再把 None 写成 0.00 / +0.00。"""
+                try:
+                    return format(float(value), fmt)
+                except (TypeError, ValueError):
+                    return '-'
+
+            market_txt = _num_text(r.get('market'), '.2f')
+            theory_txt = _num_text(r.get('theory'), '.2f')
+            _market_v = r.get('market')
+            _theory_v = r.get('theory')
             try:
-                market = float(r.get('market') or 0)
-                theory = float(r.get('theory') or 0)
+                if _market_v is None or _theory_v is None:
+                    raise TypeError('missing market/theory')
+                delta_txt = f"{float(_market_v) - float(_theory_v):+.2f}pp"
             except (TypeError, ValueError):
-                market = theory = 0.0
+                delta_txt = '-'
             lines.append(
-                f"  {str(score)!s:<5} 市均{market:.2f}% 理论{theory:.2f}% Δ{market - theory:+.2f}pp"
+                f"  {str(score)!s:<5} 市均{market_txt}% 理论{theory_txt}% Δ{delta_txt}"
             )
         total = sum(counts.values()) or 1
         lines.append(
@@ -481,6 +533,70 @@ class DeepSeekAnalyzer:
             }
         return {'provenance': {}, 'source': None}
 
+    # 冻结 λ 在记录 / 研判包 / 校准载荷里出现过的每一个键，按「离冻结点由近及远」排列。
+    # 读侧只能通过 `frozen_lambda_of` 取，不再各自拼 `rec.get(...) or rec.get(...)`：
+    # 拼漏一个键，31 表就会整列 theory 为空，日志还只说「理论概率缺31项」。
+    FROZEN_LAMBDA_KEYS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ('lam_h', 'lam_a'),
+        ('lam_home', 'lam_away'),
+        ('lambda_home', 'lambda_away'),
+        ('fused_lambda_h', 'fused_lambda_a'),
+        ('base_home_lambda', 'base_away_lambda'),
+    )
+
+    @staticmethod
+    def frozen_lambda_of(*sources: Any) -> dict[str, Any]:
+        """从记录/研判包里取冻结 λ，并点名它来自哪个键。
+
+        返回值：
+          home / away   float 或 None（真的没有就 None，**绝不补默认值**）
+          home_key / away_key  命中的键名，'' 表示没有
+          source       命中的容器（'record' / 'payload' / 'calibration' …）
+          complete      两侧都拿到正数
+
+        取值顺序：先按 `FROZEN_LAMBDA_KEYS` 逐对取同一容器里的主客值（成对命中才收，
+        避免把主场 λ 和历史客场 λ 拼成一对），再退到 `lambda_calibration.final`。
+        """
+        out: dict[str, Any] = {
+            'home': None, 'away': None,
+            'home_key': '', 'away_key': '', 'source': '', 'complete': False,
+        }
+
+        def _pos(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if math.isfinite(number) and number > 0 else None
+
+        for idx, holder in enumerate(sources or ()):
+            if not isinstance(holder, dict):
+                continue
+            name = str(holder.get('__source__') or ('record' if idx == 0 else f'source{idx}'))
+            for home_key, away_key in DeepSeekAnalyzer.FROZEN_LAMBDA_KEYS:
+                home, away = _pos(holder.get(home_key)), _pos(holder.get(away_key))
+                if home is None and away is None:
+                    continue
+                out['home'], out['away'] = home, away
+                out['home_key'] = home_key if home is not None else ''
+                out['away_key'] = away_key if away is not None else ''
+                out['source'] = name
+                out['complete'] = home is not None and away is not None
+                return out
+            # 校准载荷：{"available": True, "final": {"home": .., "away": ..}}
+            calib = holder.get('lambda_calibration')
+            if isinstance(calib, dict):
+                final = calib.get('final') if isinstance(calib.get('final'), dict) else {}
+                home, away = _pos(final.get('home')), _pos(final.get('away'))
+                if home is not None or away is not None:
+                    out['home'], out['away'] = home, away
+                    out['home_key'] = 'lambda_calibration.final.home' if home is not None else ''
+                    out['away_key'] = 'lambda_calibration.final.away' if away is not None else ''
+                    out['source'] = f'{name}.lambda_calibration'
+                    out['complete'] = home is not None and away is not None
+                    return out
+        return out
+
     @staticmethod
     def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:
         """收集合法比分赔率：市均优先，竞彩官方31比分补缺。
@@ -526,6 +642,10 @@ class DeepSeekAnalyzer:
         def _f(value: Any) -> float | None:
             try:
                 number = float(value)
+            except OverflowError:
+                # An int literal too large for a double (json.loads can produce
+                # one) is not a usable number; treat it as absent, never crash.
+                return None
             except (TypeError, ValueError):
                 return None
             return number if math.isfinite(number) else None
@@ -651,12 +771,16 @@ class DeepSeekAnalyzer:
         # 理论概率：用已冻结的 λ 泊松分布补齐（λ 冻结是既定事实，不是编造）。
         lam_h = _f(kwargs.get('lam_home'))
         lam_a = _f(kwargs.get('lam_away'))
+        _lambda_prov_raw = kwargs.get('lambda_provenance')
+        _lambda_prov: dict[str, Any] = _lambda_prov_raw if isinstance(_lambda_prov_raw, dict) else {}
+        _theory_filled = False
         if lam_h and lam_a and lam_h > 0 and lam_a > 0:
             try:
                 probs = _poisson_score_probs(lam_h, lam_a)
             except Exception:  # noqa: BLE001 - λ 不可用时保持 theory 为空
                 probs = {}
             if probs:
+                _theory_filled = True
                 for option in JCZQ_ALL_OPTIONS:
                     row = by_score.setdefault(option, {'score': option})
                     if _f(row.get('theory') or row.get('theory_prob')) is None:
@@ -757,6 +881,13 @@ class DeepSeekAnalyzer:
             'cs31_extras': _extras,
             'cs31_complete': bool(full_rows) and all(r.get('formed') for r in full_rows),
             'system_prejudge': {},
+            # 这一表的 theory 到底来自哪。λ 缺失时调用点要能点名「冻结 λ 未形成」，
+            # 而不是只打一张 31 项的裸缺表。
+            'lambda_provenance': dict(_lambda_prov) if _lambda_prov else {},
+            'lambda_source_key': str(_lambda_prov.get('home_key') or ''),
+            'lambda_away_key': str(_lambda_prov.get('away_key') or ''),
+            'lambda_source': str(_lambda_prov.get('source') or ''),
+            'theory_filled_from_lambda': bool(_theory_filled),
             'home': str(kwargs.get('home') or ''),
             'away': str(kwargs.get('away') or ''),
             'match_name': str(kwargs.get('match_name') or ''),
@@ -770,6 +901,10 @@ class DeepSeekAnalyzer:
               'missing_theory': [...], 'missing_market': [...]}。
         `missing` 是给日志用的短名单（只写前若干项 + 计数），不含换行。
         缺表/缺字段只回报不缺数据，绝不抛异常——阶段2靠它决定是折入补齐还是照常分析。
+
+        `kwargs['sources']` 可给出每个数据源实际有多少项（如
+        `{'market_page': 22, 'jc_score_odds': 0, 'frozen_lambda': None}`）；
+        缺失项会带上「哪个源没给」，日志不再只出现一张裸列表。
         """
         clean = [r for r in (rows or []) if isinstance(r, dict)]
         present = {_norm_score(r.get('score') or r.get('name') or r.get('cs') or '') for r in clean}
@@ -778,6 +913,9 @@ class DeepSeekAnalyzer:
         def _num(value: Any) -> float | None:
             try:
                 number = float(value)
+            except OverflowError:
+                # see `build_theo_mkt_31_pack._f`: an over-range int is absent, not fatal
+                return None
             except (TypeError, ValueError):
                 return None
             return number
@@ -802,6 +940,34 @@ class DeepSeekAnalyzer:
         if missing_market:
             missing.append('市场概率缺' + str(len(missing_market)) + '项(' + '/'.join(missing_market) + ')')
         complete = not missing
+        # 逐项点名「这一项缺，是因为哪个源没给」。
+        # 只写真实拿到的源计数，缺哪个源就点哪个源，绝不编出「源说有」。
+        _src_raw = kwargs.get('sources')
+        src_map: dict[str, Any] = _src_raw if isinstance(_src_raw, dict) else {}
+        missing_sources: dict[str, str] = {}
+        if missing_theory:
+            _lam = src_map.get('frozen_lambda')
+            _why = (
+                '冻结λ未形成（上游拒绝补默认进球期望）'
+                if _lam in (None, 0)
+                else f'冻结λ={_lam} 但泊松未覆盖'
+            )
+            for option in missing_theory:
+                missing_sources[option] = _why
+        if missing_market:
+            _page_n = src_map.get('market_page')
+            _jc_n = src_map.get('jc_score_odds')
+            _bits = []
+            if not _page_n:
+                _bits.append('市均0项')
+            if not _jc_n:
+                _bits.append('竞彩31比分0项')
+            _why_mkt = (
+                '市均与竞彩31比分都没给这一项' if _bits
+                else f'市均{_page_n}项/竞彩31比分{_jc_n}项都不含这一项'
+            )
+            for option in missing_market:
+                missing_sources.setdefault(option, _why_mkt)
         return {
             'complete': complete,
             'missing': missing,
@@ -810,6 +976,7 @@ class DeepSeekAnalyzer:
             'missing_rows': missing_rows,
             'missing_theory': missing_theory,
             'missing_market': missing_market,
+            'missing_sources': missing_sources,
         }
 
     @staticmethod
@@ -825,11 +992,18 @@ class DeepSeekAnalyzer:
             if label not in counts:
                 continue
             counts[label] += 1
-            try:
-                gap = float(row.get('mkt_minus_jc') or row.get('delta') or 0.0)
-            except (TypeError, ValueError):
-                gap = 0.0
-            discrete[score] = round(gap, 4)
+            # 差值缺失时不写 0.0（0.0 是「确实没有偏差」这个真实结论，不能借用）。
+            gap_raw = row.get('mkt_minus_jc')
+            if gap_raw is None:
+                gap_raw = row.get('delta')
+            gap: float | None = None
+            if gap_raw is not None:
+                try:
+                    gap = float(gap_raw)
+                except (TypeError, ValueError):
+                    gap = None
+            if gap is not None and math.isfinite(gap):
+                discrete[score] = round(gap, 4)
         total = sum(counts.values())
         return {
             'available': total > 0,
@@ -996,7 +1170,46 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {'available': False, 'direction': ''}
+        """Return the direction lock carried by a payload, if it carries one.
+
+        Every filter in `app_v84_hermes` (`filter_scores_to_direction_lock`,
+        `lock_probability_cluster`, and ~15 `.get('direction')` sites) calls this
+        first and gives up when `locked` is falsy. The previous body ignored its
+        arguments and always returned `{'available': False, 'direction': ''}`, so
+        every direction lock was inert: a match locked to 负 still answered 胜.
+
+        Only the explicit lock is read back — `{'direction_lock': {'locked',
+        'direction', 'scores'}}`, the exact structure the app writes into its own
+        records. Deriving a direction from `wdl_discrete_vector` /
+        `mkt_short_wdl_matrix` would need a threshold that no spec defines, so
+        that case reports `no_derivation_rule` instead of picking one.
+        """
+        payload = args[0] if args else kwargs.get('payload')
+        if not isinstance(payload, dict):
+            return {'available': False, 'locked': False, 'direction': '',
+                    'scores': [], 'reason': 'payload_not_a_dict'}
+        lock = payload.get('direction_lock')
+        if isinstance(lock, dict) and lock.get('locked'):
+            direction = str(lock.get('direction') or '')
+            if direction not in ('胜', '平', '负'):
+                return {'available': False, 'locked': False, 'direction': '',
+                        'scores': [],
+                        'reason': f'direction_not_wdl:{direction or "empty"}'}
+            scores = [str(s).replace('：', '-').replace(':', '-').strip()
+                      for s in (lock.get('scores') or []) if str(s or '').strip()]
+            return {
+                'available': True,
+                'locked': True,
+                'direction': direction,
+                'scores': [s for s in scores if _score_wdl(s) == direction],
+                'source': str(lock.get('source') or 'payload'),
+            }
+        if payload.get('wdl_discrete_vector') or payload.get('mkt_short_wdl_matrix'):
+            # No explicit lock, and no documented rule to derive one from these.
+            return {'available': False, 'locked': False, 'direction': '',
+                    'scores': [], 'reason': 'no_derivation_rule'}
+        return {'available': False, 'locked': False, 'direction': '', 'scores': [],
+                'reason': 'no_lock_in_payload'}
 
     @staticmethod
     def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1014,7 +1227,7 @@ class DeepSeekAnalyzer:
     def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:
         """按读取顺序组装 DeepSeek-only TG 报告。
 
-        顺序：31对比表 → 市短 → 市热 → 市热超理论 → heat → desc。
+        顺序：31对比表 → 市短 → 市热 → 市热超理论 → 0球~7+ 表 → heat → desc。
 
         pack 的来源有三层，生产调用点只给 ds_payload（pack 藏在里面）：
           1. 显式 theo_mkt_31_pack / pack kwarg
@@ -1069,6 +1282,14 @@ class DeepSeekAnalyzer:
         if _pos_lines:
             sections.append('\n'.join(_pos_lines))
 
+        # 4b) 0球~7+ 均赔/比分表：必须排在 31 项表与市短/市热之后、研判正文之前。
+        #     缺数据时调用方传的是「未形成（原因）」那一行，不会静默消失。
+        _goal_lines = _as_lines(kwargs.get('goal_table_tg_lines'))
+        if not _goal_lines and isinstance(payload, dict):
+            _goal_lines = _as_lines(payload.get('goal_table_tg_lines'))
+        if _goal_lines:
+            sections.append('\n'.join(_goal_lines))
+
         # 5) heat 段与 6) desc 段，按读取顺序放在最后。
         for extra_key in (
             'heat_tg_lines', 'jc_vs_hot_tg_lines', 'wdl_matrix_tg_lines',
@@ -1086,24 +1307,164 @@ class DeepSeekAnalyzer:
     def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return dict(payload) if isinstance(payload, dict) else {}
 
+    # 六盘口：与 app `_ensure_mobile_six` 的 `_core_ok` 同口径。
+    # 顺序即报告展示顺序；第二项是它在六盘口包里的键名。
+    SIX_MARKET_BOARDS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ('亚盘让球', 'asian_handicap'),
+        ('大小球', 'ou_line'),
+        ('胜平负', 'odds_1x2'),
+        ('竞彩让球', 'jc_handicap'),
+        ('总进球', 'total_goals_odds'),
+        ('半全场', 'htft_odds'),
+    )
+    # 报告外壳：没有这一段就不是「DeepSeek 标准研判报告」。
+    JUDGMENT_SHELL_MARKER: ClassVar[str] = 'DeepSeek 数据分析研判报告'
+
     @staticmethod
-    def ensure_judgment_standard_sections(text: Any) -> str:
-        return str(text or '')
+    def six_market_gaps(source: Any) -> list[str]:
+        """列出源里真实缺的六盘口项（中文名）。
+
+        **判「有」不能用 `not value`**：0.0 是平手盘 / 大小球 0 线，是真实盘口。
+        空串、空容器、None 才算缺。
+        """
+        src: dict[str, Any] = source if isinstance(source, dict) else {}
+
+        def _present(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (dict, list, tuple, set)):
+                return bool(value)
+            return True
+
+        gaps: list[str] = []
+        for label, key in DeepSeekAnalyzer.SIX_MARKET_BOARDS:
+            if not _present(src.get(key)):
+                gaps.append(label)
+        return gaps
+
+    @staticmethod
+    def ensure_judgment_standard_sections(
+        text: Any,
+        payload: Any = None,
+        jc_vs_hot_tg_lines: Any = None,
+        wdl_matrix_tg_lines: Any = None,
+        theo_mkt_31_tg_lines: Any = None,
+        mkt_over_theo_tg_lines: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """发报前硬闸：缺六盘口或缺 DeepSeek 外壳时给出明确的拒发标记。
+
+        返回 dict（不是直通的 str）：
+          text            规整后的正文（未拒发时调用点直接用它）
+          ok              是否可以发
+          reject          是否必须拒发
+          reject_reason   一句话原因，调用点原样打进日志
+          missing_boards  缺的六盘口项（中文名）
+          missing_sections 缺的报告段
+          section_status  各段是否在场
+
+        历史上这里是 `return str(text or '')`：既不是门禁，签名也只收一个位置参数。
+        app 用五个关键字参数调用它 → `TypeError` 被 `except` 吞掉 → 下一行
+        `_gate.get('text')` 也永远不会执行。那道「质量门硬拦」一次都没真正跑过。
+        """
+        body = str(text or '')
+        pay: dict[str, Any] = payload if isinstance(payload, dict) else {}
+
+        board_src: dict[str, Any] = {}
+        board = pay.get('cross_market_board')
+        if isinstance(board, dict) and isinstance(board.get('six_market_mobile'), dict):
+            board_src = board['six_market_mobile']
+        if not board_src and isinstance(pay.get('six_market_mobile'), dict):
+            board_src = pay['six_market_mobile']
+        if not board_src:
+            # 兜底：研判包顶层也可能直接放盘口标量。
+            board_src = pay
+        missing_boards = DeepSeekAnalyzer.six_market_gaps(board_src)
+
+        section_status = {
+            'deepseek_shell': bool(body) and DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in body,
+            'six_market': not missing_boards,
+        }
+        missing_sections: list[str] = []
+        if not section_status['deepseek_shell']:
+            missing_sections.append(DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER)
+
+        reasons: list[str] = []
+        if missing_boards:
+            reasons.append('缺六盘口(' + '/'.join(missing_boards) + ')')
+        if missing_sections:
+            reasons.append('缺DeepSeek外壳(' + '/'.join(missing_sections) + ')')
+        reject = bool(reasons)
+        return {
+            'text': body,
+            'ok': not reject,
+            'reject': reject,
+            'reject_reason': '；'.join(reasons),
+            'missing_boards': missing_boards,
+            'missing_sections': missing_sections,
+            'section_status': section_status,
+            # 调用方传进来的段：这里只回报「有没有给」，不在这里重渲染。
+            'passed_sections': {
+                'jc_vs_hot_tg_lines': bool(jc_vs_hot_tg_lines),
+                'wdl_matrix_tg_lines': bool(wdl_matrix_tg_lines),
+                'theo_mkt_31_tg_lines': bool(theo_mkt_31_tg_lines),
+                'mkt_over_theo_tg_lines': bool(mkt_over_theo_tg_lines),
+            },
+        }
 
     @staticmethod
     def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:
         return {'available': False, 'in_hot8': False}
 
     @staticmethod
-    def extract_dual_scores_from_judgment_text(text: Any) -> dict[str, Any]:
-        """从研判正文抽①②两个比分。调用方按 dict 取值，所以这里固定返回 dict。"""
+    def extract_dual_scores_from_judgment_text(text: Any,
+                                               lock_payload: Any = None) -> dict[str, Any]:
+        """从研判正文抽①②两个比分，并保证这两个候选同向。
+
+        正文里的两个比分是**同一注**的候选，必须同方向。旧实现只用正则取前两个
+        比分，于是一对反方向比分（如 2-0 与 1-2）会被当成同一注存进
+        `predicted_score`/`second_score`，再被报告面并列渲染。
+
+        收口规则（不新写方向判定，复用模块级唯一实现 `_score_wdl`）：
+          1. 两候选同向 → 原样保留；
+          2. 不同向 → 若方向锁里有该方向的**另一个**比分，用它替换第二个候选
+             （只从锁里取，绝不发明比分）；
+          3. 仍不能同向 → 只留第一个，第二个置空并记 `direction_mismatch`。
+
+        `second_reason` 只在第二个候缺失或被替换时给出，调用方据此决定渲染
+        「未形成」还是落盘。
+        """
         found = re.findall(r'\d+\s*[-:]\s*\d+', str(text or ''))
         first = _norm_score(found[0]) if found else ''
         second = _norm_score(found[1]) if len(found) > 1 else ''
+        reason = ''
+        if first and second:
+            first_dir = _score_wdl(first)
+            second_dir = _score_wdl(second)
+            if first_dir and second_dir and first_dir != second_dir:
+                replacement = ''
+                lock = lock_payload.get('direction_lock') if isinstance(lock_payload, dict) else None
+                if isinstance(lock, dict) and lock.get('locked') \
+                        and str(lock.get('direction') or '') == first_dir:
+                    for candidate in (lock.get('scores') or []):
+                        token = _norm_score(candidate)
+                        if token and token != first and _score_wdl(token) == first_dir:
+                            replacement = token
+                            break
+                if replacement:
+                    second = replacement
+                    reason = 'direction_mismatch_snapped_to_lock'
+                else:
+                    second = ''
+                    reason = 'direction_mismatch'
         return {
             'available': bool(first),
             'first': first,
             'second': second,
+            'second_reason': reason,
             'scores': [_norm_score(s) for s in found[:4]],
         }
 
@@ -1258,8 +1619,54 @@ class DeepSeekAnalyzer:
         return str(text or '')
 
     @staticmethod
-    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:
-        return _norm_score(first), _norm_score(second)
+    def snap_score_pair(first: Any, second: Any = None,
+                        lock_payload: Any = None) -> tuple[str, str]:
+        """Normalise a two-score pair and snap it into the direction lock.
+
+        Every caller in `app_v84_hermes` passes the direction-lock payload as a
+        third positional argument (14 sites) and then diffs the result against
+        the input to log a 🔒 line. The signature accepted only two, so all of
+        them raised `TypeError` into their `except`, and the direction lock never
+        took effect anywhere: a match locked to 负 still answered 胜.
+
+        The lock state is already inside the payload that `lookup_direction_lock_payload`
+        returns (`{'direction_lock': {'locked', 'direction', 'scores'}}`), so no
+        threshold is needed here — the allowed scores come from the payload.
+        A score already in the locked direction keeps its position; a score
+        outside it is replaced by the best unused locked score, and removed when
+        the lock has no spare. Without a lock the pair is only normalised.
+        """
+        out = [_norm_score(first), _norm_score(second)]
+        if not isinstance(lock_payload, dict):
+            return out[0], out[1]
+        lock = lock_payload.get('direction_lock')
+        if not isinstance(lock, dict) or not lock.get('locked'):
+            return out[0], out[1]
+        direction = str(lock.get('direction') or '')
+        if direction not in ('胜', '平', '负'):
+            return out[0], out[1]
+        allowed = [_norm_score(s) for s in (lock.get('scores') or []) if str(s or '').strip()]
+        allowed = [s for s in allowed if _score_wdl(s) == direction]
+
+        snapped: list[str] = []
+        for token in out:
+            if not token:
+                continue
+            if _score_wdl(token) == direction:
+                snapped.append(token)
+                continue
+            # outside the lock: take the first still-unused locked score
+            spare = next((s for s in allowed if s not in snapped), '')
+            if spare:
+                snapped.append(spare)
+        # a lock with no usable scores must not empty the answer: keep the input
+        if allowed and not snapped:
+            snapped = allowed[:2]
+        if not allowed:
+            # nothing to snap to; still drop scores that contradict the lock
+            snapped = [t for t in out if t and _score_wdl(t) == direction]
+        snapped = list(dict.fromkeys(snapped))
+        return (snapped[0] if snapped else ''), (snapped[1] if len(snapped) > 1 else '')
 
     @staticmethod
     def strip_judgment_tg_suppressed_sections(text: Any) -> str:

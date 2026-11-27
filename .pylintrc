@@ -5,8 +5,10 @@ ignored-modules=
     blade_monitor_panel,
     convergence_arbitrator,
     msvcrt,
+    market_guardrails,
     odds_fallback,
     odds_index_math,
     okooo_mobile_cs,
     ProductionRunnerBridge,
-    sporttery_jc
+    sporttery_jc,
+    unified_odds_evaluator
