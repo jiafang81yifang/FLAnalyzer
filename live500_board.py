@@ -20,6 +20,7 @@ join key：盘面行上的 `order="5001"` 就是澳客 `oddsData` 的键（同�
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from okooo_mobile_cs import _fetch_detail, _num_of, decode_okooo_html
@@ -277,8 +278,13 @@ def scrape_500_board(
     *, html: Any = None, url: str = BOARD_URL, proxies: Any = None, session: Any = None,
     source: str = 'live500_board',
 ) -> dict[str, Any]:
-    """抓一个 500 比分盘并解析。抓不到时如实例外抛，`report` 里带 URL/状态/字节。"""
+    """抓一个 500 比分盘并解析。抓不到时如实例外抛，`report` 里带 URL/状态/字节。
+
+    `report.elapsed_ms` 是这次真实往返的耗时：盘面在阶段1 挡在每场比赛之前，
+    所以这个数必须能从日志里读出来，而不是只在压测时量过。
+    """
     page: dict[str, Any] = {}
+    started = time.perf_counter()
     if html is None:
         page = _fetch_detail(url, proxies=proxies, session=session, retries=1, timeout=20)
         if not page.get('ok'):
@@ -287,6 +293,7 @@ def scrape_500_board(
                 'match_count': 0, 'matches': [], 'fid_to_order': {}, 'order_to_fid': {},
                 'report': {'url': url, 'status': int(page.get('status') or 0),
                            'bytes': int(page.get('bytes') or 0),
+                           'elapsed_ms': int((time.perf_counter() - started) * 1000),
                            'error': str(page.get('error') or '')},
             }
         html = page.get('html')
@@ -295,6 +302,7 @@ def scrape_500_board(
         'url': url,
         'status': int(page.get('status') or 0),
         'bytes': int(page.get('bytes') or 0) or len(str(html).encode('utf-8', 'ignore')),
+        'elapsed_ms': int((time.perf_counter() - started) * 1000),
         'title': str(page.get('title') or ''),
     }
     return parsed

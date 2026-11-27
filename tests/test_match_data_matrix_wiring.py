@@ -229,7 +229,7 @@ def test_stage1_call_site_lights_up_500_without_a_seeded_match(
 
     # 只给 500 的场次号；order 由盘面自己解析出来。
     rec: dict[str, Any] = {'id': 'x', 'fixture_id_500': '1430592'}
-    facts = app.collect_match_matrix_facts(rec, board=app._matrix_500_board())
+    facts = app.collect_match_matrix_facts(rec, board=app._matrix_500_board(round_key='2026-11-27'))
 
     assert 'live500_match' in facts['written']
     assert rec['live500_match']['fid'] == '1430592'
@@ -258,14 +258,195 @@ def test_round_board_is_fetched_once_not_once_per_match(
     monkeypatch.setattr(board_mod, '_fetch_detail', counting_fetch)
     app.reset_matrix_500_board_cache()
     for _ in range(5):
-        app._matrix_500_board()
+        app._matrix_500_board(round_key='2026-11-27')
     assert len(calls) == 1, calls
+
+
+def test_two_rounds_issue_two_board_requests(
+    app: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """换轮必须重抓。
+
+    这是本轮修的那个缺陷本身：缓存曾经是进程生命周期，于是
+    「昨天分析一轮、今天再分析一轮」会拿昨天的 order↔fid 映射套今天的比赛。
+    order 跨天必然复用，错配是静默的——所以这里断言**请求次数**，不是缓存对象。
+    """
+    import live500_board as board_mod
+
+    calls: list[str] = []
+
+    def counting_fetch(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(url)
+        return {'ok': False, 'url': url, 'status': 0, 'bytes': 0, 'html': '',
+                'error': 'offline', 'origin_blocked': False}
+
+    monkeypatch.setattr(board_mod, '_fetch_detail', counting_fetch)
+    app.reset_matrix_500_board_cache()
+
+    app._matrix_500_board(round_key='2026-11-27')
+    app._matrix_500_board(round_key='2026-11-27')   # 同轮：复用
+    assert len(calls) == 1
+    app._matrix_500_board(round_key='2026-11-28')   # 换轮：重抓
+    assert len(calls) == 2, calls
+    app._matrix_500_board(round_key='2026-11-28')   # 新一轮内再复用
+    assert len(calls) == 2, calls
+
+
+def test_failed_fetch_in_round_one_is_retried_in_round_two(
+    app: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第一轮撞上 500 时，第二轮必须重试。
+
+    失败也缓存是对的（一轮里只撞一次死端点），但缓存一旦跨轮，
+    启动时一次瞬时 500 就会让整天没有 500 数据。
+    """
+    import live500_board as board_mod
+
+    calls: list[str] = []
+
+    def flaky_fetch(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(url)
+        if len(calls) == 1:
+            return {'ok': False, 'url': url, 'status': 500, 'bytes': 0, 'html': '',
+                    'error': 'HTTP 500', 'origin_blocked': False}
+        return {'ok': True, 'url': url, 'status': 200, 'bytes': 3, 'html': '<html></html>',
+                'title': '', 'origin_blocked': False, 'error': ''}
+
+    monkeypatch.setattr(board_mod, '_fetch_detail', flaky_fetch)
+    app.reset_matrix_500_board_cache()
+
+    first = app._matrix_500_board(round_key='round-1')
+    assert first['available'] is False, '第一次应失败'
+    assert app._matrix_500_board(round_key='round-1')['available'] is False
+    assert len(calls) == 1, '同一轮内失败要被缓存，不能每场重撞'
+
+    second = app._matrix_500_board(round_key='round-2')
+    assert len(calls) == 2, '换轮必须重试被缓存的失败'
+    assert second.get('stage') != 'fetch_failed', second
+
+
+def test_board_success_is_cached_within_the_round(
+    app: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """成功结果在同一轮里必须复用，且报告耗时字段。"""
+    import live500_board as board_mod
+
+    calls: list[str] = []
+
+    def ok_fetch(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(url)
+        return {'ok': True, 'url': url, 'status': 200, 'bytes': 10,
+                'html': '<html></html>', 'title': '', 'origin_blocked': False, 'error': ''}
+
+    monkeypatch.setattr(board_mod, '_fetch_detail', ok_fetch)
+    app.reset_matrix_500_board_cache()
+    first = app._matrix_500_board(round_key='same')
+    second = app._matrix_500_board(round_key='same')
+    assert len(calls) == 1
+    assert second is first
+    assert 'elapsed_ms' in (first.get('report') or {}), '耗时必须可观测'
+
+
+def test_prefetch_does_not_block_the_caller(
+    app: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预取必须真的在后台：调用方不能被一次 ~2s 的抓取挡住。"""
+    import threading as _threading
+    import time as _time
+
+    import live500_board as board_mod
+
+    started = _threading.Event()
+
+    def slow_fetch(url: str, **kwargs: Any) -> dict[str, Any]:
+        started.set()
+        _threading.Event().wait(0.6)   # 模拟慢往返
+        return {'ok': True, 'url': url, 'status': 200, 'bytes': 3,
+                'html': '<html></html>', 'title': '', 'origin_blocked': False, 'error': ''}
+
+    monkeypatch.setattr(board_mod, '_fetch_detail', slow_fetch)
+    app.reset_matrix_500_board_cache()
+    t0 = _time.perf_counter()
+    assert app.prefetch_matrix_500_board('round-x') is True
+    elapsed = _time.perf_counter() - t0
+    assert elapsed < 0.3, f'预取把调用方挡了 {elapsed:.2f}s'
+    assert started.wait(3.0), '后台线程没有真的开始抓取'
+
+
+def test_wait_returns_the_prefetched_board(
+    app: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """等到的必须是预取那一份，不是又抓一次。"""
+    import threading as _threading
+
+    import live500_board as board_mod
+
+    calls: list[str] = []
+
+    def ok_fetch(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(url)
+        _threading.Event().wait(0.05)
+        return {'ok': True, 'url': url, 'status': 200, 'bytes': 3,
+                'html': '<html></html>', 'title': '', 'origin_blocked': False, 'error': ''}
+
+    monkeypatch.setattr(board_mod, '_fetch_detail', ok_fetch)
+    app.reset_matrix_500_board_cache()
+    app.prefetch_matrix_500_board('round-y')
+    board = app.wait_matrix_500_board(timeout=5.0, round_key='round-y')
+    # 空页面解析不出场次，`available` 为 False 是正确结果；
+    # 这里要守的是「等待复用预取，没有再打一次请求」。
+    assert board.get('stage') != 'fetch_failed', board
+    assert len(calls) == 1, f'等待时又抓了一次: {calls}'
+
+
+def test_wait_times_out_and_falls_back_to_its_own_fetch(
+    app: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预取卡住时阶段1 不能陪着卡：到点自己抓一次。"""
+    import threading as _threading
+    import time as _time
+
+    import live500_board as board_mod
+
+    calls: list[str] = []
+
+    def hang_then_ok(url: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append(url)
+        if len(calls) == 1:
+            _threading.Event().wait(2.0)   # 第一次（预取）故意很慢
+        return {'ok': True, 'url': url, 'status': 200, 'bytes': 3,
+                'html': '<html></html>', 'title': '', 'origin_blocked': False, 'error': ''}
+
+    monkeypatch.setattr(board_mod, '_fetch_detail', hang_then_ok)
+    app.reset_matrix_500_board_cache()
+    app.prefetch_matrix_500_board('round-z')
+    t0 = _time.perf_counter()
+    board = app.wait_matrix_500_board(timeout=0.05, round_key='round-z')
+    elapsed = _time.perf_counter() - t0
+    assert elapsed < 1.5, f'超时没有生效，等了 {elapsed:.2f}s'
+    assert board.get('stage') != 'fetch_failed', board
+    assert len(calls) >= 2, '超时后应自己补抓一次'
+
+
+def test_round_entry_points_reset_and_prefetch(app: Any) -> None:
+    """生产入口必须真的清缓存并预取——不能只有测试在调 reset。"""
+    for name in ('auto_run', 'auto_reanalyze_pending'):
+        source = inspect.getsource(getattr(app, name))
+        assert 'reset_matrix_500_board_cache()' in source, f'{name} 没有清上一轮盘面'
+        assert 'prefetch_matrix_500_board()' in source, f'{name} 没有预取本轮盘面'
+
+
+def test_stage1_waits_instead_of_blocking_on_a_cold_fetch(app: Any) -> None:
+    """阶段1 必须用 `wait_matrix_500_board()`，不能直接同步抓。"""
+    source = inspect.getsource(app.analyze_match)
+    assert 'wait_matrix_500_board(' in source, '阶段1 仍然在同步抓盘面'
+    assert 'board=_matrix_500_board()' not in source, '阶段1 绕过了预取，会同步等待冷请求'
 
 
 def test_round_board_cache_survives_a_dead_host(
     app: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """500 不可达时也要缓存失败，否则每场都去撞同一个死端点。"""
+    """500 不可达时也要缓存失败，否则一轮里每场都去撞同一个死端点。"""
     import live500_board as board_mod
 
     calls: list[str] = []
@@ -276,8 +457,8 @@ def test_round_board_cache_survives_a_dead_host(
 
     monkeypatch.setattr(board_mod, '_fetch_detail', boom)
     app.reset_matrix_500_board_cache()
-    first = app._matrix_500_board()
-    second = app._matrix_500_board()
+    first = app._matrix_500_board(round_key='r')
+    second = app._matrix_500_board(round_key='r')
     assert first['available'] is False
     assert second is first
     assert len(calls) == 1
@@ -306,7 +487,7 @@ def test_stage1_loop_body_calls_the_collector(app: Any) -> None:
     """
     source = inspect.getsource(app.analyze_match)
     assert 'collect_match_matrix_facts(' in source, '阶段1 没有调用采集器'
-    assert '_matrix_500_board()' in source, '阶段1 没有取轮级盘面'
+    assert 'wait_matrix_500_board(' in source, '阶段1 没有等轮级盘面'
 
     lines = source.splitlines()
     collect_at = next(
