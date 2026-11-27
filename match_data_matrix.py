@@ -83,10 +83,26 @@ REASON_CODES: frozenset[str] = frozenset({
     'source_fetch_failed',
     'source_parse_failed',
     'panel_js_rendered',
+    'tab_not_fetched',
     'not_started',
     'no_such_match_in_source',
     'no_match_id',
 })
+
+# `parse_stage`（`okooo_analysis_tabs` 的逐页解析阶段）→ 用户侧原因码。
+# 这两套词汇不能混用：`parse_stage` 说「这一页发生了什么」，原因码说「用户该
+# 怎么理解这一格为空」。只有映射是单一真源，报告里才不会把 405 说成「本来就没数据」。
+STAGE_REASON_CODES: dict[str, str] = {
+    'origin_blocked': 'source_blocked',
+    'fetch_failed': 'source_fetch_failed',
+    'parse_failed': 'source_parse_failed',
+    'js_rendered': 'panel_js_rendered',
+    'ok': 'not_in_source',
+}
+
+# 未抓取 = 本轮**没有发起请求**。与 `source_blocked`（请求发了、被源站按出口 IP
+# 拦了）是两件不同的事，所以绝不复用那个码：后者的文案是一个我们无法成立的断言。
+TAB_NOT_FETCHED_REASON = 'tab_not_fetched'
 
 # 可选格：这些市场本来就可能不存在（必发未挂盘、让球面板由 JS 渲染）。
 # 它们没数时不算「缺口」，但仍带原因码，读者照样知道为什么是空的。
@@ -95,6 +111,14 @@ OPTIONAL_FIELDS: frozenset[str] = frozenset({
     'handicap_1x2', 'ah_zuizhi', 'eu_zuizhi', 'ou_summary', 'ah_summary',
     'local_no',
 })
+
+# 不是缺口的原因码：这些格空了是**赛程状态**或**我们已经知道的事实**，不是
+# 「没抓到」。它们留在 `fields` 里（矩阵段仍显示「未开赛」而不是裸 `-`），
+# 但不进 `gaps`、不进缺口横幅。
+#   not_started —— 赛前没有比分/半场/技术统计/首发；印成「缺口」会让每一份
+#                  赛前报告都挂着一条假警报，而横幅的全部价值就是区分
+#                  「配置/赛程问题」与「抓取问题」。
+NON_GAP_REASONS: frozenset[str] = frozenset({'not_started'})
 
 # 原因码 → 用户能读的中文解释。缺口现在会印进报告正文（不再是「缺了就不发」），
 # 所以每个码都得有一句人话。新增原因码时必须同时补这里——
@@ -106,7 +130,8 @@ REASON_TEXT: dict[str, str] = {
     'source_fetch_failed': '请求失败（超时/连接被拒）',
     'source_parse_failed': '页面取到了但结构不匹配解析器',
     'panel_js_rendered': '该面板在服务端 HTML 里为空，内容由浏览器 JS 点击后渲染',
-    'not_started': '比赛未开赛，比分/半场尚未产生',
+    'tab_not_fetched': '该分析页本轮未抓取，未发起请求',
+    'not_started': '比赛未开赛，比分/半场/技术统计/首发按赛程尚未产生（非抓取缺失）',
     'no_such_match_in_source': '该来源里没有这场比赛',
     'no_match_id': '缺少该来源的场次号，无法定位页面',
 }
@@ -176,6 +201,27 @@ def _evidence_of(block: dict[str, Any], key: str = 'report') -> dict[str, Any]:
     }
 
 
+def reason_for_stage(stage: Any) -> str:
+    """`parse_stage` → 用户侧原因码。面板级 stage 与页面级 stage 共用这一条。
+
+    以前只有 `'js_rendered' in stage` 被特判，其余一律吞成 `not_in_source`——
+    于是真实 fixture 里 `pnl` 页的 `parse_stage='origin_blocked'` / HTTP 405
+    被印成「这一格本身没有数据（不是抓取失败）」，把**抓取失败说成没有数据**。
+
+    只有一条查找规则：`STAGE_REASON_CODES` 里的键按「整段相等或作为后缀出现」匹配。
+    这条规则同时覆盖两种情况，所以不存在「另一条兜底分支」把错误悄悄救回来：
+      * 页面级 stage 是**整段**相等（`origin_blocked`、`fetch_failed`、`ok`）；
+      * 面板级 stage 把事实放在**后缀**上（`handicap_panel_empty_js_rendered`、
+        `zuizhi_panel_js_rendered`）。
+    先比长的键，`fetch_failed` 不会被更短的键抢先。
+    """
+    token = str(stage or '').strip()
+    for known in sorted(STAGE_REASON_CODES, key=len, reverse=True):
+        if token == known or token.endswith(known):
+            return STAGE_REASON_CODES[known]
+    return 'not_in_source'
+
+
 def _pick(field: str, candidates: dict[str, _Cell]) -> _Cell:
     """按 `FIELD_PRECEDENCE` 取第一个「有值」的格子；都没有则返回第一个候选的缺格。
 
@@ -195,9 +241,16 @@ def _pick(field: str, candidates: dict[str, _Cell]) -> _Cell:
 
 
 def _okooo_cells(tab_entry: dict[str, Any] | None, field_path: tuple[str, ...]) -> _Cell:
-    """从澳客某一页的解析结果里取值，出处跟着那一页（URL/状态/字节/阶段）。"""
+    """从澳客某一页的解析结果里取值，出处跟着那一页（URL/状态/字节/阶段）。
+
+    页面**根本没抓**（`tab_entry` 不是 dict）时也必须带 `source=SRC_OKOOO`：
+    不带的话 `add()` 会把它存成 `'_'` 键，`_pick` 在 `FIELD_PRECEDENCE` 里
+    找不到它 → 返回 `no_such_match_in_source`，把「这一轮没抓这几个分析页」
+    说成「澳客没有这场比赛」。这两个结论的处置完全不同。
+    """
     if not isinstance(tab_entry, dict):
-        return _Cell(None, reason='source_blocked', stage='tab_not_fetched')
+        return _Cell(None, source=SRC_OKOOO, reason=TAB_NOT_FETCHED_REASON,
+                     stage=TAB_NOT_FETCHED_REASON)
     ev = {
         'url': str(tab_entry.get('url') or ''),
         'status': int(tab_entry.get('status') or 0),
@@ -208,24 +261,26 @@ def _okooo_cells(tab_entry: dict[str, Any] | None, field_path: tuple[str, ...]) 
     for key in field_path:
         if isinstance(key, int):
             if not isinstance(node, (list, tuple)) or len(node) <= key:
-                return _Cell(None, source=SRC_OKOOO, reason='not_in_source', **ev)
+                return _Cell(None, source=SRC_OKOOO, reason=reason_for_stage(ev['stage']), **ev)
             node = node[key]
             continue
         if not isinstance(node, dict):
-            return _Cell(None, source=SRC_OKOOO, reason='not_in_source', **ev)
+            return _Cell(None, source=SRC_OKOOO, reason=reason_for_stage(ev['stage']), **ev)
         node = node.get(key)
     if node is None or (isinstance(node, (list, tuple, dict)) and not node):
         # 空容器是「这一格没有」，不是「有值」。原因码按页面阶段定：
         # `#Handicap` 与 `.filter-panel` 在服务端为空时是 JS 渲染，不是解析失败。
         # 面板级的阶段码要一路传进来，否则这一格只会落到泛化的 `not_in_source`，
         # 读者就看不出「页面确实如此」和「解析坏了」的区别。
+        # 面板级 stage 与页面级 stage 走**同一条**映射（`reason_for_stage`），
+        # 不在这里另写一份 `'js_rendered' in stage` 的判断。
         stage = ev['stage']
         if field_path and field_path[0] == 'handicap':
             stage = str(tab_entry.get('handicap_stage') or stage)
         elif field_path and field_path[0] == 'zuizhi':
             zuizhi = tab_entry.get('zuizhi') if isinstance(tab_entry.get('zuizhi'), dict) else {}
             stage = str(zuizhi.get('stage') or stage)
-        reason = 'panel_js_rendered' if 'js_rendered' in stage else 'not_in_source'
+        reason = reason_for_stage(stage)
         return _Cell(None, source=SRC_OKOOO, reason=reason, **{**ev, 'stage': stage})
     return _Cell(node, source=SRC_OKOOO, reason='ok', **ev)
 
@@ -285,8 +340,22 @@ def build_match_matrix(
 
     fields_src: dict[str, dict[str, _Cell]] = {}
 
-    def add(field: str, cell: _Cell) -> None:
+    def add(field: str, cell: _Cell | None) -> None:
+        if cell is None:
+            # 该源完全没参与本场：不留候选，让 `_pick` 按「没有候选」如实报
+            # `no_such_match_in_source`，而不是编一个我们无法成立的原因。
+            fields_src.setdefault(field, {})
+            return
         fields_src.setdefault(field, {})[cell.source or '_'] = cell
+
+    # 澳客这一场**根本不存在**时（无 MatchID、无分析页、无竞彩盘口包），
+    # `_okooo_cells(None, …)` 的「未抓取」是一个无法成立的断言——我们连它是哪一页
+    # 都不知道。此时该说 `no_such_match_in_source`，由 `_pick` 在没有澳客候选时
+    # 自己给出。所以这里只在澳客确实参与本场时才挂未抓取格。
+    def _okooo(tab_entry: dict[str, Any] | None, field_path: tuple[str, ...]) -> _Cell | None:
+        if not src_okooo_present and not isinstance(tab_entry, dict):
+            return None
+        return _okooo_cells(tab_entry, field_path)
 
     add('home', _500('home', board.get('home'), board_ev))
     if not fields_src['home'].get(SRC_500, _Cell()).filled and detail.get('home'):
@@ -320,30 +389,30 @@ def build_match_matrix(
     rq_tab = tab_map.get('rq')
     pnl_tab = tab_map.get('pnl')
 
-    add('asian_handicap', _okooo_cells(ah_tab, ('avg', 'latest', 'line')))
-    add('asian_handicap_text', _okooo_cells(ah_tab, ('avg', 'latest', 'line_text')))
-    add('ah_start_line', _okooo_cells(ah_tab, ('avg', 'start', 'line')))
-    add('ah_home_water', _okooo_cells(ah_tab, ('avg', 'latest', 'home_water')))
-    add('ah_away_water', _okooo_cells(ah_tab, ('avg', 'latest', 'away_water')))
-    add('ah_companies', _okooo_cells(ah_tab, ('companies',)))
-    add('ah_summary', _okooo_cells(ah_tab, ('summary',)))
-    add('ah_zuizhi', _okooo_cells(ah_tab, ('zuizhi', 'rows')))
+    add('asian_handicap', _okooo(ah_tab, ('avg', 'latest', 'line')))
+    add('asian_handicap_text', _okooo(ah_tab, ('avg', 'latest', 'line_text')))
+    add('ah_start_line', _okooo(ah_tab, ('avg', 'start', 'line')))
+    add('ah_home_water', _okooo(ah_tab, ('avg', 'latest', 'home_water')))
+    add('ah_away_water', _okooo(ah_tab, ('avg', 'latest', 'away_water')))
+    add('ah_companies', _okooo(ah_tab, ('companies',)))
+    add('ah_summary', _okooo(ah_tab, ('summary',)))
+    add('ah_zuizhi', _okooo(ah_tab, ('zuizhi', 'rows')))
 
-    add('ou_line', _okooo_cells(ou_tab, ('summary', 'line_mode')))
-    add('ou_over_water', _okooo_cells(ou_tab, ('companies', 0, 'latest', 'over_water')))
-    add('ou_under_water', _okooo_cells(ou_tab, ('companies', 0, 'latest', 'under_water')))
-    add('ou_companies', _okooo_cells(ou_tab, ('companies',)))
-    add('ou_summary', _okooo_cells(ou_tab, ('summary',)))
+    add('ou_line', _okooo(ou_tab, ('summary', 'line_mode')))
+    add('ou_over_water', _okooo(ou_tab, ('companies', 0, 'latest', 'over_water')))
+    add('ou_under_water', _okooo(ou_tab, ('companies', 0, 'latest', 'under_water')))
+    add('ou_companies', _okooo(ou_tab, ('companies',)))
+    add('ou_summary', _okooo(ou_tab, ('summary',)))
 
-    add('odds_1x2', _okooo_cells(eu_tab, ('companies',)))
-    add('handicap_1x2', _okooo_cells(rq_tab, ('handicap',)))
-    add('eu_zuizhi', _okooo_cells(eu_tab, ('zuizhi', 'rows')))
+    add('odds_1x2', _okooo(eu_tab, ('companies',)))
+    add('handicap_1x2', _okooo(rq_tab, ('handicap',)))
+    add('eu_zuizhi', _okooo(eu_tab, ('zuizhi', 'rows')))
 
-    add('pnl_saved', _okooo_cells(pnl_tab, ('sections', '竞足保存盈亏', 'rows')))
-    add('pnl_popularity', _okooo_cells(pnl_tab, ('sections', '竞足人气盈亏', 'rows')))
-    add('pnl_betfair', _okooo_cells(pnl_tab, ('sections', '必发交易盈亏', 'rows')))
-    add('pnl_distribution', _okooo_cells(pnl_tab, ('sections', '交易分布对比', 'rows')))
-    add('pnl_five_factors', _okooo_cells(pnl_tab, ('sections', '五要素', 'rows')))
+    add('pnl_saved', _okooo(pnl_tab, ('sections', '竞足保存盈亏', 'rows')))
+    add('pnl_popularity', _okooo(pnl_tab, ('sections', '竞足人气盈亏', 'rows')))
+    add('pnl_betfair', _okooo(pnl_tab, ('sections', '必发交易盈亏', 'rows')))
+    add('pnl_distribution', _okooo(pnl_tab, ('sections', '交易分布对比', 'rows')))
+    add('pnl_five_factors', _okooo(pnl_tab, ('sections', '五要素', 'rows')))
 
     for name in ('wdl', 'rq_wdl', 'score31', 'total_goals', 'half_full'):
         if name in boards:
@@ -362,7 +431,7 @@ def build_match_matrix(
             fields[field] = cell
             continue
         fields[field] = cell
-        if not chosen.filled:
+        if not chosen.filled and chosen.reason not in NON_GAP_REASONS:
             gaps.append({
                 'field': field,
                 'reason': chosen.reason,
@@ -676,26 +745,60 @@ def _source_line(row: dict[str, Any]) -> str:
 # 合成**一个**块，共用这一行表头，所以它必须是常量而不是散落的字面量。
 GAP_BANNER_HEADER = '⚠️【本场缺口（先说清楚，不影响出报）】'
 
+# 赛前状态行的前缀。它**不是**缺口项：赛前没有比分是赛程状态，把它混进缺口
+# 会让每一份赛前报告都挂着一条假警报。所以前缀与 `  · ` 不同，读者一眼能分开。
+PREMARKET_STATUS_PREFIX = '  ℹ️ 赛前状态：'
+
+
+def _premarket_status_line(fields: list[str], code: str, max_items: int) -> str:
+    """赛前状态行的唯一写法：说明「时间未到」，并明说「非抓取缺失」。"""
+    shown = '、'.join(sorted(set(fields))[:max_items])
+    more = f" 等{len(set(fields))}格" if len(set(fields)) > max_items else ''
+    return f'{PREMARKET_STATUS_PREFIX}{reason_text(code)}（{shown}{more}｜{code}）'
+
 
 def format_gap_banner(matrix: dict[str, Any], max_items: int = 6) -> list[str]:
-    """缺口横幅：每个原因码配一句中文，供报告顶部「先说缺口再说结论」使用。
+    """缺口横幅 + 赛前状态行，供报告顶部「先说缺口再说结论」使用。
 
     缺了就不发报的旧策略已经作废：缺口必须**印出来**。这个函数是那段文字的
     唯一来源，报告与矩阵段都用它，避免两处措辞漂移。
-    没有缺口返回空列表（调用方据此不加横幅）。
+
+    两类内容严格分开：
+      * **缺口**（`  · ` 开头）—— 我们没拿到、且本该拿到的东西；
+      * **赛前状态**（`PREMARKET_STATUS_PREFIX` 开头）—— 时间未到，本来就没有。
+        `not_started` 只出现在这一类里，绝不进缺口。赛前报告不能因为「没有缺口」
+        就沉默：披露必须留着，只是换个说法。
+
+    两者都为空时返回空列表（调用方据此不加横幅）。
     """
     matrix = matrix if isinstance(matrix, dict) else {}
     rows = [r for r in (matrix.get('rows') or []) if isinstance(r, dict)]
     buckets: dict[str, list[str]] = {}
+    status_fields: dict[str, list[str]] = {}
     for row in rows:
+        for field, cell in (row.get('fields') or {}).items():
+            if not isinstance(cell, dict):
+                continue
+            code = str(cell.get('reason') or '')
+            if code in NON_GAP_REASONS:
+                status_fields.setdefault(code, []).append(str(field))
         for gap in row.get('gaps') or []:
             if not isinstance(gap, dict):
                 continue
             code = str(gap.get('reason') or '')
-            if code == 'ok':
+            if code in ('', 'ok'):
+                continue
+            if code in NON_GAP_REASONS:
+                # 兜底：调用方若自己拼了一份含 `not_started` 的 gaps（旧结构），
+                # 仍然按状态行印，不按缺口印。语义只有一处定义。
+                status_fields.setdefault(code, []).append(str(gap.get('field') or ''))
                 continue
             buckets.setdefault(code, []).append(str(gap.get('field') or ''))
-    if not buckets:
+    status_lines = [
+        _premarket_status_line(status_fields[code], code, max_items)
+        for code in sorted(status_fields)
+    ]
+    if not buckets and not status_lines:
         return []
     lines = [GAP_BANNER_HEADER]
     for code in sorted(buckets, key=lambda c: (-len(buckets[c]), c)):
@@ -703,4 +806,5 @@ def format_gap_banner(matrix: dict[str, Any], max_items: int = 6) -> list[str]:
         shown = '、'.join(fields[:max_items])
         more = f" 等{len(fields)}格" if len(fields) > max_items else ''
         lines.append(f'  · {reason_text(code)}（{shown}{more}｜{code}）')
+    lines.extend(status_lines)
     return lines
