@@ -16,8 +16,8 @@ for extra in (str(ROOT), str(SCRIPTS)):
     if extra not in sys.path:
         sys.path.insert(0, extra)
 
-import build_single_file  # noqa: E402
-import verify_embedded_modules as vim  # noqa: E402
+import build_single_file
+import verify_embedded_modules as vim
 
 
 def test_every_embedded_module_is_byte_identical_to_its_source() -> None:
