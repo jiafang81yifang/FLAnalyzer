@@ -487,7 +487,7 @@ def _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:
 def _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:
     try:
         return float(od) >= float(floor)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
 
 
@@ -512,7 +512,7 @@ def _looks_like_score_map(value: Any) -> bool:
             try:
                 if float(odd) > 1:
                     score_like += 1
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
     return score_like > 0 and score_like * 2 >= len(value)
 
@@ -923,7 +923,7 @@ def _jc_line_of_boundary(raw: Any) -> float | None:
         return None
     try:
         value = float(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isfinite(value) or abs(value - round(value)) > 1e-9:
         return None
@@ -1450,7 +1450,7 @@ def _first_avg_index_row(html: Any) -> dict[str, Any]:
         def _f(m):
             try:
                 return float(m.group(1)) if m else None
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
         return _f(home), (line_text.group(1).strip() if line_text else ''), _f(away)
 
@@ -1757,7 +1757,7 @@ _JCZQ_PAGE_CACHE: dict[str, dict[str, Any]] = {}
 def _jczq_cache_ttl() -> float:
     try:
         return float(os.environ.get('OKOOO_JCZQ_CACHE_TTL') or 90)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 90.0
 
 
@@ -2704,7 +2704,7 @@ def merge_cs31(
                 continue
             try:
                 value = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if norm and value > 1 and norm not in from_page:
                 from_page[norm] = value
@@ -2717,7 +2717,7 @@ def merge_cs31(
                 continue
             try:
                 value = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if norm and value > 1:
                 from_jc[norm] = value

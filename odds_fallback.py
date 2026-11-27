@@ -23,7 +23,7 @@ def build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map', chann
                 if raw_value is None:
                     continue
                 value = float(raw_value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if value > 1:
                 rows.append({'score': str(score).replace(':','-'), 'odds': value, 'heat': 1.0/value})

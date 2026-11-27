@@ -9,7 +9,7 @@ def _f(value: Any, default: float | None = None) -> float | None:
     try:
         number = float(value)
         return number if math.isfinite(number) else default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
