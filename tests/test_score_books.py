@@ -125,17 +125,23 @@ def test_five_goal_cells_land_in_a_bucket_never_a_market_cell(
             assert score not in value
 
 
-def test_default_policy_puts_five_goal_home_cells_in_any_other() -> None:
-    """默认口径：5:0/5:1/5:2 进「任何其他」，不进「主胜其他」。
+def test_default_policy_puts_five_goal_cells_in_directional_buckets() -> None:
+    """默认口径（唯一无损的那套）：6 个 5 球格进方向桶，不进「任何其他」。
 
-    反证：`DEFAULT_MARKET_POLICY.five_goals_in_any_other` 改 False
-    （且 team_other 仍 False）→ 它们会进主胜其他，本断言变红。
+    这条是缺陷 1 的回归。默认口径必须选 `five_goals_in_team_other`——
+    只有它经覆盖集比对确认无损；`five_goals_in_any_other` 会让竞彩的
+    「胜其他」横跨两个市场桶。
+
+    反证：把 `DEFAULT_MARKET_POLICY` 改回 `five_goals_in_any_other=True`
+    → 这 6 个键会落到「任何其他」，本断言变红。
     """
     policy = sb.DEFAULT_MARKET_POLICY
+    assert policy.five_goals_in_team_other is True
+    assert policy.five_goals_in_any_other is False
     for score in ('5:0', '5:1', '5:2'):
-        assert sb.jc_to_market_key(score, policy=policy) == '任何其他'
+        assert sb.jc_to_market_key(score, policy=policy) == '主胜其他'
     for score in ('0:5', '1:5', '2:5'):
-        assert sb.jc_to_market_key(score, policy=policy) == '任何其他'
+        assert sb.jc_to_market_key(score, policy=policy) == '客胜其他'
 
 
 @pytest.mark.parametrize('size', (25, 26))
@@ -267,14 +273,21 @@ def test_dc_projection_covers_every_grid_cell() -> None:
 # 4. 去水与 RTP
 # --------------------------------------------------------------------------- #
 def test_normalize_rtp_is_reciprocal_of_raw_sum() -> None:
-    """rtp = 1/sum(1/odds)，norm = raw/sum(raw)；两者都用同一份可用赔率。"""
-    odds = {'1:0': 4.0, '2:0': 8.0}
+    """rtp = 1/sum(1/odds)，norm = raw/sum(raw)；两者都用同一份可用赔率。
+
+    赔率必须构造成 RTP < 1 的真实盘口形态：`1/sum(1/o) >= 1` 意味着返还率
+    ≥ 100%，现实中不存在，现在会被 `normalize_odds` 主动拒绝（见
+    `test_impossible_rtp_is_rejected_not_reported`）。
+    旧夹具用 4.0/8.0 隐含 267% 返还率，本身就不可信。
+    """
+    odds = {'1:0': 1.5, '2:0': 2.0, '3:0': 4.0}
     result = sb.normalize_odds(odds)
-    raw_sum = 1 / 4.0 + 1 / 8.0
+    raw_sum = 1 / 1.5 + 1 / 2.0 + 1 / 4.0
     assert result.raw_sum == pytest.approx(raw_sum, abs=1e-12)
     assert result.rtp == pytest.approx(1 / raw_sum, abs=1e-12)
+    assert result.rtp is not None and result.rtp < 1.0
     assert abs(sum(result.probs.values()) - 1.0) < 1e-12
-    assert result.probs['1:0'] == pytest.approx((1 / 4.0) / raw_sum, abs=1e-12)
+    assert result.probs['1:0'] == pytest.approx((1 / 1.5) / raw_sum, abs=1e-12)
 
 
 def test_normalize_jc_rtp_is_none_when_any_key_missing() -> None:
@@ -610,10 +623,12 @@ def test_tier_b_bucket_model_matches_dc_grid() -> None:
     for score, share in dist.items():
         assert share == pytest.approx(grid.probs[score] / expected_total, abs=1e-12), score
 
-    # 「任何其他」覆盖 220 格，平摊与网格给出的分布一定不同
-    wide = sb.bucket_probability_mass('任何其他', grid, sb.MARKET_BOOK_26, sb.DEFAULT_MARKET_POLICY)
-    assert wide
-    flat = 1.0 / len(coverage['任何其他'])
+    # 平摊与网格给出的分布一定不同。默认口径下「任何其他」的覆盖集只剩
+    # 5 球及以上以外的罕见比分，所以改用覆盖集最大的那个桶来比。
+    biggest = max(coverage, key=lambda b: len(coverage[b]))
+    wide = sb.bucket_probability_mass(biggest, grid, sb.MARKET_BOOK_26, sb.DEFAULT_MARKET_POLICY)
+    assert wide, biggest
+    flat = 1.0 / len(coverage[biggest])
     assert max(abs(wide[s] - flat) for s in wide) > 1e-6
 
 
@@ -918,3 +933,267 @@ def test_policy_label_is_stable_and_prints_both_axes() -> None:
     assert '5球' in sb.DEFAULT_MARKET_POLICY.label()
     assert '4:3/3:4' in sb.DEFAULT_MARKET_POLICY.label()
     assert sb.POLICY_TEAM_OTHER_KEEP.label().endswith('4:3/3:4=独立格')
+
+
+# --------------------------------------------------------------------------- #
+# 12. 缺陷 1 回归：lossless 必须算出来，默认口径必须是无损的那套
+# --------------------------------------------------------------------------- #
+def test_lossless_is_computed_from_coverage_not_declared_from_policy() -> None:
+    """`lossless` 来自逐桶覆盖集比对，不是 policy 标志位。
+
+    历史实现写死 `not policy.keep_43_34`，于是默认口径（5 球→任何其他）
+    被标成无损——而竞彩的「胜其他」实际横跨「主胜其他」与「任何其他」两个桶。
+
+    反证：把 `jc_to_market_map` 里的 `lossless=verdict["lossless"]` 改回
+    `lossless=not policy.keep_43_34` → 本测试第一段对默认口径的
+    `m.lossless is False` 立刻变红。
+    """
+    lossy = sb.jc_to_market_map(sb.POLICY_ANY_OTHER, sb.MARKET_BOOK_26)
+    assert lossy.lossless is False, '5球→任何其他 不是无损口径'
+    assert set(lossy.one_to_many_buckets) == {'主胜其他', '客胜其他', '任何其他'}
+    assert set(lossy.unresolved) == {'胜其他', '负其他'}
+
+    good = sb.jc_to_market_map(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_26)
+    assert good.lossless is True
+    assert good.one_to_many_buckets == ()
+    assert good.bucket_gaps == {}
+
+
+def test_lossless_verdict_agrees_with_the_same_distribution_self_check() -> None:
+    """口径判定与「同分布两边喂 Δ 应全 0」的实测必须一致。
+
+    这是缺陷 1 的决定性证据：`lossless=True` 的口径自检 max|Δ| 必须是 0，
+    `lossless=False` 的口径必须非 0。
+
+    反证：把 `verify_lossless` 改成永远返回 True → 第一段对
+    `POLICY_ANY_OTHER` 的 `assert check['max_abs_delta'] > 1e-6` 之前，
+    `assert lossy.lossless is False` 先变红。
+    """
+    good = sb.caliber_self_check(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_26)
+    assert good['lossless'] is True
+    assert good['max_abs_delta'] < 1e-12, good['max_abs_delta']
+
+    lossy = sb.caliber_self_check(sb.POLICY_ANY_OTHER, sb.MARKET_BOOK_26)
+    assert lossy['lossless'] is False
+    assert lossy['max_abs_delta'] > 1e-6
+    # 用户实测的数字：0.01451（λh=1.9 λa=0.7）
+    assert lossy['max_abs_delta'] == pytest.approx(0.01451, abs=5e-4)
+
+
+def test_default_policy_is_the_lossless_one() -> None:
+    """默认口径必须就是经比对确认无损的那一套。
+
+    反证：把 `DEFAULT_MARKET_POLICY` 的 `five_goals_in_any_other` 改回 True
+    → `assert sb.DEFAULT_MARKET_POLICY.five_goals_in_team_other is True` 变红，
+    且 `caliber_self_check(DEFAULT)['clean']` 也变红。
+    """
+    assert sb.DEFAULT_MARKET_POLICY.five_goals_in_team_other is True
+    assert sb.DEFAULT_MARKET_POLICY.five_goals_in_any_other is False
+    for size in (25, 26):
+        book = sb.market_book(size)
+        assert sb.jc_to_market_map(sb.DEFAULT_MARKET_POLICY, book).lossless is True
+        assert sb.caliber_self_check(sb.DEFAULT_MARKET_POLICY, book)['clean'] is True
+
+
+def test_non_lossless_policy_warns_with_the_self_check_number() -> None:
+    """选了不可无损的口径时，bucket_deltas 必须带自检数字，不许让读者当定价差。
+
+    反证：把 `bucket_deltas` 里 `if not projected["lossless"]:` 那段
+    告警删掉 → `assert tier_a['warnings']` 变红。
+    """
+    jc = {k: 1.0 / 31.0 for k in sb.JC_31_KEYS}
+    market = {k: 1.0 / 26.0 for k in sb.MARKET_26_KEYS}
+    tier_a = sb.bucket_deltas(jc, market, policy=sb.POLICY_ANY_OTHER, book=sb.MARKET_BOOK_26)
+    assert tier_a['lossless'] is False
+    assert tier_a['warnings'], '不可无损的口径必须告警'
+    joined = ' '.join(tier_a['warnings'])
+    assert '口径伪差' in joined
+    assert '0.01451' in joined or 'max|Δ|' in joined
+    assert tier_a['caliber_self_check']['max_abs_delta'] > 1e-6
+
+
+def test_lossless_policy_emits_no_caliber_warning() -> None:
+    jc = {k: 1.0 / 31.0 for k in sb.JC_31_KEYS}
+    market = {k: 1.0 / 26.0 for k in sb.MARKET_26_KEYS}
+    tier_a = sb.bucket_deltas(jc, market, policy=sb.POLICY_TEAM_OTHER, book=sb.MARKET_BOOK_26)
+    assert tier_a['lossless'] is True
+    assert tier_a['warnings'] == []
+
+
+def test_jc_key_spans_buckets_identifies_win_other() -> None:
+    """胜其他在 5球→任何其他 口径下确实横跨两个市场桶。"""
+    assert sb.jc_key_spans_buckets('胜其他', policy=sb.POLICY_ANY_OTHER) is True
+    assert sb.jc_key_spans_buckets('负其他', policy=sb.POLICY_ANY_OTHER) is True
+    # 5球→方向桶 口径下不横跨
+    assert sb.jc_key_spans_buckets('胜其他', policy=sb.POLICY_TEAM_OTHER) is False
+    # 精确格永不横跨
+    assert sb.jc_key_spans_buckets('5:0', policy=sb.POLICY_ANY_OTHER) is False
+
+
+# --------------------------------------------------------------------------- #
+# 13. 缺陷 2 回归：别名重复键不许求和
+# --------------------------------------------------------------------------- #
+def test_alias_duplicate_keys_are_rejected_not_summed() -> None:
+    """`{'1:0':3.0,'1-0':3.0}` 归一后是同一个比分，不许累加。
+
+    历史实现累加进 raw，分母变大，算出 rtp=1.1538（返还率 115%，现实不存在）。
+
+    反证：把 `normalize_odds` 里 `duplicate_inputs` 的检测删掉（恢复累加）
+    → `assert result.rtp is None` 变红（会得到 1.1538）。
+    """
+    result = sb.normalize_odds(
+        {'1:0': 3.0, '1-0': 3.0, '0:0': 5.0}, required=['1:0', '0:0'],
+    )
+    assert result.duplicate_inputs == (('1:0', ('1:0', '1-0')),)
+    assert result.complete is False
+    assert result.rtp is None
+    assert any('别名重复' in w for w in result.warnings)
+
+
+def test_alias_duplicate_cannot_produce_a_100_percent_return() -> None:
+    """31 项全 10.0 再在别名上重复一份，旧口径把 rtp 从 1.0 变成 0.170。
+
+    修后：重复即拒绝，绝不给出一个「看起来还行」的返还率。
+    """
+    odds = {k: 10.0 for k in sb.JC_31_KEYS}
+    clean = sb.normalize_jc_odds(odds)
+    # 10.0 × 31 → 隐含 310%，本身也不是真实盘口；这里关心的是「重复」行为
+    assert clean.duplicate_inputs == ()
+
+    duplicated = dict(odds)
+    duplicated['1-0'] = 10.0          # 1:0 的别名
+    dup = sb.normalize_jc_odds(duplicated)
+    assert dup.duplicate_inputs == (('1:0', ('1:0', '1-0')),)
+    assert dup.rtp is None
+    assert dup.complete is False
+
+
+def test_impossible_rtp_is_rejected_not_reported() -> None:
+    """返还率 >= 100% 不是真实盘口，必须置 None 并告警。
+
+    反证：把 `if candidate >= 1.0:` 那条分支删掉 → `assert result.rtp is None`
+    变红（会返回 1.8182）。
+    """
+    # 只有两个选项时，赔率之和 < 2 就意味着 1/sum(1/o) > 1
+    result = sb.normalize_odds({'1:0': 2.5, '2:0': 2.5}, required=['1:0', '2:0'])
+    assert result.complete is True          # 键是齐的
+    assert result.rtp is None               # 但样本自相矛盾
+    assert any('自相矛盾' in w for w in result.warnings)
+    assert result.raw_sum is not None and result.raw_sum < 1.0
+
+
+def test_fair_book_still_reports_a_sub_one_rtp() -> None:
+    """正常盘口（隐含 155%）照常给出 rtp，不被上面那条误杀。"""
+    odds = {k: 20.0 for k in sb.JC_31_KEYS}
+    result = sb.normalize_jc_odds(odds)
+    assert result.complete is True
+    assert result.rtp is not None
+    assert 0.0 < result.rtp < 1.0
+
+
+# --------------------------------------------------------------------------- #
+# 14. 缺陷 3 回归：表外键不许进分母
+# --------------------------------------------------------------------------- #
+def test_out_of_universe_keys_are_rejected_and_do_not_move_the_denominator() -> None:
+    """多给一个 `9:9` 不许拉偏分母。
+
+    历史实现把它算进 raw 与 probs，rtp 从 0.322581 变成 0.321543，
+    每个桶的 Δ 都被同一个量整体推移。
+
+    反证：把 `if universe is not None and score not in universe:` 那段删掉
+    → `assert dirty.rtp == pytest.approx(clean.rtp)` 变红。
+    """
+    odds = {k: 10.0 for k in sb.JC_31_KEYS}
+    clean = sb.normalize_jc_odds(odds)
+    dirty_map = dict(odds)
+    dirty_map['9:9'] = 100.0
+    dirty = sb.normalize_jc_odds(dirty_map)
+
+    assert dirty.rejected == ('9:9',)
+    assert '9:9' not in dirty.probs
+    assert dirty.rtp == pytest.approx(clean.rtp, abs=1e-15)
+    assert dirty.raw_sum == pytest.approx(clean.raw_sum, abs=1e-15)
+    assert any('不属于本盘口' in w for w in dirty.warnings)
+
+
+def test_probs_keys_equal_required_and_sum_to_one_when_complete() -> None:
+    """`complete=True` 时 probs 键集恰好等于 required，且和恒为 1（1e-12 内）。"""
+    odds = {k: 10.0 for k in sb.JC_31_KEYS}
+    odds['9:9'] = 100.0
+    odds['12:0'] = 500.0
+    result = sb.normalize_jc_odds(odds)
+    assert result.complete is True
+    assert set(result.probs) == set(sb.JC_31_KEYS)
+    assert abs(sum(result.probs.values()) - 1.0) < 1e-12
+
+
+def test_rejected_and_skipped_are_distinct_categories() -> None:
+    """`skipped`=该有的键给了坏值；`rejected`=根本不属于这个盘口。"""
+    odds = {k: 10.0 for k in sb.JC_31_KEYS}
+    odds['3:0'] = 0            # 该有的键，坏值 → skipped
+    odds['9:9'] = 100.0        # 不属于 → rejected
+    result = sb.normalize_jc_odds(odds)
+    assert result.skipped == ('3:0',)
+    assert result.rejected == ('9:9',)
+    assert set(result.skipped).isdisjoint(set(result.rejected))
+
+
+# --------------------------------------------------------------------------- #
+# 15. 缺陷 4 回归：空桶不告警、tier_b 告警上行到顶层
+# --------------------------------------------------------------------------- #
+def test_empty_bucket_does_not_emit_a_structural_loss_warning() -> None:
+    """桶质量本来就是 0 时不许发「无法摊薄」告警。
+
+    反证：把 `if mass <= 0.0:` 那段删掉 → `assert not any('没有质量' ...)`
+    变红（mass=0.0 也会走进告警分支）。
+    """
+    market_probs = {k: 0.0 for k in sb.MARKET_26_KEYS}
+    expansion = sb.expand_market_to_jc31(
+        market_probs, 1.45, 1.05, 0.0, book=sb.MARKET_BOOK_26,
+    )
+    assert not any('没有质量' in w for w in expansion.warnings)
+    assert expansion.roundtrip_loss == {}
+
+
+def test_tier_b_warnings_reach_the_top_level() -> None:
+    """tier_b 的告警必须合并进顶层 warnings 并去重。
+
+    历史实现只在 tier_b 分支内拼给自己，顶层 warnings 是空的，
+    读者看不到那条 1.2% 的结构差。
+
+    反证：把 `warnings.extend(tier_b.get("warnings") or [])` 删掉
+    → `assert '结构差' in joined` 变红。
+    """
+    analysis = sb.analyze_residuals(
+        {k: 8.0 for k in sb.JC_31_KEYS}, {k: 9.0 for k in sb.MARKET_26_KEYS},
+        model={'lam_h': 1.45, 'lam_a': 1.05},
+    )
+    tier_b = analysis['tier_b']
+    assert tier_b is not None
+    assert tier_b['warnings'], '这一场本应产生结构差告警'
+    joined = '\n'.join(analysis['warnings'])
+    for warning in tier_b['warnings']:
+        assert warning in joined, warning[:80]
+    assert len(analysis['warnings']) == len(set(analysis['warnings']))
+
+
+def test_structural_loss_names_its_cause() -> None:
+    """结构差告警必须点名来源：5 球及以上与 4:3/3:4 的归并，不是实现缺陷。"""
+    analysis = sb.analyze_residuals(
+        {k: 8.0 for k in sb.JC_31_KEYS}, {k: 9.0 for k in sb.MARKET_26_KEYS},
+        model={'lam_h': 1.45, 'lam_a': 1.05},
+    )
+    joined = '\n'.join(analysis['warnings'])
+    assert '5 球及以上' in joined
+    assert '不是实现缺陷' in joined
+
+
+def test_wrong_shaped_market_probs_is_refused_not_silently_zero() -> None:
+    """把 `dixon_coles_to_jc31` 的整个返回 dict 当 market_probs 传进来必须抛错。
+
+    反证：删掉 `if not overlap:` 那段 → `pytest.raises(ValueError)` 变红
+    （会静默返回全 0、零告警）。
+    """
+    wrong = sb.dixon_coles_to_jc31(1.4, 1.1)          # {'probs': ..., 'lam_h': ...}
+    with pytest.raises(ValueError, match='没有任何交集'):
+        sb.expand_market_to_jc31(wrong, 1.4, 1.1)

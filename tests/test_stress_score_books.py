@@ -104,6 +104,24 @@ def test_stress_covers_tau_clamp_and_kl_zero() -> None:
     assert counters.get('kl_zero_prob_key', 0) > 0
 
 
+def test_stress_covers_the_four_defect_regressions() -> None:
+    """缺陷 1/2/3 修好后新增的五类出口都必须被打到且非零。
+
+    - `alias_duplicate_rejected`    别名重复键被拒（缺陷 2）
+    - `out_of_universe_rejected`    表外键被拒（缺陷 3）
+    - `rtp_impossible_rejected`     返还率 >= 100% 被拒（缺陷 2 后半）
+    - `lossless_verified_true`      无损口径（缺陷 1）
+    - `lossless_verified_false`     非无损口径（缺陷 1）
+    """
+    counters = _small_report()['counters']
+    for name in (
+        'alias_duplicate_rejected', 'out_of_universe_rejected',
+        'rtp_impossible_rejected', 'lossless_verified_true',
+        'lossless_verified_false',
+    ):
+        assert counters.get(name, 0) > 0, name
+
+
 def test_min_cases_floor_is_at_least_ten_thousand() -> None:
     assert stress.MIN_CASES >= 10000
 

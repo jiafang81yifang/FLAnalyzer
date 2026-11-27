@@ -91,10 +91,12 @@ def test_same_caliber_buckets_is_attached_and_uses_score_books_mapping() -> None
     assert same['available'] is True
     assert same['policy'] == sb.DEFAULT_MARKET_POLICY.as_dict()
 
-    # 竞彩 6 个 5 球格在默认口径下并入「任何其他」——这是 score_books 给的规则，
-    # 不是这里另写的一份。
-    for score in sb.JC_FIVE_GOAL_CELLS:
-        assert sb.jc_to_market_key(score) == '任何其他'
+    # 默认口径（唯一无损的那套）把 6 个 5 球格并进方向桶——这是
+    # score_books 给的规则，不是这里另写的一份。
+    for score in ('5:0', '5:1', '5:2'):
+        assert sb.jc_to_market_key(score) == '主胜其他'
+    for score in ('0:5', '1:5', '2:5'):
+        assert sb.jc_to_market_key(score) == '客胜其他'
 
     buckets = {r['bucket']: r for r in same['rows']}
     # 31 表里市场没报「任何其他」这个键，所以它必然在不可比集合里，
@@ -119,15 +121,24 @@ def test_same_caliber_absent_when_no_jc_probabilities() -> None:
     assert '无法重分桶' in same['reason']
 
 
-def test_same_caliber_five_goal_mass_goes_to_any_other_on_market_side() -> None:
-    """6 个 5 球格的竞彩质量，在市场口径里必须出现在「任何其他」桶里。
+def test_same_caliber_five_goal_mass_goes_to_directional_buckets() -> None:
+    """6 个 5 球格的竞彩质量，在默认（无损）口径下落进方向桶。
 
-    这条证明比较点真的用了重分桶，而不是把 5:0 当成市场也有的一格。
+    这条证明比较点真的用了重分桶，而不是把 5:0 当成市场也有的一格；
+    也钉住默认口径是 `five_goals_in_team_other`（缺陷 1 的回归）。
     """
     same = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(_pack())['same_caliber']
+    assert same['lossless'] is True
+    home_other = next(r for r in same['rows'] if r['bucket'] == '主胜其他')
+    away_other = next(r for r in same['rows'] if r['bucket'] == '客胜其他')
+    per_cell = (100.0 / 31.0) / 100.0
+    # 主胜其他 = 胜其他 + 5:0 + 5:1 + 5:2（4 格）
+    assert home_other['jc'] == pytest.approx(4 * per_cell, abs=1e-9)
+    # 客胜其他 = 负其他 + 0:5 + 1:5 + 2:5（4 格）
+    assert away_other['jc'] == pytest.approx(4 * per_cell, abs=1e-9)
+    # 任何其他在竞彩侧已无独立质量
     any_other = next(r for r in same['rows'] if r['bucket'] == '任何其他')
-    expected = 6 * (100.0 / 31.0) / 100.0  # 6 个 5 球格，每格 100/31 %
-    assert any_other['jc'] == pytest.approx(expected, abs=1e-9)
+    assert any_other['jc'] == pytest.approx(0.0, abs=1e-12)
 
 
 def test_existing_per_row_numbers_are_unchanged() -> None:

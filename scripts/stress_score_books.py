@@ -57,6 +57,12 @@ REQUIRED_COUNTERS: tuple[str, ...] = (
     'book_26',
     'book_25',
     'policy_mixed',
+    # 缺陷 2/3/1 回归后新增的真实出口
+    'alias_duplicate_rejected',
+    'out_of_universe_rejected',
+    'rtp_impossible_rejected',
+    'lossless_verified_true',
+    'lossless_verified_false',
 )
 
 #: 固定种子。报告里原样给出，任何两次同 seed 的运行必须逐字一致。
@@ -104,6 +110,33 @@ def _hostile_kind(value: Any) -> str:
     if number < 0:
         return 'negative'
     return 'other'
+
+
+#: 同一个比分键的另一种写法。`1:0` -> `1-0`；`胜其他` -> `胜其它`。
+_OTHER_ALIAS = {
+    '胜其他': '胜其它', '平其他': '平其它', '负其他': '负其它',
+    '胜其它': '胜其他', '平其它': '平其他', '负其它': '负其他',
+}
+
+
+def _alias_form_of(key: str) -> str:
+    """给一个键造一个**归一后相同、写法不同**的别名。
+
+    `1:0` -> `1-0`；`胜其他` -> `胜其它`；其余用全角冒号 `1：0`。
+    绝不能用「加尾空格」——归一化会把它抹掉，别名就成了同一个字符串，
+    压测会误报「别名重复未被识别」（这是压测自身的 bug，不是实现的）。
+    """
+    if key in _OTHER_ALIAS:
+        return _OTHER_ALIAS[key]
+    if ':' in key:
+        head, _, tail = key.partition(':')
+        return rng_choice_separator(head, tail)
+    return key
+
+
+def rng_choice_separator(head: str, tail: str) -> str:
+    """`1:0` 的另一种写法：横杠或全角冒号。"""
+    return f'{head}-{tail}' if (len(head) + len(tail)) % 2 == 0 else f'{head}：{tail}'
 
 
 def _random_jc_odds(rng: random.Random, *, hostile_count: int = 0) -> dict[str, Any]:
@@ -177,11 +210,24 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
     market_odds = _random_market_odds(rng, book)
     market_norm = sb.normalize_market_odds(market_odds, book)
 
-    # ---- 判据 1：rtp is None 当且仅当 incomplete ----------------------------
-    if (jc_norm.rtp is None) != (not jc_norm.complete):
-        failures.append('jc: rtp None/complete 不一致')
-    if (market_norm.rtp is None) != (not market_norm.complete):
-        failures.append('market: rtp None/complete 不一致')
+    # ---- 判据 1：rtp 只在三种情况为 None --------------------------------
+    #    a) 样本不完整  b) 有别名重复键  c) 返还率 >= 100%（样本自相矛盾）
+    # 反向不成立：complete=True 也可能因 (b)(c) 而 rtp 为 None。
+    for side, norm in (('jc', jc_norm), ('market', market_norm)):
+        if norm.rtp is None:
+            explained = (
+                (not norm.complete) or bool(norm.duplicate_inputs)
+                or any('自相矛盾' in w for w in norm.warnings)
+            )
+            if not explained:
+                failures.append(f'{side}: rtp 为 None 但无法归因')
+        else:
+            if not norm.complete:
+                failures.append(f'{side}: 不完整却给出了 rtp')
+            if norm.duplicate_inputs:
+                failures.append(f'{side}: 有别名重复却给出了 rtp')
+            if not (0.0 < norm.rtp < 1.0):
+                failures.append(f'{side}: rtp={norm.rtp} 不在 (0,1)')
     if mode == 'complete' and hostile_count == 0 and not jc_norm.complete:
         failures.append('jc: 齐全样本被判为不完整')
     if jc_norm.missing and expected_missing and set(jc_norm.missing) != expected_missing:
@@ -197,15 +243,55 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
             if any(not math.isfinite(v) or v < 0.0 for v in norm.probs.values()):
                 failures.append(f'{side}: 出现非有限或负概率')
 
-    # ---- 判据 3：敌意值既不进分母也不出现 --------------------------------
-    if mode == 'complete' and hostile_count == 0:
-        clean_rtp = jc_norm.rtp
-        assert clean_rtp is not None
-        # 用同一份赔率但把敌意值加回去：合法项相同时应得到同样的 raw_sum
-        dirty = _random_jc_odds(random.Random(STRESS_SEED), hostile_count=0)
-        dirty.update(jc_odds)
-        if any(not math.isfinite(float(v)) for v in jc_odds.values() if not isinstance(v, str)):
-            failures.append('jc: 齐全样本里出现了敌意值')
+    # ---- 判据 3a：表外键不许进分母（缺陷 3） -----------------------------
+    out_of_universe = dict(jc_odds)
+    probe_outside = rng.choice(('9:9', '12:0', '0:12', '15:15'))
+    out_of_universe[probe_outside] = round(rng.uniform(50.0, 500.0), 2)
+    dirty_norm = sb.normalize_jc_odds(out_of_universe)
+    if dirty_norm.rejected:
+        counters['out_of_universe_rejected'] += 1
+    if probe_outside in dirty_norm.probs:
+        failures.append(f'jc: 表外键 {probe_outside} 进了 probs')
+    both_sums_known = jc_norm.raw_sum is not None and dirty_norm.raw_sum is not None
+    if both_sums_known and abs(dirty_norm.raw_sum - jc_norm.raw_sum) >= 1e-12:
+        failures.append('jc: 表外键改变了分母')
+
+    # ---- 判据 3b：别名重复键不许求和（缺陷 2） ---------------------------
+    if jc_odds:
+        alias_src = rng.choice(list(jc_odds))
+        alias_form = _alias_form_of(alias_src)
+        duplicated = dict(jc_odds)
+        duplicated[alias_form] = jc_odds[alias_src]
+        dup_norm = sb.normalize_jc_odds(duplicated)
+        if dup_norm.duplicate_inputs:
+            counters['alias_duplicate_rejected'] += 1
+        if dup_norm.rtp is not None:
+            failures.append('jc: 别名重复键仍给出了 RTP')
+        hit = [k for k, _ in dup_norm.duplicate_inputs]
+        expected_key = sb.normalize_score_key(alias_src)
+        # 源值不可用时（0/负数/nan/inf/超长串/None/bool）两份都会被 skip，
+        # 本来就不该有「重复」——那不是漏检。判据必须是「这个值本身可用」，
+        # 不能用 _hostile_kind()=='other'（它对普通数字和 None/True 都返回
+        # 'other'，会把「不可用」当成「普通数字」，于是误报漏检）。
+        source_is_usable = sb._valid_odd(jc_odds[alias_src]) is not None
+        if source_is_usable and expected_key in sb.JC_31_KEYS and hit != [expected_key]:
+            failures.append(f'jc: 别名重复未被识别（src={alias_src} -> {expected_key}，got {hit}）')
+
+    # ---- 判据 3c：返还率 >= 100% 必须被拒（缺陷 2 后半） ------------------
+    # 31 项要 sum(1/o) < 1 才得到 >100% 的返还率，故赔率取 34.0（隐含 91% 不到）
+    impossible = {k: 34.0 for k in sb.JC_31_KEYS}
+    imp_norm = sb.normalize_jc_odds(impossible)
+    if imp_norm.rtp is None and imp_norm.complete:
+        counters['rtp_impossible_rejected'] += 1
+    elif imp_norm.rtp is not None and imp_norm.rtp >= 1.0:
+        failures.append(f'jc: 给出了不可能的返还率 {imp_norm.rtp}')
+
+    # ---- 判据 3d：probs 键集必须等于 required，且和为 1 ------------------
+    if jc_norm.complete:
+        if set(jc_norm.probs) != set(sb.JC_31_KEYS):
+            failures.append('jc: complete 时 probs 键集不等于 required')
+        if abs(sum(jc_norm.probs.values()) - 1.0) >= 1e-12:
+            failures.append('jc: complete 时 probs 和不为 1')
 
     # ---- 判据 4：档 A 守恒，逐桶等于按映射求和 ---------------------------
     if jc_norm.probs:
@@ -236,6 +322,25 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
             counters['fifty_goal_in_team_other'] += 1
     if policy.keep_43_34:
         counters['keep_43_34'] += 1
+
+    # ---- 判据 5b：lossless 必须是算出来的，且与自检数字一致（缺陷 1） ----
+    verdict = sb.verify_lossless(policy, book)
+    if verdict['lossless']:
+        counters['lossless_verified_true'] += 1
+    else:
+        counters['lossless_verified_false'] += 1
+    check = sb.caliber_self_check(policy, book)
+    if verdict['lossless'] != check['clean']:
+        failures.append(
+            f'lossless 判定与自检不一致：lossless={verdict["lossless"]} '
+            f'max|delta|={check["max_abs_delta"]}'
+        )
+    if verdict['lossless'] and check['max_abs_delta'] >= 1e-12:
+        failures.append(f'自称无损但同分布两边喂 max|delta|={check["max_abs_delta"]}')
+    if policy == sb.POLICY_TEAM_OTHER and not verdict['lossless']:
+        failures.append('five_goals_in_team_other 本应是无损口径')
+    if policy == sb.POLICY_ANY_OTHER and verdict['lossless']:
+        failures.append('five_goals_in_any_other 本不该被判为无损')
 
     # ---- 判据 6：档 B（有模型时）守恒与 KL -------------------------------
     lam_h = rng.uniform(0.3, 3.5)

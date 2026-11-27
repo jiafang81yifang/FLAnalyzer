@@ -243,26 +243,39 @@ class MarketBucketPolicy:
         }
 
 
-#: 默认口径，理由见 docs 的参考文档：
-#: 竞彩的 6 个 5 球格全是方向明确的比分，市场把它们并进总「任何其他」时，
-#: 方向桶的边界（>=4 球净胜且非 4:0/4:1/4:2）就与竞彩的 胜其他/负其他 对齐了；
-#: 再把 4:3/3:4 关掉独立格（它们本就落在竞彩胜其他/负其他里），
-#: 「竞彩 31 → 市场桶」在默认口径下对每个桶都是确定的覆盖集，
-#: 差额才读得成定价错位，而不是分桶口径差。
+#: 默认口径 = 经覆盖集比对确认**唯一无损**的那一套（`five_goals_in_team_other`）。
+#:
+#: 理由只有一条，而且是算出来的、不是声明的：逐个市场桶比对「竞彩侧覆盖集」与
+#: 「市场桶覆盖集」，只有这一套全等（`verify_lossless()` 给出 lossless=True）。
+#: 它的构造是「多对一」：竞彩的胜其他/负其他/6 个 5 球格全部落进方向桶，
+#: 而市场方向桶的覆盖集恰好等于它们的并集，聚合不丢也不串。
+#:
+#: `five_goals_in_any_other`（即把 5 球及以上划进总「任何其他」）**不是**无损：
+#: 竞彩的「胜其他」本身横跨两个市场桶——4:3 归主胜其他，5:3/6:0 归任何其他，
+#: 而竞彩只有一个「胜其他」选项，无论如何都拆不开。把它整个塞进主胜其他，
+#: 会让主胜其他与任何其他两个桶的差额互相抵消，Δ 读起来像定价错位，
+#: 实际是口径伪差。同分布两边喂、Δ 应全 0 的自检实测 max|Δ|=0.01451。
 DEFAULT_MARKET_POLICY = MarketBucketPolicy(
-    five_goals_in_team_other=False,
-    five_goals_in_any_other=True,
+    five_goals_in_team_other=True,
+    five_goals_in_any_other=False,
     keep_43_34=False,
 )
 
 #: 压测与对照用的另外三种可组合口径。
-POLICY_TEAM_OTHER = MarketBucketPolicy(five_goals_in_team_other=True, five_goals_in_any_other=False)
+POLICY_TEAM_OTHER = DEFAULT_MARKET_POLICY
+POLICY_ANY_OTHER = MarketBucketPolicy(
+    five_goals_in_team_other=False, five_goals_in_any_other=True, keep_43_34=False,
+)
 POLICY_KEEP_43_34 = MarketBucketPolicy(keep_43_34=True)
 POLICY_TEAM_OTHER_KEEP = MarketBucketPolicy(
     five_goals_in_team_other=True, five_goals_in_any_other=False, keep_43_34=True,
 )
+POLICY_ANY_OTHER_KEEP = MarketBucketPolicy(
+    five_goals_in_team_other=False, five_goals_in_any_other=True, keep_43_34=True,
+)
 ALL_POLICIES: tuple[MarketBucketPolicy, ...] = (
-    DEFAULT_MARKET_POLICY, POLICY_TEAM_OTHER, POLICY_KEEP_43_34, POLICY_TEAM_OTHER_KEEP,
+    DEFAULT_MARKET_POLICY, POLICY_ANY_OTHER, POLICY_KEEP_43_34,
+    POLICY_TEAM_OTHER_KEEP, POLICY_ANY_OTHER_KEEP,
 )
 
 
@@ -342,12 +355,13 @@ def bucket_of_market_score(
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class JcToMarketMap:
-    """竞彩 31 项到市场盘面的映射，附带它的可用性结论。
+    """竞彩 31 项到市场盘面的映射，附带**算出来的**可用性结论。
 
-    ``mapping``     竞彩键 -> 市场键（31 项齐全）
-    ``unresolved``  无法唯一落位的竞彩键（空元组表示映射完整）
-    ``lossless``    是否无损可比；``keep_43_34`` 打开时为 False，
-                    因为竞彩的「胜其他」同时覆盖市场的独立格 4:3 与主胜其他。
+    ``mapping``            竞彩键 -> 市场键（31 项齐全）
+    ``unresolved``         无法唯一落位的竞彩键
+    ``lossless``           逐桶比对覆盖集后的结论（全等才为 True）；不是声明出来的
+    ``one_to_many_buckets`` 口径不可无损时，哪些桶的覆盖集与竞彩侧并集不等
+    ``bucket_gaps``        逐桶给出「竞彩多出 / 市场多出 / 双方都多出」的比分集合
     """
 
     mapping: dict[str, str]
@@ -355,31 +369,168 @@ class JcToMarketMap:
     lossless: bool = True
     policy_label: str = ""
     book_size: int = MARKET_26_COUNT
+    one_to_many_buckets: tuple[str, ...] = ()
+    bucket_gaps: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
+
+
+def _jc_side_bucket_coverage(
+    mapping: Mapping[str, str],
+    policy: MarketBucketPolicy,
+    book: MarketBook,
+) -> dict[str, tuple[str, ...]]:
+    """竞彩侧每个市场桶实际覆盖的比分集合。
+
+    「竞彩键 X 落到市场桶 B」意味着 X 覆盖的所有比分都进了 B。所以 B 在竞彩侧的
+    覆盖集 = 所有映射到 B 的竞彩键的覆盖集之并。
+
+    竞彩键的覆盖集：精确格就是它自己；胜其他/负其他/平其他是该方向上**不在
+    31 项精确格里的全部比分**，上界与 `market_bucket_coverage` 相同。
+    """
+    per_key: dict[str, set[str]] = {key: {key} for key in book.precise if key in JC_31_KEYS}
+
+    precise_home = {s for s in JC_HOME_SCORES}
+    precise_draw = {s for s in JC_DRAW_SCORES}
+    precise_away = {s for s in JC_AWAY_SCORES}
+    for home in range(COVERAGE_MAX_GOALS + 1):
+        for away in range(COVERAGE_MAX_GOALS + 1):
+            score = f"{home}:{away}"
+            if home > away:
+                if score not in precise_home:
+                    per_key.setdefault(JC_HOME_OTHER, set()).add(score)
+            elif home < away:
+                if score not in precise_away:
+                    per_key.setdefault(JC_AWAY_OTHER, set()).add(score)
+            elif score not in precise_draw:
+                per_key.setdefault(JC_DRAW_OTHER, set()).add(score)
+
+    out: dict[str, set[str]] = {bucket: set() for bucket in book.buckets}
+    for jc_key, market_key in mapping.items():
+        if market_key in out:
+            out[market_key] |= per_key.get(jc_key, {jc_key})
+    return {bucket: tuple(sorted(scores, key=_score_sort_key)) for bucket, scores in out.items()}
+
+
+def verify_lossless(
+    policy: MarketBucketPolicy = DEFAULT_MARKET_POLICY,
+    book: MarketBook = MARKET_BOOK_26,
+    mapping: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """逐桶比对「竞彩侧覆盖集」与「市场桶覆盖集」，算出这条口径是否无损。
+
+    无损的判据是**集合全等**：某个市场桶在竞彩侧覆盖的比分集合，必须与
+    `market_bucket_coverage` 给它的覆盖集逐元素相同。只要有一个桶不等，
+    把竞彩分布聚合到该桶上就不再是无损聚合，Δ 里必然混着口径伪差。
+
+    这不是从 policy 标志位推断的：`five_goals_in_team_other` 恰好无损、
+    `five_goals_in_any_other` 恰好不是，是覆盖集比对出来的结论，不是设定。
+    """
+    table = jc_to_market_map(policy, book) if mapping is None else mapping
+    pairs = table.mapping if isinstance(table, JcToMarketMap) else dict(table)
+    market_cov = market_bucket_coverage(policy, book)
+    jc_cov = _jc_side_bucket_coverage(pairs, policy, book)
+
+    gaps: dict[str, dict[str, tuple[str, ...]]] = {}
+    one_to_many: list[str] = []
+    for bucket in book.buckets:
+        jc_side = set(jc_cov.get(bucket, ()))
+        mk_side = set(market_cov.get(bucket, ()))
+        if jc_side == mk_side:
+            continue
+        one_to_many.append(bucket)
+        only_jc = tuple(sorted(jc_side - mk_side, key=_score_sort_key))
+        only_mk = tuple(sorted(mk_side - jc_side, key=_score_sort_key))
+        gaps[bucket] = {
+            "only_in_jc": only_jc,
+            "only_in_market": only_mk,
+            "both": ("only_in_jc" if only_jc else "") + (
+                "+only_in_market" if only_mk else ""
+            ) or "",
+        }
+    return {
+        "lossless": not one_to_many,
+        "one_to_many_buckets": tuple(one_to_many),
+        "bucket_gaps": gaps,
+        "policy": policy.as_dict(),
+        "policy_label": policy.label(),
+        "book_size": book.size,
+    }
 
 
 def jc_to_market_map(
     policy: MarketBucketPolicy = DEFAULT_MARKET_POLICY,
     book: MarketBook = MARKET_BOOK_26,
 ) -> JcToMarketMap:
-    """把竞彩 31 项逐个投到市场盘面的桶上。
+    """把竞彩 31 项逐个投到市场盘面的桶上，并**算出**这条口径是否无损。
 
     未识别的键不会进 ``mapping``；`assert_score_book_invariants` 保证 31 项齐全。
+
+    `lossless` 不许由 policy 标志位推断——它必须来自覆盖集比对。
+    历史实现写死的 `not policy.keep_43_34` 在默认口径（5 球→任何其他）下
+    是错的：竞彩「胜其他」横跨「主胜其他」与「任何其他」两个市场桶，
+    一对一聚合会把两个桶的差额互相抵消成一堆假 Δ。
     """
     mapping: dict[str, str] = {}
     for jc_key in JC_31_KEYS:
         target = jc_to_market_key(jc_key, policy=policy, book=book)
         if target:
             mapping[jc_key] = target
-    # 4:3/3:4 独立格存在时，竞彩的胜其他/负其他同时覆盖独立格与方向桶，
-    # 这一步无法从竞彩侧分开，如实标记为不可无损比较。
-    unresolved: tuple[str, ...] = (JC_HOME_OTHER, JC_AWAY_OTHER) if policy.keep_43_34 else ()
+    verdict = verify_lossless(policy=policy, book=book, mapping=mapping)
+    unresolved: tuple[str, ...] = ()
+    if verdict["one_to_many_buckets"]:
+        # 不可无损时，点名是哪些竞彩键横跨了多个市场桶。
+        crossers = tuple(
+            key for key in (JC_HOME_OTHER, JC_AWAY_OTHER, JC_DRAW_OTHER)
+            if jc_key_spans_buckets(key, policy, book)
+        )
+        unresolved = crossers
     return JcToMarketMap(
         mapping=mapping,
         unresolved=unresolved,
-        lossless=not policy.keep_43_34,
+        lossless=verdict["lossless"],
         policy_label=policy.label(),
         book_size=book.size,
+        one_to_many_buckets=verdict["one_to_many_buckets"],
+        bucket_gaps=verdict["bucket_gaps"],
     )
+
+
+def jc_key_spans_buckets(
+    jc_key: Any,
+    policy: MarketBucketPolicy = DEFAULT_MARKET_POLICY,
+    book: MarketBook = MARKET_BOOK_26,
+) -> bool:
+    """这个竞彩键覆盖的比分是否落在**不止一个**市场桶里。
+
+    胜其他就是典型：4:3 归主胜其他，5:3/6:0 归任何其他，一个竞彩选项
+    横跨两个市场桶。这种情况下「把它整个塞进一个桶」必然产生口径伪差。
+    """
+    key = normalize_score_key(jc_key)
+    if not key:
+        return False
+    targets = {bucket_of_market_score(score, policy=policy, book=book) for score in _jc_key_coverage(key)}
+    targets.discard("")
+    return len(targets) > 1
+
+
+def _jc_key_coverage(jc_key: str) -> tuple[str, ...]:
+    """一个竞彩键覆盖的比分集合（精确格是它自己）。"""
+    if jc_key in JC_HOME_SCORES or jc_key in JC_DRAW_SCORES or jc_key in JC_AWAY_SCORES:
+        return (jc_key,)
+    out: list[str] = []
+    for home in range(COVERAGE_MAX_GOALS + 1):
+        for away in range(COVERAGE_MAX_GOALS + 1):
+            score = f"{home}:{away}"
+            if jc_key == JC_HOME_OTHER:
+                matched = home > away and score not in JC_HOME_SCORES
+            elif jc_key == JC_AWAY_OTHER:
+                matched = home < away and score not in JC_AWAY_SCORES
+            elif jc_key == JC_DRAW_OTHER:
+                matched = home == away and score not in JC_DRAW_SCORES
+            else:
+                matched = False
+            if matched:
+                out.append(score)
+    return tuple(out)
 
 
 def jc_to_market_key(
@@ -456,6 +607,8 @@ def project_jc31_onto_market(
         "skipped": tuple(skipped),
         "lossless": mapping.lossless,
         "unresolved": mapping.unresolved,
+        "one_to_many_buckets": mapping.one_to_many_buckets,
+        "bucket_gaps": mapping.bucket_gaps,
     }
 
 
@@ -490,12 +643,14 @@ def _valid_odd(value: Any) -> float | None:
 class NormalizedOdds:
     """一次去水的结果。
 
-    ``rtp``        返还率估计 = 1/sum(raw)。样本不完整时**必须**是 None，
-                   否则缺项的倒数不在分母里，RTP 会被系统性算高。
-    ``probs``      去水概率（raw/sum(raw)），样本不完整时仍然给出，但打上标记。
-    ``complete``   要求的键是否全部给出且全部合法。
-    ``missing``    缺的键（按要求的顺序）。
-    ``skipped``    给了但被跳过的键：0、负数、nan、inf、超长数字串等。
+    ``rtp``            返还率估计 = 1/sum(raw)。样本不完整、有别名重复键、
+                       或算出来 >= 1.0（现实中不存在）时**必须**是 None。
+    ``probs``          去水概率（raw/sum(raw)），只含 ``required`` 里的键。
+    ``complete``       要求的键是否全部给出且全部合法，且没有任何样本错误。
+    ``missing``        该有的键没给。
+    ``skipped``        该有的键给了坏值（0 / 负数 / nan / inf / 超长数字串）。
+    ``rejected``       根本不属于这个盘口的键（给了 ``required`` 时），不进分母。
+    ``duplicate_inputs`` 归一后撞到同一比分键的多份输入 —— 不求和，交给调用方裁决。
     """
 
     rtp: float | None
@@ -504,6 +659,9 @@ class NormalizedOdds:
     missing: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
     raw_sum: float | None = None
+    rejected: tuple[str, ...] = ()
+    duplicate_inputs: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    warnings: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -513,6 +671,9 @@ class NormalizedOdds:
             "missing": list(self.missing),
             "skipped": list(self.skipped),
             "raw_sum": self.raw_sum,
+            "rejected": list(self.rejected),
+            "duplicate_inputs": [[k, list(v)] for k, v in self.duplicate_inputs],
+            "warnings": list(self.warnings),
         }
 
 
@@ -525,24 +686,59 @@ def normalize_odds(
     ``raw = 1/odds``（0、负数、nan、inf、超长数字串跳过且不进分母）；
     ``rtp = 1/sum(raw)``，``norm = raw/sum(raw)``。
 
-    给了 ``required`` 时按它判完整性：**缺任何一个键，rtp 就返回 None**，
-    因为缺项的倒数不在分母里，RTP 会被算高。这是本模块唯一允许出 None 的情形。
+    给了 ``required`` 时有三条硬约束（每一条都是修掉的真实缺陷）：
+
+    1. **缺任何一个键 → rtp 为 None**：缺项的倒数不在分母里，RTP 会被算高。
+    2. **别名重复键不算两份**：`{'1:0': 3.0, '1-0': 3.0}` 归一后是同一个比分，
+       累加会把分母做大、RTP 算小，甚至算出 1.15 这种不存在的返还率。
+       不求和、不择一，记进 ``duplicate_inputs``，`complete=False`、`rtp=None`，
+       让调用方决定信哪一份（可能是两个不同来源）。
+    3. **表外键不进分母**：给了 ``required`` 时只有 ``required`` 里的键能进 ``raw``；
+       其余进 ``rejected``。否则多给一个 `9:9` 会拉偏分母，把所有 Δ 整体推移。
+
+    再加一条样本自洽检查：``complete`` 且 ``rtp >= 1.0`` 说明这份赔率互相矛盾
+    （返还率 ≥ 100% 不是真实盘口），同样置 None 并告警。
     """
+    required_keys: tuple[str, ...] = tuple(
+        k for k in (normalize_score_key(x) for x in (required or ())) if k
+    )
+    universe = set(required_keys) if required_keys else None
+
     raw: dict[str, float] = {}
+    # 归一后的比分 -> 贡献它的原始键（用于识别别名重复）
+    contributors: dict[str, list[str]] = {}
     skipped: list[str] = []
+    rejected: list[str] = []
+    warnings: list[str] = []
+
     for key, odd in (odds_map or {}).items():
         score = normalize_score_key(key)
         value = _valid_odd(odd)
         if not score or value is None:
             skipped.append(str(key))
             continue
+        if universe is not None and score not in universe:
+            rejected.append(str(key))
+            continue
+        contributors.setdefault(score, []).append(str(key))
         raw[score] = raw.get(score, 0.0) + 1.0 / value
+
+    duplicate_inputs: list[tuple[str, tuple[str, ...]]] = [
+        (score, tuple(keys)) for score, keys in sorted(contributors.items()) if len(keys) > 1
+    ]
+    if duplicate_inputs:
+        warnings.append(
+            f"样本有 {len(duplicate_inputs)} 个别名重复键，已拒绝估 RTP："
+            f"{[score for score, _ in duplicate_inputs[:4]]} —— 不求和、不择一，由调用方裁决"
+        )
+    if rejected:
+        warnings.append(
+            f"有 {len(rejected)} 个键不属于本盘口，已排除出分母：{rejected[:4]}"
+        )
 
     total = sum(raw.values())
     probs = {k: v / total for k, v in raw.items()} if total > 0 else {}
 
-    required_keys = tuple(normalize_score_key(k) for k in (required or ()))
-    required_keys = tuple(k for k in required_keys if k)
     if required_keys:
         missing = tuple(k for k in required_keys if k not in raw)
         complete = not missing
@@ -550,13 +746,34 @@ def normalize_odds(
         missing = ()
         complete = bool(raw)
 
+    # 样本错误优先于完整性：有别名重复时连「完整」都不成立。
+    if duplicate_inputs:
+        complete = False
+
+    rtp: float | None = None
+    if total > 0 and complete:
+        candidate = 1.0 / total
+        if candidate >= 1.0:
+            warnings.append(
+                f"样本自相矛盾（返还率 {candidate:.4f} ≥ 100%），不是真实盘口："
+                "按样本错误处理，RTP 置空"
+            )
+        else:
+            rtp = candidate
+    elif total > 0 and not complete:
+        # 不完整时 raw_sum 仍如实给出（它是现有键的和），但绝不据此算 RTP。
+        pass
+
     return NormalizedOdds(
-        rtp=(1.0 / total) if (total > 0 and complete) else None,
+        rtp=rtp,
         probs=probs,
         complete=complete,
         missing=missing,
         skipped=tuple(skipped),
         raw_sum=total if total > 0 else None,
+        rejected=tuple(rejected),
+        duplicate_inputs=tuple(duplicate_inputs),
+        warnings=tuple(warnings),
     )
 
 
@@ -927,6 +1144,55 @@ def kl_divergence(p: Mapping[str, float], q: Mapping[str, float]) -> tuple[float
     return kl, tuple(zeros)
 
 
+def caliber_self_check(
+    policy: MarketBucketPolicy = DEFAULT_MARKET_POLICY,
+    book: MarketBook = MARKET_BOOK_26,
+    *,
+    lam_h: float = 1.9,
+    lam_a: float = 0.7,
+    rho: float = 0.0,
+) -> dict[str, Any]:
+    """口径自检：同一份 Dixon-Coles 分布同时喂给两边，Δ 应当全为 0。
+
+    做法：把同一份 DC 网格 (a) 投影到竞彩 31 维再按口径聚合，(b) 直接按每个
+    市场桶的**真实覆盖集**求和，然后逐桶做差。口径真的对齐时两边是同一个数，
+    `max_abs_delta` 应为 0（浮点噪声量级）。
+
+    它给出的数字是「这个口径下 Δ 里有多少是纯口径伪差」的下界：
+    `DEFAULT`（5 球→任何其他）实测 max|Δ|≈0.0145，`five_goals_in_team_other`
+    实测 0.0。这就是为什么只有后者能当定价错位读。
+    """
+    grid = dc_grid(lam_h, lam_a, rho=rho)
+    jc_probs = dixon_coles_to_jc31(lam_h, lam_a, rho=rho)["probs"]
+    projected = project_jc31_onto_market(jc_probs, policy=policy, book=book)
+
+    coverage = market_bucket_coverage(policy, book)
+    market_side: dict[str, float] = {}
+    for key in book.keys:
+        if key in coverage:
+            market_side[key] = sum(grid.probs.get(s, 0.0) for s in coverage[key])
+        else:
+            market_side[key] = grid.probs.get(key, 0.0)
+
+    deltas = {
+        key: projected["probs"].get(key, 0.0) - market_side.get(key, 0.0)
+        for key in book.keys
+    }
+    max_abs = max((abs(v) for v in deltas.values()), default=0.0)
+    return {
+        "policy": policy.as_dict(),
+        "policy_label": policy.label(),
+        "book_size": book.size,
+        "lam_h": lam_h,
+        "lam_a": lam_a,
+        "rho": rho,
+        "deltas": deltas,
+        "max_abs_delta": max_abs,
+        "clean": max_abs < 1e-12,
+        "lossless": jc_to_market_map(policy, book).lossless,
+    }
+
+
 def bucket_deltas(
     jc_probs: Mapping[str, float],
     market_probs: Mapping[str, float],
@@ -935,8 +1201,9 @@ def bucket_deltas(
 ) -> dict[str, Any]:
     """档 A：把竞彩分布聚合到市场桶上，逐桶做差。
 
-    这是唯一可以直接当「定价错位」读的差额；`lossless=False` 时必须提示
-    差额里含口径不可分辨的部分。
+    这是唯一可以直接当「定价错位」读的差额——**仅当口径无损时**。
+    口径不可无损时，`caliber_self_check` 会把「同分布两边喂应得 0」的自检
+    数字一并交出来，读者据此知道 Δ 里有多少是纯口径伪差，而不是定价差。
     """
     projected = project_jc31_onto_market(jc_probs, policy=policy, book=book)
     rows: list[dict[str, Any]] = []
@@ -954,18 +1221,33 @@ def bucket_deltas(
     other_jc = sum(r["jc"] for r in rows if r["is_other"])
     other_mk_values = [r["market"] for r in rows if r["is_other"] and r["market"] is not None]
     other_mk = sum(other_mk_values) if len(other_mk_values) == len(book.buckets) else None
+
+    self_check = caliber_self_check(policy=policy, book=book)
+    warnings: list[str] = []
+    if not projected["lossless"]:
+        buckets = ", ".join(projected["unresolved"] and list(projected["unresolved"]) or [])
+        warnings.append(
+            f"口径不可无损比较（横跨多个市场桶的竞彩键：{buckets or '见 one_to_many_buckets'}）。"
+            f"自检：同一份分布同时喂两边，Δ 应全为 0，实测 max|Δ|={self_check['max_abs_delta']:.5f}——"
+            "这部分 Δ 是口径伪差，不是定价错位。"
+        )
+
     return {
         "book_size": book.size,
         "policy": policy.as_dict(),
         "policy_label": policy.label(),
         "lossless": projected["lossless"],
         "unresolved": list(projected["unresolved"]),
+        "one_to_many_buckets": list(projected["one_to_many_buckets"]),
+        "bucket_gaps": dict(projected["bucket_gaps"]),
+        "caliber_self_check": self_check,
         "rows": rows,
         "other_jc": other_jc,
         "other_market": other_mk,
         "other_delta": None if other_mk is None else other_jc - other_mk,
         "skipped": list(projected["skipped"]),
         "other_keys": sorted(other_keys),
+        "warnings": warnings,
     }
 
 
@@ -1043,6 +1325,14 @@ def expand_market_to_jc31(
     """
     if lam_h is None or lam_a is None:
         raise ValueError("档 B 需要模型参数 (λh, λa)：没有模型参数时拒绝摊薄，不用平均分摊冒充")
+    # 传错形状（例如把 dixon_coles_to_jc31 的整个返回 dict 当 market_probs）时，
+    # 逐个 key 取不到值就会静默返回全 0、零告警。这里直接拒绝。
+    overlap = set(market_probs or {}) & set(book.keys)
+    if not overlap:
+        raise ValueError(
+            f"market_probs 与市场 {book.size} 项盘面的键没有任何交集，拒绝摊薄"
+            f"（传入 {len(market_probs or {})} 个键，例如 {list(market_probs or {})[:4]}）"
+        )
     grid = dc_grid(float(lam_h), float(lam_a), rho=float(rho or 0.0), max_goals=max_goals)
 
     out: dict[str, float] = {key: 0.0 for key in JC_31_KEYS}
@@ -1061,6 +1351,11 @@ def expand_market_to_jc31(
             continue
         conditional = bucket_probability_mass(market_key, grid, book=book, policy=policy)
         if not conditional:
+            if mass <= 0.0:
+                # 该桶本来就没概率：不是结构差，也不必告警。空桶告警曾经对着
+                # mass=0.0 也发一条，把「没有这份钱」误报成「这份钱丢了」。
+                bucket_models[market_key] = {}
+                continue
             # 模型在这个桶上完全没有质量：桶里的比分在给定 λ 下概率都下溢了。
             # 这不是「该桶概率为 0」，而是模型无法表达它——必须整笔记为结构差，
             # 否则这部分市场概率会从输出里静默消失。
@@ -1108,6 +1403,12 @@ def expand_market_to_jc31(
                 f"桶 {bucket} 有 {lost_mass:.3e} 的概率在竞彩 31 维里无法表达"
                 f"（摊薄后回不到该桶），这部分是两套盘的结构差，不是定价差"
             )
+    if sum(roundtrip_loss.values()) > _ROUNDTRIP_WARN:
+        # 点名来源：读者要能分清「实现没做好」与「两套盘本来就不一样」。
+        warnings.append(
+            "结构差的主要来源：单队 5 球及以上（竞彩有独立格 / 市场并入其他）"
+            "与 4:3/3:4 的归并口径不同 —— 这是两套盘的固有差异，不是实现缺陷"
+        )
 
     return MarketExpansion(
         probs=out,
@@ -1152,10 +1453,10 @@ def analyze_residuals(
         warnings.append(
             f"竞彩样本不完整（缺 {len(jc_norm.missing)} 项：{list(jc_norm.missing)[:6]}），RTP 不可估"
         )
-    if not market_norm.complete:
-        warnings.append(
-            f"市场样本不完整（缺 {len(market_norm.missing)} 项：{list(market_norm.missing)[:6]}），RTP 不可估"
-        )
+    # 去水阶段的每一条告警都必须上行：别名重复键、表外键、返还率 ≥ 100%
+    # 都是「这份样本不能直接信」的理由，埋在 jc/market 里读者看不到。
+    warnings.extend(jc_norm.warnings)
+    warnings.extend(market_norm.warnings)
 
     tier_a = bucket_deltas(jc_norm.probs, market_norm.probs, policy=policy, book=book)
     five_goal_cells = {
@@ -1202,10 +1503,27 @@ def analyze_residuals(
     ranked = [r for r in tier_a["rows"] if r["delta"] is not None]
     ranked.sort(key=lambda r: abs(r["delta"]), reverse=True)
 
+    # 口径伪差的自检数字也必须在顶层可见：lossless=False 时读者要能一眼看到
+    # 「同分布两边喂应得 0、实测 max|Δ|=X」，否则会把这些 Δ 当定价错位。
+    warnings.extend(tier_a.get("warnings") or [])
+    if tier_b is not None:
+        # tier_b 的告警（结构性质量损失、桶无质量）合并到顶层并去重；
+        # 之前只在 tier_b 分支内拼给自己，顶层 warnings 仍是空的。
+        warnings.extend(tier_b.get("warnings") or [])
+
+    seen: set[str] = set()
+    merged: list[str] = []
+    for warning in warnings:
+        text = str(warning or '').strip()
+        if text and text not in seen:
+            seen.add(text)
+            merged.append(text)
+
     return {
         "book_size": book.size,
         "policy": policy.as_dict(),
         "policy_label": policy.label(),
+        "lossless": tier_a.get("lossless"),
         "jc": jc_norm.as_dict(),
         "market": market_norm.as_dict(),
         "tier_a": tier_a,
@@ -1213,7 +1531,7 @@ def analyze_residuals(
         "five_goal_cells": five_goal_cells,
         "five_goal_total": five_goal_total,
         "tier_b": tier_b,
-        "warnings": warnings,
+        "warnings": merged,
     }
 
 
@@ -1247,7 +1565,20 @@ def format_analysis_text(analysis: Mapping[str, Any], top_n: int = 10) -> str:
     lines.append("【档 A｜无损可比：竞彩聚合到市场桶上做差】")
     tier_a = analysis.get("tier_a") or {}
     if not tier_a.get("lossless"):
-        lines.append(f"  ⚠️ 口径不可无损比较：{tier_a.get('unresolved')}")
+        check = tier_a.get("caliber_self_check") or {}
+        lines.append(
+            "  ⚠️ 本口径不可无损比较：Δ 含口径伪差，不可当定价错位读。"
+            f"自检（同分布两边喂应得 0）：max|Δ|={num_text(check.get('max_abs_delta'), '.5f')}"
+        )
+        if tier_a.get("one_to_many_buckets"):
+            lines.append(f"     横跨多个市场桶的桶：{', '.join(tier_a['one_to_many_buckets'])}")
+        gaps = tier_a.get("bucket_gaps") or {}
+        for bucket, gap in list(gaps.items())[:3]:
+            only_jc = list(gap.get("only_in_jc") or [])[:4]
+            lines.append(
+                f"     {bucket}: 竞彩多出 {len(gap.get('only_in_jc') or [])} 个比分"
+                f"{('（如 ' + ', '.join(only_jc) + '）') if only_jc else ''}"
+            )
     for row in (analysis.get("top_deltas") or [])[:top_n]:
         lines.append(
             f"  {row['bucket']:<6} 竞彩{_pct(row['jc']):>8} "
