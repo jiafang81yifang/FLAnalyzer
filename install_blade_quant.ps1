@@ -31,7 +31,8 @@ try {
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
 # 0725f23 = 冻结λ落到记录(31表theory不再整列空) + 市均页405时竞彩31仍抓/自愈补齐那9项
-$PinCommit = '0725f235ec412518c1d0f39eaea077a666681c09'
+# daa0ad1 = 发报质量门真的会拦(缺六盘口/缺DeepSeek外壳拒发) + 空HTML不再顶掉整份正文
+$PinCommit = 'daa0ad1edd0de64c91659dd2827264d8972892f2'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
