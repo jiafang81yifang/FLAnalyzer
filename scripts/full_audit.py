@@ -1102,6 +1102,24 @@ def audit_installer_refresh(audit: Audit, root: Path) -> None:
     audit.record('refresh:guarded-proxy-default',
                  'if not defined OKOOO_PROXY set' in text)
 
+    # The copy-paste usage hint must name the default branch. Whoever copies it out
+    # of this file gets that branch's installer, and therefore that branch's
+    # $PinCommit and that branch's app. Pointing it at a feature branch silently
+    # installs an older build than the one this file belongs to — the hint rotted
+    # onto cursor/fix-runtime-issues-84a8 and would have downgraded every user past
+    # #5/#6/#17.
+    hint = re.search(
+        r'raw\.githubusercontent\.com/[^/\s]+/[^/\s]+/(\S+)/install_blade_quant\.ps1',
+        text,
+    )
+    audit.record('hint:present', hint is not None,
+                 'the usage hint should show the one-line irm command')
+    hint_branch = hint.group(1) if hint is not None else None
+    audit.record('hint:default-branch',
+                 hint_branch in ('master', 'main'),
+                 f'the hint names {hint_branch!r}; it must name the default branch '
+                 '(master/main), never a cursor/* branch — that would serve an older build')
+
     # Pinned download: one immutable SHA for both artifacts, plus a mirror.
     pin = re.search(r"\$PinCommit\s*=\s*'([0-9a-f]{40})'", text)
     audit.record('pin:is-full-sha', pin is not None,
