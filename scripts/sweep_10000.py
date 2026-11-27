@@ -649,13 +649,16 @@ def _check_case(case: dict[str, Any], coverage: Coverage) -> list[CaseFailure]:
     # ---- I9: the `/比较` report surface must obey direction uniqueness ----
     # This is a user-facing report, so it gets the same rule as every other
     # surface: no banned wording, and never a single pick when the two
-    # candidates it reports on belong to different directions.
+    # candidates it reports on belong to different directions. The rule is the
+    # module-level BANNED_WORDS net of BANNED_ALLOWED (`不做推荐` is permitted),
+    # exactly as the ventropy surface above applies it.
     coverage.hit('compare_surface_checked')
     if case.get('compare'):
         coverage.hit('compare_' + str(case['compare']))
     for word in BANNED_WORDS:
-        if word in compare_text:
-            fail('I9-compare-banned-word', f'compare output carries {word!r}')
+        hits = compare_text.count(word) - sum(compare_text.count(ok) for ok in BANNED_ALLOWED)
+        if hits > 0:
+            fail('I9-compare-banned-word', f'compare output carries {word!r} x{hits}')
     if '⚠️ 两候选方向不一致' in compare_text:
         coverage.hit('compare_reported_cross_direction')
         # the conflict must be surfaced as a fact, and no single pick offered

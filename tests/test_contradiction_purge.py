@@ -269,7 +269,7 @@ def test_comparison_report_never_offers_two_directions_for_one_match(
     app.compare_matches()
     body = sent[0]
     assert '方向冲突' in body, body
-    assert '不推荐' in body, body
+    assert '不做推荐' in body, body
     # neither direction may be presented as a pick
     assert '主胜: ' not in body and '平局: ' not in body
 
@@ -289,11 +289,17 @@ def test_comparison_report_single_direction_states_it_once(
     })
     app.compare_matches()
     body = sent[0]
-    # the single direction is stated the same way in both warning blocks and
-    # never paired with a second direction for the same match
+    # The single direction is stated the same way in both warning blocks and
+    # never paired with a second direction for the same match. The label
+    # vocabulary is owned by the shared classifier `_wdl_of_score`, which emits
+    # 胜/平/负 (not 主胜/平局/客胜), so the expectation follows that vocabulary.
     assert '方向冲突' not in body, body
-    assert '平局' not in body and '客胜' not in body, body
-    assert '主胜' in body
+    assert '方向一致（胜）' in body, body
+    # no false conflict: neither the conflict marker nor a non-zero conflict count
+    assert '⚠️ 两候选方向不一致' not in body, body
+    assert '方向冲突（' not in body, body
+    assert '0场方向不一致' in body, body
+    assert not any(other in body for other in ('方向一致（平）', '方向一致（负）')), body
 
 
 def test_market_defense_secondary_is_never_the_primary_key() -> None:

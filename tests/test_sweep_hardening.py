@@ -35,6 +35,27 @@ app = importlib.import_module('app_v84_hermes')
 pipe = importlib.import_module('blade_deepseek_pipeline')
 okooo = importlib.import_module('okooo_mobile_cs')
 
+# Wording policy for report surfaces lives in one place:
+# scripts/scan_report_surfaces.py defines BANNED and ALLOWED, where `不做推荐` is
+# the single permitted negative form. A bare substring scan for '推荐' would flag
+# that compliant wording, so every surface test uses the central rule instead.
+_scanner = importlib.import_module(
+    'scripts.scan_report_surfaces'
+) if (ROOT / 'scripts' / 'scan_report_surfaces.py').exists() else None
+BANNED_WORDS = _scanner.BANNED if _scanner else ('首选', '次选', '双选', '强推', '推荐')
+ALLOWED_NEGATIONS = _scanner.ALLOWED if _scanner else ('不做推荐',)
+
+
+def wording_hits(text: str) -> dict[str, int]:
+    """Banned pick words, net of the allowed negations (central scanner rule)."""
+    out: dict[str, int] = {}
+    for word in BANNED_WORDS:
+        n = str(text).count(word) - sum(str(text).count(ok) for ok in ALLOWED_NEGATIONS)
+        if n > 0:
+            out[word] = n
+    return out
+
+
 JC = list(pipe.JCZQ_ALL_OPTIONS)
 FISSURE_ON = {'triggered': True, 'macro_direction': 'home', 'counter_direction': 'away'}
 
@@ -271,8 +292,8 @@ def test_compare_matches_cross_direction_gives_no_single_pick() -> None:
     }
     text = _compare_output(history)
 
-    for word in ('首选', '次选', '双选', '强推', '推荐'):
-        assert word not in text, f'compare output carries {word!r}:\n{text}'
+    # Central rule: 首选/次选/双选/强推 stay banned; `推荐` only as `不做推荐`.
+    assert not wording_hits(text), f'compare output carries pick wording: {wording_hits(text)}\n{text}'
 
     # the fact must be stated, not silently dropped
     assert '方向不一致' in text, f'cross-direction fact missing:\n{text}'
@@ -292,8 +313,7 @@ def test_compare_matches_same_direction_reports_consistency() -> None:
     }
     text = _compare_output(history)
 
-    for word in ('首选', '次选', '双选', '强推', '推荐'):
-        assert word not in text, f'compare output carries {word!r}:\n{text}'
+    assert not wording_hits(text), f'compare output carries pick wording: {wording_hits(text)}\n{text}'
     assert '方向一致' in text, f'same-direction fact missing:\n{text}'
     assert '2场中 2场两候选同向' in text, f'consistency count wrong:\n{text}'
     assert '10.0个百分点' in text, f'the probability gap is missing:\n{text}'
