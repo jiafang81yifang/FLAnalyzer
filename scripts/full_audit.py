@@ -38,6 +38,7 @@ MODULES = [
     'score_convergence_engine',
     'tg_goal_table',
     'score_matrices',
+    'market_guardrails',
 ]
 
 APP = 'app_v84_hermes.py'
@@ -278,6 +279,22 @@ def audit_modules(audit: Audit, root: Path) -> None:
         'blade_monitor_panel': [],
         'unified_odds_evaluator': ['UnifiedOddsEvaluator'],
         'score_convergence_engine': ['run_score_convergence', 'format_convergence_tg_lines'],
+        'market_guardrails': [
+            'evaluate_market_guardrails',
+            'guardrail_1_macro_dominance',
+            'guardrail_2_neighborhood',
+            'guardrail_2_even_match',
+            'guardrail_3_inducing_trap',
+            'guardrail_4_confidence_decay',
+            'stage1_min_abs_diff_lock',
+            'stage2_true_protection',
+            'overkill_protocol',
+            'resolve_league_pressure',
+            'is_high_entropy_league',
+            'check_single_direction',
+            'home_away_abs_ratio',
+            'channel_neighborhood_ratio',
+        ],
     }
     for module, names in expectations.items():
         try:

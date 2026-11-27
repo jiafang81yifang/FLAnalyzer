@@ -29,6 +29,7 @@ MODULES = [
     'unified_odds_evaluator',
     'score_convergence_engine',
     'score_matrices',
+    'market_guardrails',
 ]
 
 APP = 'app_v84_hermes.py'

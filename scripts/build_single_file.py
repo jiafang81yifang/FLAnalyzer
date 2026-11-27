@@ -27,6 +27,7 @@ MODULES = [
     'score_convergence_engine',
     'tg_goal_table',
     'score_matrices',
+    'market_guardrails',
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
 END = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'
