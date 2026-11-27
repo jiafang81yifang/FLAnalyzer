@@ -1194,9 +1194,113 @@ class DeepSeekAnalyzer:
     def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return dict(payload) if isinstance(payload, dict) else {}
 
+    # 六盘口：与 app `_ensure_mobile_six` 的 `_core_ok` 同口径。
+    # 顺序即报告展示顺序；第二项是它在六盘口包里的键名。
+    SIX_MARKET_BOARDS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ('亚盘让球', 'asian_handicap'),
+        ('大小球', 'ou_line'),
+        ('胜平负', 'odds_1x2'),
+        ('竞彩让球', 'jc_handicap'),
+        ('总进球', 'total_goals_odds'),
+        ('半全场', 'htft_odds'),
+    )
+    # 报告外壳：没有这一段就不是「DeepSeek 标准研判报告」。
+    JUDGMENT_SHELL_MARKER: ClassVar[str] = 'DeepSeek 数据分析研判报告'
+
     @staticmethod
-    def ensure_judgment_standard_sections(text: Any) -> str:
-        return str(text or '')
+    def six_market_gaps(source: Any) -> list[str]:
+        """列出源里真实缺的六盘口项（中文名）。
+
+        **判「有」不能用 `not value`**：0.0 是平手盘 / 大小球 0 线，是真实盘口。
+        空串、空容器、None 才算缺。
+        """
+        src: dict[str, Any] = source if isinstance(source, dict) else {}
+
+        def _present(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (dict, list, tuple, set)):
+                return bool(value)
+            return True
+
+        gaps: list[str] = []
+        for label, key in DeepSeekAnalyzer.SIX_MARKET_BOARDS:
+            if not _present(src.get(key)):
+                gaps.append(label)
+        return gaps
+
+    @staticmethod
+    def ensure_judgment_standard_sections(
+        text: Any,
+        payload: Any = None,
+        jc_vs_hot_tg_lines: Any = None,
+        wdl_matrix_tg_lines: Any = None,
+        theo_mkt_31_tg_lines: Any = None,
+        mkt_over_theo_tg_lines: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """发报前硬闸：缺六盘口或缺 DeepSeek 外壳时给出明确的拒发标记。
+
+        返回 dict（不是直通的 str）：
+          text            规整后的正文（未拒发时调用点直接用它）
+          ok              是否可以发
+          reject          是否必须拒发
+          reject_reason   一句话原因，调用点原样打进日志
+          missing_boards  缺的六盘口项（中文名）
+          missing_sections 缺的报告段
+          section_status  各段是否在场
+
+        历史上这里是 `return str(text or '')`：既不是门禁，签名也只收一个位置参数。
+        app 用五个关键字参数调用它 → `TypeError` 被 `except` 吞掉 → 下一行
+        `_gate.get('text')` 也永远不会执行。那道「质量门硬拦」一次都没真正跑过。
+        """
+        body = str(text or '')
+        pay: dict[str, Any] = payload if isinstance(payload, dict) else {}
+
+        board_src: dict[str, Any] = {}
+        board = pay.get('cross_market_board')
+        if isinstance(board, dict) and isinstance(board.get('six_market_mobile'), dict):
+            board_src = board['six_market_mobile']
+        if not board_src and isinstance(pay.get('six_market_mobile'), dict):
+            board_src = pay['six_market_mobile']
+        if not board_src:
+            # 兜底：研判包顶层也可能直接放盘口标量。
+            board_src = pay
+        missing_boards = DeepSeekAnalyzer.six_market_gaps(board_src)
+
+        section_status = {
+            'deepseek_shell': bool(body) and DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in body,
+            'six_market': not missing_boards,
+        }
+        missing_sections: list[str] = []
+        if not section_status['deepseek_shell']:
+            missing_sections.append(DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER)
+
+        reasons: list[str] = []
+        if missing_boards:
+            reasons.append('缺六盘口(' + '/'.join(missing_boards) + ')')
+        if missing_sections:
+            reasons.append('缺DeepSeek外壳(' + '/'.join(missing_sections) + ')')
+        reject = bool(reasons)
+        return {
+            'text': body,
+            'ok': not reject,
+            'reject': reject,
+            'reject_reason': '；'.join(reasons),
+            'missing_boards': missing_boards,
+            'missing_sections': missing_sections,
+            'section_status': section_status,
+            # 调用方传进来的段：这里只回报「有没有给」，不在这里重渲染。
+            'passed_sections': {
+                'jc_vs_hot_tg_lines': bool(jc_vs_hot_tg_lines),
+                'wdl_matrix_tg_lines': bool(wdl_matrix_tg_lines),
+                'theo_mkt_31_tg_lines': bool(theo_mkt_31_tg_lines),
+                'mkt_over_theo_tg_lines': bool(mkt_over_theo_tg_lines),
+            },
+        }
 
     @staticmethod
     def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:

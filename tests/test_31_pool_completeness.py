@@ -268,7 +268,13 @@ def _history_record(jc: dict[str, float], *, lam_keys: dict[str, Any]) -> dict[s
         'correct_score_jc_official': dict(jc),
         'jc_score_odds': dict(jc),
         'jc_score_source': '手机竞足→更多玩法→胜平负比分',
-        'six_market_mobile': {'ou_line': 2.5, 'asian_handicap': -0.5, 'jc_handicap': -1},
+        'six_market_mobile': {
+            'ou_line': 2.5, 'asian_handicap': -0.5, 'jc_handicap': -1,
+            'odds_1x2': {'home': 2.0, 'draw': 3.2, 'away': 3.8},
+            'total_goals_odds': {'0': 9.0, '1': 5.4, '2': 3.6, '3': 4.2},
+            'htft_odds': {'胜胜': 4.5, '平胜': 6.0, '负胜': 9.0,
+                          '胜平': 12.0, '平平': 5.5, '负平': 9.5},
+        },
         'asian_handicap': -0.5,
         'ou_line': 2.5,
         'jc_handicap': -1,
@@ -279,17 +285,29 @@ def _history_record(jc: dict[str, float], *, lam_keys: dict[str, Any]) -> dict[s
 
 
 def _run_emit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, rec: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    rec: dict[str, Any],
+    *,
+    reports: list[str] | None = None,
+    tg_enabled: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
-    """跑完 emit 的 31 表审计分支，返回（落盘后的记录，打印过的行）。"""
+    """跑完 emit 的 31 表审计分支，返回（落盘后的记录，打印过的行）。
+
+    `reports` 收下所有经 send_judgment_report_tg 发出的文本，供质量门断言。
+    """
     history_file = tmp_path / 'match_history.json'
     history_file.write_text(
         json.dumps({'1328189': rec}, ensure_ascii=False), encoding='utf-8',
     )
+    sent = reports if reports is not None else []
     monkeypatch.setattr(app, 'HISTORY_FILE', str(history_file))
-    monkeypatch.setattr(app, 'JUDGMENT_TG_REPORT_OUTPUT', False)
-    monkeypatch.setattr(app, 'send_judgment_report_tg', lambda text, parse_mode=None: None)
-    monkeypatch.setattr(app, 'send_tg', lambda text, **kwargs: None)
+    monkeypatch.setattr(app, 'JUDGMENT_TG_REPORT_OUTPUT', tg_enabled)
+    monkeypatch.setattr(
+        app, 'send_judgment_report_tg',
+        lambda text, parse_mode=None: sent.append(str(text)),
+    )
+    monkeypatch.setattr(app, 'send_tg', lambda text, **kwargs: sent.append(str(text)))
     monkeypatch.setattr(app, '_ensure_mobile_six', lambda *a, **k: False)
     monkeypatch.setattr(
         app, 'enrich_history_okooo_cs_facts', lambda rec, cn_name='', force_rescrape=False: False,
@@ -410,3 +428,112 @@ def test_emit_reports_the_real_source_when_lambda_is_absent(
     assert '市场概率缺' not in joined, joined
     assert saved['cs31_analysis_blocked'] is True
     assert saved['cs31_missing']
+
+
+# --------------------------------------------------------------------------- #
+# 发报硬闸：缺六盘口 / 缺 DeepSeek 外壳 → 拒绝发正文
+# --------------------------------------------------------------------------- #
+def test_quality_gate_signature_matches_the_app_call() -> None:
+    """app 用五个关键字调用，实现必须吃得下并返回 dict（曾经 TypeError 被吞）。"""
+    gate = pipe_mod.DeepSeekAnalyzer.ensure_judgment_standard_sections(
+        '🧠【DeepSeek 数据分析研判报告】\n正文',
+        payload={},
+        jc_vs_hot_tg_lines=[],
+        wdl_matrix_tg_lines=[],
+        theo_mkt_31_tg_lines=[],
+        mkt_over_theo_tg_lines=[],
+    )
+    assert isinstance(gate, dict), type(gate)
+    for key in ('text', 'ok', 'reject', 'reject_reason', 'missing_boards',
+                'missing_sections', 'section_status', 'passed_sections'):
+        assert key in gate, key
+    # 没有六盘口就没有通过的理由。
+    assert gate['reject'] is True
+    assert gate['ok'] is False
+    assert '缺六盘口' in gate['reject_reason']
+
+
+def test_quality_gate_accepts_a_complete_payload() -> None:
+    """六盘口齐 + 有 DeepSeek 外壳 → 放行，且不改写正文。"""
+    body = '🧠【DeepSeek 数据分析研判报告】\n正文'
+    gate = pipe_mod.DeepSeekAnalyzer.ensure_judgment_standard_sections(
+        body, payload=_history_record(_jc31_odds(), lam_keys={}),
+    )
+    assert gate['ok'] is True
+    assert gate['reject'] is False
+    assert gate['reject_reason'] == ''
+    assert gate['missing_boards'] == []
+    assert gate['text'] == body
+
+
+def test_quality_gate_treats_zero_lines_as_present() -> None:
+    """0.0 是平手盘 / 大小球 0 线，是真实盘口，不能算缺。"""
+    gaps = pipe_mod.DeepSeekAnalyzer.six_market_gaps({
+        'asian_handicap': 0.0, 'ou_line': 0.0, 'jc_handicap': 0,
+        'odds_1x2': {}, 'total_goals_odds': {}, 'htft_odds': {},
+    })
+    assert gaps == ['胜平负', '总进球', '半全场']
+
+
+def test_emit_refuses_to_send_when_six_boards_are_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """缺六盘口：不发研判正文，只发一条点名原因的告警。"""
+    jc = _jc31_odds()
+    rec = _history_record(jc, lam_keys={'lam_h': 1.45, 'lam_a': 1.10})
+    # 只剩亚盘：大小球/胜平负/竞彩让球/总进球/半全场全缺。
+    rec['six_market_mobile'] = {'asian_handicap': -0.5}
+    reports: list[str] = []
+    saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
+    joined = '\n'.join(lines)
+    assert '[TG质量门] 拒发' in joined, joined
+    assert '缺六盘口' in joined
+    # 正文一条都不能发出去；只允许那条「拒发」告警。
+    bodies = [r for r in reports if '阶段2质量门拒发' not in r]
+    assert bodies == [], bodies
+    assert len(reports) == 1, reports
+    assert '阶段2质量门拒发' in reports[0]
+    assert '缺六盘口' in reports[0]
+    # 记录里留下拒发原因，复盘能看到。
+    assert '缺六盘口' in str(saved.get('tg_quality_gate_reject') or '')
+
+
+def test_emit_refuses_to_send_when_the_deepseek_shell_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """六盘口齐但缺 DeepSeek 外壳：同样不发正文，并点名缺哪一段。"""
+    jc = _jc31_odds()
+    rec = _history_record(jc, lam_keys={'lam_h': 1.45, 'lam_a': 1.10})
+    real_sections = pipe_mod.DeepSeekAnalyzer.build_deepseek_only_tg_sections
+
+    def without_shell(*args, **kwargs):
+        return [s for s in real_sections(*args, **kwargs) if 'DeepSeek 数据分析研判报告' not in s]
+
+    monkeypatch.setattr(
+        pipe_mod.DeepSeekAnalyzer, 'build_deepseek_only_tg_sections',
+        staticmethod(without_shell),
+    )
+    reports: list[str] = []
+    _saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
+    joined = '\n'.join(lines)
+    assert '[TG质量门] 拒发' in joined, joined
+    assert '缺DeepSeek外壳' in joined
+    bodies = [r for r in reports if '阶段2质量门拒发' not in r]
+    assert bodies == [], bodies
+    assert len(reports) == 1, reports
+    assert '缺DeepSeek外壳' in reports[0]
+
+
+def test_emit_still_sends_when_the_gate_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """完整 payload：门禁放行，正文照常发出。"""
+    jc = _jc31_odds()
+    rec = _history_record(jc, lam_keys={'lam_h': 1.45, 'lam_a': 1.10})
+    reports: list[str] = []
+    saved, lines = _run_emit(monkeypatch, tmp_path, rec, reports=reports, tg_enabled=True)
+    joined = '\n'.join(lines)
+    assert '[TG质量门] 拒发' not in joined, joined
+    assert reports, 'a passing gate must still push the report'
+    assert any(pipe_mod.DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in r for r in reports), reports
+    assert not saved.get('tg_quality_gate_reject')
