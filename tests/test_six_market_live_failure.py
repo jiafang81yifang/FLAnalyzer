@@ -148,16 +148,25 @@ def test_half_full_group_one_is_strictly_ordered_by_price() -> None:
 
 
 def test_block_missing_is_reported_not_invented() -> None:
-    """某场缺一个块（夹具里 4008/4012 的 SportteryNWDL 是空数组）→ block_absent，
-    而且**不得**凭空补出赔率。"""
-    res = okooo.parse_jczq_list_boards(_list_text(), '1348444')
-    assert res['orderid'] == '4001'
-    # 4001 是完整的；换一场真的缺 NWDL 的（matchIds 第 8 个 = 1347775? 用 orderid 直接校验）
+    """某场缺一个块：如实报 block_absent，且**不得**凭空补出赔率。
+
+    4008 / 4012 的 `SportteryNWDL` 是空数组。映射纠正后 NWDL 就是**胜平负**，
+    所以这两场缺的是胜平负，不是竞彩让球——它们的 WDL（让球盘）反而是齐的。
+    """
     text = _list_text()
     data = okooo._decode_js_object(text)
     empty = [oid for oid, s in data.items()
              if not (s.get('OddsList') or {}).get('SportteryNWDL')]
-    assert empty, '夹具里应当存在缺让球块的场次'
+    assert empty, '夹具里应当存在缺 NWDL 的场次'
+    for oid, mid in (('4008', '1347783'), ('4012', '1347663')):
+        assert oid in empty
+        blocks = okooo.parse_jczq_list_boards(text, mid)['blocks']
+        # NWDL 空 => 胜平负缺
+        assert blocks['胜平负']['stage'] == 'block_absent', oid
+        assert blocks['胜平负']['odds_1x2'] == {}
+        # 让球盘（WDL + Boundary）齐 => 竞彩让球 ok
+        assert blocks['竞彩让球']['stage'] == 'ok', oid
+        assert len(blocks['竞彩让球']['odds']) >= 6
 
 
 def test_partial_block_is_incomplete_not_ok() -> None:
@@ -1128,3 +1137,56 @@ def test_each_missing_board_rejects_with_its_own_name(board_key, label) -> None:
     assert gate['reject'] is True
     assert gate['missing_boards'] == [label], (board_key, gate['missing_boards'])
     assert label in gate['reject_reason']
+
+
+# ---------------------------------------------------------------------------
+# (a) 闸门必须看三层并集，不能被非空的六盘口包遮住顶层
+# ---------------------------------------------------------------------------
+
+_GATE_REST = {
+    'odds_1x2': {'home': 1.91, 'draw': 3.86, 'away': 2.8},
+    'jc_handicap': -1.0,
+    'total_goals_odds': {str(i): 5.0 for i in range(8)},
+    'htft_odds': {k: 5.0 for k in ('胜胜', '胜平', '胜负', '平胜', '平平', '平负', '负胜', '负平', '负负')},
+}
+_GATE_LINES = {'asian_handicap': -0.75, 'ou_line': 2.75}
+_GATE_NONE = {'asian_handicap': None, 'ou_line': None}
+
+
+def _gate_with(top_lines, pack_lines):
+    """亚盘/大小球可能落在顶层或六盘口包里；构建事实板时都不给（模拟包滞后）。"""
+    pipe = _pipe()
+    pay = dict(top_lines)
+    pay['six_market_mobile'] = {**_GATE_REST, **pack_lines}
+    # 事实板只从「没有 ah/ou 的那份记录」构建，正是用户现场的形状
+    pay['cross_market_board'] = pipe.DeepSeekAnalyzer.build_cross_market_board(dict(_GATE_REST))
+    return pipe.DeepSeekAnalyzer.ensure_judgment_standard_sections(
+        'DeepSeek 数据分析研判报告 正文', payload=pay,
+    )
+
+
+def test_gate_sees_top_level_line_when_pack_lags() -> None:
+    """只有顶层有线、六盘口包里还是 None：必须放行。
+
+    历史实现里非空的 six_market_mobile 会把顶层整块遮住，这份有效报告被拒。
+    """
+    gate = _gate_with(_GATE_LINES, _GATE_NONE)
+    assert gate['reject'] is False, gate['reject_reason']
+    assert gate['missing_boards'] == []
+
+
+def test_gate_sees_pack_line_when_top_level_absent() -> None:
+    gate = _gate_with({}, _GATE_LINES)
+    assert gate['reject'] is False, gate['reject_reason']
+
+
+def test_gate_passes_when_line_in_both_layers() -> None:
+    gate = _gate_with(_GATE_LINES, _GATE_LINES)
+    assert gate['reject'] is False, gate['reject_reason']
+
+
+def test_gate_still_rejects_when_line_in_no_layer() -> None:
+    """三层都没有：必须仍然拒发，并点名这两块。"""
+    gate = _gate_with({}, _GATE_NONE)
+    assert gate['reject'] is True
+    assert gate['missing_boards'] == ['亚盘让球', '大小球']

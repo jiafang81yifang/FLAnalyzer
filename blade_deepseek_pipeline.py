@@ -1379,15 +1379,29 @@ class DeepSeekAnalyzer:
         body = str(text or '')
         pay: dict[str, Any] = payload if isinstance(payload, dict) else {}
 
+        # 六盘口可能分散在三层：研判包顶层、pay['six_market_mobile']、board['six_market_mobile']。
+        # 历史实现是「第一个非空的 dict 赢」，于是包里只要非空就把顶层整块遮住——
+        # 而亚盘/大小球来自公司明细路径（写在记录上、再写回包），
+        # `build_cross_market_board` 又把它们放在顶层，两边不同步时
+        # 「包里 AH=None、顶层 AH=-0.75」会被判缺盘口，一份有效报告被拒。
+        # 现在按层叠加取并集：有值压过无值，一旦某层给了值就不会被后面的层改回缺失。
         board_src: dict[str, Any] = {}
         board = pay.get('cross_market_board')
-        if isinstance(board, dict) and isinstance(board.get('six_market_mobile'), dict):
-            board_src = board['six_market_mobile']
-        if not board_src and isinstance(pay.get('six_market_mobile'), dict):
-            board_src = pay['six_market_mobile']
-        if not board_src:
-            # 兜底：研判包顶层也可能直接放盘口标量。
-            board_src = pay
+        _layers: list[Any] = [pay]
+        _layers.append(pay.get('six_market_mobile'))
+        if isinstance(board, dict):
+            _layers.append(board)
+            _layers.append(board.get('six_market_mobile'))
+        for _layer in _layers:
+            if not isinstance(_layer, dict):
+                continue
+            for _k, _v in _layer.items():
+                if _k == 'six_market_mobile':
+                    continue
+                if _v in (None, '', {}, []):
+                    board_src.setdefault(_k, _v)
+                    continue
+                board_src[_k] = _v
         missing_boards = DeepSeekAnalyzer.six_market_gaps(board_src)
 
         section_status = {
