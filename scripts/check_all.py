@@ -11,16 +11,23 @@ PYTHON_FILES = [
     'blade_deepseek_pipeline.py',
     'blade_ml_engine.py',
     'okooo_mobile_cs.py',
+    'okooo_jczq_scraper.py',
     'odds_index_math.py',
     'odds_fallback.py',
     'sporttery_jc.py',
     'convergence_arbitrator.py',
     'ProductionRunnerBridge.py',
     'blade_monitor_panel.py',
+    'score_convergence_engine.py',
     'scripts/audit_module_api.py',
     'scripts/build_single_file.py',
     'scripts/full_audit.py',
     'scripts/runtime_module_self_check.py',
+    'unified_odds_evaluator.py',
+    'tg_goal_table.py',
+    'score_matrices.py',
+    'market_guardrails.py',
+
 ]
 
 GATES: list[tuple[str, list[str]]] = [

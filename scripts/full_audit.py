@@ -34,6 +34,12 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
+    'score_convergence_engine',
+    'unified_odds_evaluator',
+    'tg_goal_table',
+    'score_matrices',
+    'market_guardrails',
+
 ]
 
 APP = 'app_v84_hermes.py'
@@ -114,8 +120,56 @@ def audit_syntax(audit: Audit, root: Path) -> None:
             audit.record(f'syntax:{name}', True)
 
 
+def _embedded_sources(block: str) -> dict[str, str]:
+    """Pull the `_sources = {...}` JSON object out of the embedded block.
+
+    The block is generated as `_sources = ` followed by a json.dumps payload. Brace
+    matching (string-aware) is used rather than a regex so a `}` inside a module
+    body cannot truncate the parse.
+    """
+    anchor = '_sources = '
+    start = block.find(anchor)
+    if start < 0:
+        return {}
+    start += len(anchor)
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(block)):
+        char = block[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = json.loads(block[start:index + 1])
+                except (ValueError, TypeError):
+                    return {}
+                return {k: v for k, v in data.items() if isinstance(v, str)}
+    return {}
+
+
 def audit_embedded_block(audit: Audit, root: Path) -> None:
-    """The single-file build must contain every sibling module and be in sync."""
+    """The single-file build must contain every sibling module and be in sync.
+
+    The sync check compares each module's **full text** (not a fingerprint of its
+    first line). Comparing only the first line let a 5254-byte drift in
+    okooo_mobile_cs pass: the docstring was untouched while the body had changed,
+    so a stale embedded copy shipped and importing the new scraper on a user's
+    machine raised AttributeError. Whole-body equality is the only check that
+    catches that class of bug.
+    """
     text = (root / APP).read_text(encoding='utf-8')
     start = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
     end = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'
@@ -123,6 +177,12 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
     if start not in text or end not in text:
         return
     block = text.split(start, 1)[1].split(end, 1)[0]
+    embedded = _embedded_sources(block)
+    audit.record(
+        'embed:sources-parseable',
+        bool(embedded),
+        'could not parse the embedded _sources payload',
+    )
     for module in MODULES:
         source = (root / f'{module}.py')
         if not source.exists():
@@ -133,12 +193,23 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
         marker = f'"{module}"'
         audit.record(f'embed:{module}', marker in block, 'module not referenced in embedded payload')
         first_line = source.read_text(encoding='utf-8').lstrip().splitlines()[0]
-        escaped = json.dumps(first_line)[1:-1]
+        # build_single_file.py serialises with ensure_ascii=False, so the payload
+        # holds real CJK characters. Decoding the needle with the json default
+        # (ensure_ascii=True, i.e. \uXXXX) can never match a file whose first line
+        # is not pure ASCII. Check both spellings so the probe keeps working for
+        # ASCII first lines and stops false-alarming on CJK ones.
+        needles = {json.dumps(first_line, ensure_ascii=False)[1:-1], json.dumps(first_line)[1:-1]}
         audit.record(
             f'embed-in-sync:{module}',
-            escaped in block,
+            any(needle in block for needle in needles),
             'embedded copy is stale; run scripts/build_single_file.py',
         )
+    extra = sorted(set(embedded) - set(MODULES))
+    audit.record(
+        'embed:no-unknown-modules',
+        not extra,
+        f'embedded payload carries unregistered modules: {extra}',
+    )
 
 
 def audit_module_api(audit: Audit, root: Path) -> None:
@@ -267,6 +338,22 @@ def audit_modules(audit: Audit, root: Path) -> None:
         'blade_deepseek_pipeline': ['strip_match_features_from_method'],
         'ProductionRunnerBridge': [],
         'blade_monitor_panel': [],
+        'market_guardrails': [
+            'evaluate_market_guardrails',
+            'guardrail_1_macro_dominance',
+            'guardrail_2_neighborhood',
+            'guardrail_2_even_match',
+            'guardrail_3_inducing_trap',
+            'guardrail_4_confidence_decay',
+            'stage1_min_abs_diff_lock',
+            'stage2_true_protection',
+            'overkill_protocol',
+            'resolve_league_pressure',
+            'is_high_entropy_league',
+            'check_single_direction',
+            'home_away_abs_ratio',
+            'channel_neighborhood_ratio',
+        ],
     }
     for module, names in expectations.items():
         try:
@@ -478,15 +565,17 @@ def audit_ml(audit: Audit, root: Path, workdir: Path) -> None:
                 lambda v: abs(float(v) - 1.0) < 1e-6)
     audit.check('ml:poisson-matrix-keys', lambda: sorted(matrix)[:2] if isinstance(matrix, dict) else [],
                 lambda v: v == ['0-0', '0-1'])
+    # 铁律 2：λ 缺失/非数时不得编造 1.2/0.9 出一个归一矩阵——必须返回空矩阵。
     audit.check('ml:poisson-degenerate', lambda: engine.calc_bivariate_poisson_matrix(None, 'x'),
-                lambda v: isinstance(v, dict) and abs(sum(v.values()) - 1.0) < 1e-6)
+                lambda v: isinstance(v, dict) and v == {})
 
     audit.check('ml:train-empty-history', lambda: engine.train_from_history({}, save=False),
                 lambda v: isinstance(v, dict))
     audit.check('ml:predict-no-bundle', lambda: engine.predict_match_ml({}), lambda v: isinstance(v, dict))
     audit.check('ml:learn-bad-input', lambda: engine.learn_match_after_result(None), lambda v: isinstance(v, dict))
-    audit.check('ml:safe-float-none', lambda: engine._safe_float(None), lambda v: v == 0.0)
-    audit.check('ml:safe-float-garbage', lambda: engine._safe_float('abc'), lambda v: v == 0.0)
+    # 铁律 2：缺失/非数必须报缺失（None），不得回落 0.0 假装「数值是 0」。
+    audit.check('ml:safe-float-none', lambda: engine._safe_float(None), lambda v: v is None)
+    audit.check('ml:safe-float-garbage', lambda: engine._safe_float('abc'), lambda v: v is None)
 
 
 def audit_odds(audit: Audit, root: Path) -> None:
@@ -585,7 +674,7 @@ def audit_unified_report(audit: Audit, root: Path, workdir: Path) -> None:
     audit.record('report:build-sections',
                  [s.get('key') for s in report.get('sections') or []] == list(app.UNIFIED_REPORT_SECTION_KEYS))
     verdict = next((s for s in report.get('sections') or [] if s.get('key') == 'verdict'), {})
-    audit.record('report:verdict-present', '首选 2-1' in str(verdict.get('verdict')), str(verdict.get('verdict'))[:120])
+    audit.record('report:verdict-present', '候选A 2-1' in str(verdict.get('verdict')), str(verdict.get('verdict'))[:120])
     audit.record('report:verdict-confidence', verdict.get('confidence') == '中偏高', str(verdict.get('confidence')))
     risk = next((s for s in report.get('sections') or [] if s.get('key') == 'risk'), {})
     risk_items = risk.get('items') or []
@@ -970,6 +1059,7 @@ def audit_configure_wizard(audit: Audit, root: Path) -> None:
         audit.record('installer:hints-configure-script',
                      'configure_blade_quant.ps1' in installer_text)
         audit.record('installer:runs-check-summary', '--check' in installer_text)
+        audit_installer_ships_scraper(audit, installer_text)
 
 
 def audit_installer_refresh(audit: Audit, root: Path) -> None:
@@ -1012,6 +1102,24 @@ def audit_installer_refresh(audit: Audit, root: Path) -> None:
     audit.record('refresh:guarded-proxy-default',
                  'if not defined OKOOO_PROXY set' in text)
 
+    # The copy-paste usage hint must name the default branch. Whoever copies it out
+    # of this file gets that branch's installer, and therefore that branch's
+    # $PinCommit and that branch's app. Pointing it at a feature branch silently
+    # installs an older build than the one this file belongs to — the hint rotted
+    # onto cursor/fix-runtime-issues-84a8 and would have downgraded every user past
+    # #5/#6/#17.
+    hint = re.search(
+        r'raw\.githubusercontent\.com/[^/\s]+/[^/\s]+/(\S+)/install_blade_quant\.ps1',
+        text,
+    )
+    audit.record('hint:present', hint is not None,
+                 'the usage hint should show the one-line irm command')
+    hint_branch = hint.group(1) if hint is not None else None
+    audit.record('hint:default-branch',
+                 hint_branch in ('master', 'main'),
+                 f'the hint names {hint_branch!r}; it must name the default branch '
+                 '(master/main), never a cursor/* branch — that would serve an older build')
+
     # Pinned download: one immutable SHA for both artifacts, plus a mirror.
     pin = re.search(r"\$PinCommit\s*=\s*'([0-9a-f]{40})'", text)
     audit.record('pin:is-full-sha', pin is not None,
@@ -1035,6 +1143,69 @@ def audit_installer_refresh(audit: Audit, root: Path) -> None:
     audit.record('refresh:prints-next-command', '下一步' in text)
 
 
+
+
+def _installer_download_call(installer_text: str, variable: str) -> int:
+    """Index of the `Get-RemoteArtifact -FileName <variable>` call, or -1.
+
+    Anchored on the *call*, not on the file name appearing anywhere: an earlier
+    version of this check matched the bare string `okooo_jczq_scraper.py`, so
+    deleting the download and leaving the `$ScraperName = '...'` assignment plus a
+    Chinese comment still passed while users could no longer receive the file.
+    """
+    pattern = (
+        r'Get-RemoteArtifact\s+-FileName\s+\$' + re.escape(variable) + r'\b'
+    )
+    found = re.search(pattern, installer_text)
+    return found.start() if found else -1
+
+
+def _installer_assignment(installer_text: str, variable: str, filename: str) -> int:
+    """Index of `$<variable> = '<filename>'`, or -1."""
+    pattern = (
+        r'^\s*\$' + re.escape(variable) + r"\s*=\s*'" + re.escape(filename) + r"'\s*$"
+    )
+    found = re.search(pattern, installer_text, re.MULTILINE)
+    return found.start() if found else -1
+
+
+def audit_installer_ships_scraper(audit: Audit, installer_text: str) -> None:
+    """The installer must actually download the standalone scraper and its module.
+
+    The installer ships app_v84_hermes.py and the wizard only, so on a user's
+    machine `okooo_mobile_cs` otherwise resolves to the embedded copy — which does
+    not expose the private symbols the scraper binds at import time. Both files
+    must therefore be fetched by a real call, after their name variables are set.
+    """
+    required = (
+        ('ScraperName', 'okooo_jczq_scraper.py', 'installer:downloads-scraper'),
+        (
+            'ScraperDepName', 'okooo_mobile_cs.py',
+            'installer:downloads-scraper-dependency',
+        ),
+    )
+    for variable, filename, label in required:
+        assignment = _installer_assignment(installer_text, variable, filename)
+        audit.record(
+            f'{label}:assigned',
+            assignment >= 0,
+            f'${variable} is not assigned {filename!r}',
+        )
+        call = _installer_download_call(installer_text, variable)
+        audit.record(
+            f'{label}:downloaded',
+            call >= 0,
+            (
+                f'no `Get-RemoteArtifact -FileName ${variable}` call: the file is '
+                'named but never fetched, so users never receive it'
+            ),
+        )
+        if assignment >= 0 and call >= 0:
+            audit.record(
+                f'{label}:assignment-precedes-download',
+                assignment < call,
+                f'${variable} is assigned after it is downloaded',
+            )
 
 
 def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:
@@ -1186,7 +1357,7 @@ def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:
     healthy_report = app.build_unified_analysis_report(healthy, source='audit')
     audit.record('lambda:report-healthy-not-flagged', healthy_report.get('data_insufficient') is False)
     audit.record('lambda:report-healthy-keeps-score',
-                 '首选 2-1' in str(next(
+                 '候选A 2-1' in str(next(
                      (s.get('verdict') for s in healthy_report.get('sections') or []
                       if s.get('key') == 'verdict'), '')))
 
