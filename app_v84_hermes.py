@@ -21052,7 +21052,7 @@ class SkillMatchingEngine:
                     "样本充足"
                 ],
                 "analysis_method": "市均低于竞彩的项按胜平负聚合，看方向是否集中。",
-                "decision_rule": "方向集中度>60% 时该方向进入方向锁候选。",
+                "decision_rule": "只作市均结构描述写进报告；不产生方向锁，也不进入方向锁候选（从计数取方向需要阈值，没有规范定义）。",
                 "confidence_weight": 0.5
             },
             {
@@ -21162,8 +21162,8 @@ class SkillMatchingEngine:
                 "trigger_conditions": [
                     "样本充足"
                 ],
-                "strategy_logic": "方向锁由市均×竞彩算出，属于可复算证据；模型首选是概率排序结果。",
-                "execution_rule": "方向锁成立时，模型首选必须落在锁内，否则改判为未形成。",
+                "strategy_logic": "方向锁只来自已落盘的方向锁记录（本场记录或研判包 payload），不由市均×竞彩现算；模型首选是概率排序结果。",
+                "execution_rule": "方向锁成立时，模型首选必须落在锁内，否则改判为未形成；没有已落盘的锁就不改判。",
                 "risk_level": "中",
                 "confidence_weight": 0.62
             },
@@ -30932,7 +30932,20 @@ def _fixed_bonus_from_okooo_jc_official(
 
 
 def seed_direction_lock_from_cs(rec):
-    """用已抓到的市均×竞彩算出市短方向锁。不联网，不写终裁。"""
+    """读出 payload 或记录里**已经存在**的方向锁。不联网，不推导方向，不写终裁。
+
+    函数名里的 `from_cs` 是历史残留：它曾经还想用市均×竞彩现算一把「市短方向锁」，
+    那段推导已整段删除，原因是它恒为空，且两道闸各自都足以让它恒为空：
+
+      1. `mark_neg` 自初始导入起没有任何写入点（全仓只有一处读、零处写），
+         所以 `short_rows` 永远为空；
+      2. 就算 `short_rows` 非空，`matrix_direction_lock` 对
+         `mkt_short_wdl_matrix` / `wdl_discrete_vector` 明确回
+         `no_derivation_rule`——没有规范定义阈值，凭空取一个就是编造。
+
+    所以本函数只做读取：`ds_payload.direction_lock` 优先，其次记录自身的
+    `direction_lock`。两处都没有就返回 {}，不补造。
+    """
     rec = rec if isinstance(rec, dict) else {}
     analyzer = _ensure_deepseek_analyzer()
     if analyzer is None:
@@ -30948,61 +30961,54 @@ def seed_direction_lock_from_cs(rec):
     if existing.get('locked') and existing.get('direction') in ('胜', '平', '负'):
         discrete = _as_dict(rec.get('wdl_discrete_vector'))
         return {'direction_lock': existing, 'wdl_discrete_vector': discrete}
-    heat = _as_dict(rec.get('score_market_heat'))
-    if not heat.get('ranking'):
-        # 市均两个落点取并集，不 `a or b`：page_avg 只要非空就会遮住 books_avg
-        # 里它没有的比分，热榜因此少行。_merge_jc_odds_sources 的规则正好是
-        # 「先给的优先、非有限值跳过」，与这里要的并集一致（同一份 100/odds 口径）。
-        page = _merge_jc_odds_sources(
-            rec.get('correct_score_page_avg'),
-            rec.get('correct_score_books_avg'),
-            rec.get('correct_score_site_avg'),
-        )
-        if isinstance(page, dict) and page:
-            try:
-                heat = build_score_market_heat_ranking(
-                    correct_score_rows=rec.get('correct_score_okooo') or [],
-                    pool_enriched=None,
-                    page_avg_odds=page,
-                    **_cs_heat_labels(rec),
-                )
-            except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                heat = {}
-    jc = rec.get('correct_score_jc_official') if isinstance(rec.get('correct_score_jc_official'), dict) else {}
-    if not (isinstance(heat, dict) and heat.get('ranking') and jc):
-        return {}
-    try:
-        # 必须就地 import：`sporttery_jc` 原先只在模块顶部的一个 try 块里绑定，
-        # 块内嵌套的 import 不构成函数作用域外的名字。删除那块兜底后，本函数成了
-        # 唯一没有 import 就近的调用点——`except Exception: return {}` 会把
-        # NameError 一起吞掉，于是市短方向锁永远静默为空（ruff F821 是唯一的信号）。
-        from sporttery_jc import build_merged_market_heat_jc_table as _build_merged_heat
-        table = _build_merged_heat(
-            heat,
-            _fixed_bonus_from_okooo_jc_official(jc),
-        )
-    except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        return {}
-    short_rows = [
-        r for r in (table.get('rows') or [])
-        if isinstance(r, dict) and r.get('mark_neg') and r.get('score')
-    ]
-    if not short_rows:
-        return {}
-    matrix = analyzer.build_mkt_short_wdl_matrix(short_rows)
-    discrete = _as_dict(matrix.get('discrete_vector'))
-    lock = analyzer.matrix_direction_lock(
-        {'mkt_short_wdl_matrix': matrix, 'wdl_discrete_vector': discrete},
-        discrete,
-        matrix,
-    )
+    return {}
+
+
+def preload_direction_lock(holder, payload, history=None, fid=''):
+    """赛前装载：把**已经存在**的方向锁写进本场包和 history 记录，返回 history。
+
+    `holder` 就是抓取包（`analyze_match` 里的 `data_okooo`），`payload` 是
+    `seed_direction_lock_from_cs` 的返回值。调用点只在 `payload` 里确有锁时才进来。
+
+    这段写回原本内联在 `analyze_match` 里，没有任何缝可以驱动它；抽成函数只是为了让
+    「有锁 → 写 history」这条分支能被测试真的执行（`analyze_match` 要跑整条抓取链）。
+
+    行为与内联版一致：
+      * 写 `direction_lock` / `wdl_discrete_vector` 到装载包；
+      * 写同两个键到 `history[fid]`，若旧记录里有 `pipeline_report_bundle.ds_payload`
+        也一并更新（下游 `lookup_direction_lock_payload` 读这两处）；
+      * `history` 不是 dict 时从 HISTORY_FILE 读一次；返回的 dict 由调用点绑回
+        `history` 局部变量，与原来「命中时绑定、未命中时保持未绑定」相同。
+
+    日志不再印「市短 胜/平/负」计数：市短推导已删除（恒为空，见
+    `seed_direction_lock_from_cs`），counts 不存在，不能继续声称有。
+    """
+    holder = holder if isinstance(holder, dict) else {}
+    lock = _as_dict(_as_dict(payload).get('direction_lock'))
     if not lock.get('locked'):
-        return {}
-    return {
-        'direction_lock': lock,
-        'wdl_discrete_vector': discrete,
-        'counts': _as_dict(matrix.get('counts')),
-    }
+        return history
+    holder['direction_lock'] = lock
+    holder['wdl_discrete_vector'] = _as_dict(_as_dict(payload).get('wdl_discrete_vector'))
+    hist = history
+    if not isinstance(hist, dict):
+        hist = load_json(HISTORY_FILE) if os.path.exists(HISTORY_FILE) else {}
+    if not isinstance(hist, dict):
+        hist = {}
+    key = str(fid)
+    rec_out = hist.get(key) if isinstance(hist.get(key), dict) else {}
+    rec_out['direction_lock'] = holder['direction_lock']
+    rec_out['wdl_discrete_vector'] = holder['wdl_discrete_vector']
+    _old_bundle = rec_out.get('pipeline_report_bundle') if isinstance(rec_out.get('pipeline_report_bundle'), dict) else None
+    if isinstance(_old_bundle, dict) and isinstance(_old_bundle.get('ds_payload'), dict):
+        _old_bundle['ds_payload']['direction_lock'] = holder['direction_lock']
+        _old_bundle['ds_payload']['wdl_discrete_vector'] = holder['wdl_discrete_vector']
+    hist[key] = rec_out
+    _morph = str(lock.get('morphology') or holder['wdl_discrete_vector'].get('morphology_label') or '').strip(' ：:-')
+    print(
+        f"   🔒 [方向锁] 赛前装载 方向={lock.get('direction')}"
+        f"｜形态={_morph or '-'}"
+    )
+    return hist
 
 
 def lookup_direction_lock_payload(history=None, fid='', extra=None):
@@ -31446,6 +31452,9 @@ def build_six_step_convergence_section(rec, bundle=None, ds_payload=None):
         'heat_ranking': _heat_ranking_rows(_rec, _payload),
         'heat_top8': _rec.get('heat_top8') or _payload.get('heat_top8') or None,
         # 市短：mkt_short_wdl_matrix 由 build_mkt_short_wdl_matrix 产出，counts 恰为 胜/平/负。
+        # 注意：这份矩阵只供报告与六步收敛读取，**不**参与方向锁推导——没有规范定义
+        # 从 counts 取方向的阈值，`matrix_direction_lock` 因此对这组输入回
+        # `no_derivation_rule`，方向锁只认已落盘的 `direction_lock`。
         'short_wdl_counts': _short_counts_of(_payload) or _short_counts_of(_bundle) or _short_counts_of(_rec),
         'short_rows': _short_rows_of(_payload) or _short_rows_of(_bundle) or _short_rows_of(_rec),
         'league_rank_home': _rec.get('league_rank_home'),
@@ -34507,31 +34516,16 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                             odds_correct_score = {}
                     else:
                         odds_correct_score = {}
-                    _blade_direction_lock_payload = seed_direction_lock_from_cs(data_okooo)
+                    _blade_direction_lock_payload = seed_direction_lock_from_cs(rec)
                     if _blade_direction_lock_payload.get('direction_lock', {}).get('locked'):
-                        data_okooo['direction_lock'] = _blade_direction_lock_payload['direction_lock']
-                        data_okooo['wdl_discrete_vector'] = _blade_direction_lock_payload.get('wdl_discrete_vector') or {}
-                        history = locals().get('history')
-                        if not isinstance(history, dict):
-                            history = load_json(HISTORY_FILE) if os.path.exists(HISTORY_FILE) else {}
-                        if not isinstance(history, dict):
-                            history = {}
-                        _lock_rec = history.get(str(fid)) if isinstance(history.get(str(fid)), dict) else {}
-                        _lock_rec['direction_lock'] = data_okooo['direction_lock']
-                        _lock_rec['wdl_discrete_vector'] = data_okooo['wdl_discrete_vector']
-                        _old_bundle = _lock_rec.get('pipeline_report_bundle') if isinstance(_lock_rec.get('pipeline_report_bundle'), dict) else None
-                        if isinstance(_old_bundle, dict) and isinstance(_old_bundle.get('ds_payload'), dict):
-                            _old_bundle['ds_payload']['direction_lock'] = data_okooo['direction_lock']
-                            _old_bundle['ds_payload']['wdl_discrete_vector'] = data_okooo['wdl_discrete_vector']
-                        history[str(fid)] = _lock_rec
-                        _lk = data_okooo['direction_lock']
-                        _dv = data_okooo['wdl_discrete_vector'] if isinstance(data_okooo['wdl_discrete_vector'], dict) else {}
-                        _counts = _blade_direction_lock_payload.get('counts') if isinstance(_blade_direction_lock_payload.get('counts'), dict) else {}
-                        _morph = str(_lk.get('morphology') or _dv.get('morphology_label') or '').strip(' ：:-')
-                        print(
-                            f"   🔒 [方向锁] 赛前装载 方向={_lk.get('direction')}"
-                            f"｜形态={_morph or '-'}"
-                            f"｜市短 胜{_counts.get('胜', '-')} / 平{_counts.get('平', '-')} / 负{_counts.get('负', '-')}"
+                        # 读的是 `rec`（本场记录，锁只可能在这里），写回的是 `data_okooo`
+                        # （本场装载包，下游 lookup_direction_lock_payload 从它取锁）。
+                        # 以前这里读的也是 `data_okooo`——它只是本次抓取的结果，既没有
+                        # direction_lock 也没有 pipeline_report_bundle，于是这条写回分支
+                        # 在记录里真有锁时同样进不来。
+                        history = preload_direction_lock(
+                            data_okooo, _blade_direction_lock_payload,
+                            locals().get('history'), fid,
                         )
             except Exception as e_okooo:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                 print(f"      ⚠️ [澳客网] 抓取失败: {e_okooo}")
