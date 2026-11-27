@@ -862,16 +862,28 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
     # 仍然拿不到才如实报失败。绝不在这里编数据。
     patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_CS_PATIENCE') or 2) or 0)
     gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_CS_PATIENCE_GAP') or 35) or 35)
+    # 出口 IP 被源站拦（阿里云 WAF 405）时，重试与换 URL 都是同一个结果，
+    # 必须与「页面结构变了」区分开：这个标志一路带到下面的不可用分支。
+    origin_blocked = False
     for url in urls:
         fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+        if fetch.get('origin_blocked'):
+            origin_blocked = True
         for _attempt in range(patience if url == urls[0] else 0):
             if fetch.get('ok'):
+                break
+            if fetch.get('origin_blocked'):
+                # 出口 IP 被拦：再等再试都是同一个 405，立刻收手。
+                origin_blocked = True
                 break
             if not fetch.get('blocked'):
                 # 不是被 WAF 拦（例如 404）就没必要等，直接换下一条来源。
                 break
             time.sleep(gap)
             fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
+            if fetch.get('origin_blocked'):
+                origin_blocked = True
+                break
         tried.append(
             f'{url} → '
             + (f'HTTP {fetch.get("status")}' if fetch.get('status') else str(fetch.get('error') or 'no-response'))
@@ -887,12 +899,33 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
         # 以前整包直接报不可用返回，连竞彩31都没抓——于是「重新抓全」永远补不上
         # 那 9 个市均覆盖不到的选项，31 表也就永远缺 9 项。
         # 市均确实没有，如实报 unavailable；但竞彩31是另一个真实来源，必须照抓。
+        if origin_blocked:
+            # 源站按出口 IP 拦截和「页面结构变了」的处置完全不同，日志里必须能分清：
+            # 前者要换出口/等缓存命中，后者要改解析。所以这里单独点名，
+            # 同时照样附挂竞彩31侧通道——两个事实互不替代。
+            return _unavailable(
+                'cs_origin_ip_blocked: 源站按出口 IP 拦截（阿里云 WAF 405，响应体 '
+                'block_message）；CDN 未命中、请求回源，机房/云段 IP 一律被拦，'
+                '客户端指纹/UA/Referer/cookie 均无效，需要住宅 IP 或缓存命中。',
+                match_id=str(match_id or ''),
+                error='; '.join(tried)[:300],
+                fetch_urls=list(urls),
+                parse_stage='origin_blocked',
+                origin_blocked=True,
+                cache_hit=bool(fetch.get('cache_hit')),
+                age=str(fetch.get('age') or ''),
+                x_cache_status=str(fetch.get('x_cache_status') or ''),
+                traceid=str(fetch.get('traceid') or ''),
+                attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
+                **_jc31_side_channel(match_id, proxies=proxies, session=session),
+            )
         return _unavailable(
             'external_okooo_mobile_cs_fetch_failed',
             match_id=str(match_id or ''),
             error='; '.join(tried)[:300],
             fetch_urls=list(urls),
             parse_stage='fetch_failed',
+            origin_blocked=False,
             attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
             **_jc31_side_channel(match_id, proxies=proxies, session=session),
         )
