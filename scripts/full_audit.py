@@ -972,6 +972,65 @@ def audit_configure_wizard(audit: Audit, root: Path) -> None:
         audit.record('installer:runs-check-summary', '--check' in installer_text)
 
 
+def audit_installer_refresh(audit: Audit, root: Path) -> None:
+    """The refresh path and the pinned download must stay intact.
+
+       Re-running the installer over an existing install is the path the user
+       takes, so its guarantees are checked here: it must detect the venv, skip
+       pip when the imports already work, regenerate the launcher, and never
+       touch config.env.
+    """
+    path = root / 'install_blade_quant.ps1'
+    if not path.exists():
+        audit.record('refresh:installer-present', False, 'installer missing')
+        return
+    audit.record('refresh:installer-present', True)
+    text = path.read_bytes().decode('utf-8-sig')
+
+    # Detection and the fast path.
+    audit.record('refresh:detects-venv', 'VenvPython' in text and 'Test-Path $VenvPython' in text)
+    audit.record('refresh:probes-broken-venv', 'venvProbe' in text,
+                 'a venv that cannot run must fall back to a full install')
+    audit.record('refresh:refresh-banner', '刷新已有安装' in text)
+    audit.record('refresh:skips-pip-when-satisfied', 'depsReady' in text and '依赖已满足' in text)
+    audit.record('refresh:skips-venv-creation', '跳过创建虚拟环境' in text)
+
+    # config.env must never be written by the installer.
+    writes = re.findall(r'\[System\.IO\.File\]::WriteAll\w+\(([^)]*)\)', text)
+    foreign = [w for w in writes if 'StartBat' not in w]
+    audit.record('refresh:never-writes-config-env', not foreign,
+                 f'installer writes unexpected files: {foreign[:3]}')
+    audit.record('refresh:no-config-env-write', 'config.env' not in ' '.join(foreign))
+
+    # Launcher regeneration and the guarded proxy default.
+    audit.record('refresh:regenerates-start-cmd', 'blade_load_config' in text)
+    audit.record('refresh:guarded-proxy-default',
+                 'if not defined OKOOO_PROXY set' in text)
+
+    # Pinned download: one immutable SHA for both artifacts, plus a mirror.
+    pin = re.search(r"\$PinCommit\s*=\s*'([0-9a-f]{40})'", text)
+    audit.record('pin:is-full-sha', pin is not None,
+                 'the app and wizard must come from one immutable commit SHA')
+    audit.record('pin:not-a-branch-ref',
+                 pin is not None and not re.search(r"\$PinCommit\s*=\s*'[^']*(master|main|cursor/)", text),
+                 'pinning a branch is what served a stale build before')
+    audit.record('pin:shared-by-both-artifacts',
+                 '$PinCommit' in text and text.count('$PinCommit') >= 2,
+                 'both the app and the wizard should use the same pin')
+    audit.record('pin:app-uses-pin',
+                 re.search(r'raw\.githubusercontent\.com/\$RepoSlug/\$PinCommit/', text) is not None)
+    audit.record('pin:has-cdn-mirror', 'cdn.jsdelivr.net/gh/$RepoSlug@$PinCommit' in text)
+    audit.record('pin:retries-on-cold-cache', 'for ($round = 1' in text,
+                 'a freshly pushed commit can 404 on the CDN for a while')
+
+    # The wizard must be installed, verified, and then offered as a command.
+    audit.record('refresh:installs-wizard', 'configure_blade_quant.ps1' in text or '$ConfigName' in text)
+    audit.record('refresh:verifies-wizard-parses', 'Parser]::ParseFile' in text)
+    audit.record('refresh:verifies-wizard-runs', '--check' in text)
+    audit.record('refresh:prints-next-command', '下一步' in text)
+
+
+
 
 def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:
     """λ 未形成（None）必须走显式未形成路径，而不是 TypeError。
@@ -1662,6 +1721,7 @@ def main() -> int:
     audit_powershell(audit, root)
     audit_gitignore(audit, root)
     audit_configure_wizard(audit, root)
+    audit_installer_refresh(audit, root)
 
     with _fresh_cwd() as tmp:
         workdir = Path(tmp)
