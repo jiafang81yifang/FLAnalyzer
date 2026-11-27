@@ -1521,8 +1521,27 @@ class DeepSeekAnalyzer:
         return []
 
     @staticmethod
-    def format_matrix_dual_prejudge_html(*args: Any, **kwargs: Any) -> str:
-        return ''
+    def format_matrix_dual_prejudge_html(text: Any, *args: Any, **kwargs: Any) -> str:
+        """把纯文本研判报告转成 Telegram HTML（转义 + 首行标题加粗）。
+
+        契约：`bool(str(text).strip())` 为真时返回值一定非空。
+
+        这条契约是硬要求，不是风格问题：调用方把它当渲染器，拿到的空串会被
+        `send_tg` 当「消息内容为空」静默丢掉，而调用点仍然把 `_tg_pushed` 置真。
+        本函数曾经是 `return ''` 的空桩，于是每一场都渲染成功、发送失败、记为已推。
+        """
+        raw = str(text if text is not None else '')
+        if not raw.strip():
+            return ''
+        lines = escape(raw).split('\n')
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            if line.lstrip().startswith('📌'):
+                lines[index] = f'<b>{line.lstrip()}</b>'
+            break
+        rendered = '\n'.join(lines)
+        return rendered if rendered.strip() else ''
 
     @staticmethod
     def format_structural_model_tg(*args: Any, **kwargs: Any) -> list[str]:
