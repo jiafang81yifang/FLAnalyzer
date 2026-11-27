@@ -103,6 +103,10 @@ REFUSAL_ONLY_MARKERS = (
 # once per round on a daemon thread (#20). Offline it reports fetch_failed.
 ENV_NOISE_MARKERS = (
     '两源矩阵·500盘面', '500_board', 'fetch_failed',
+    # The pack-absent paths deliberately log the failure they are handling and
+    # then send a full body. That is a handled condition, not a swallowed
+    # exception: E10/E12 judge what actually went out.
+    'history 重建失败', '包缺失', 'sweep-forced rebuild failure',
 )
 
 LAMBDA_REGIMES = ('balanced', 'home_heavy', 'away_heavy', 'both_high', 'both_low')
@@ -280,6 +284,24 @@ def _covered_count(rec: dict[str, Any]) -> int:
     return len(have)
 
 
+_SAME_DIRECTION_PAIRS = (
+    ('', ''),
+    ('2-1', '1-0'), ('1-0', '2-0'), ('3-1', '2-1'), ('2-0', '3-0'),
+    ('1-1', '0-0'), ('0-0', '1-1'), ('2-2', '1-1'),
+    ('0-1', '0-2'), ('1-2', '0-1'), ('0-2', '1-3'),
+)
+
+
+def _score_pair(rng: random.Random) -> dict[str, str]:
+    """A ①② pair that shares one direction, or both empty.
+
+    A cross-direction pair is what the report is forbidden to print; generating
+    one would make the harness manufacture the defect it checks for.
+    """
+    first, second = rng.choice(_SAME_DIRECTION_PAIRS)
+    return {'predicted_score': first, 'second_score': second}
+
+
 def _build_case(seed: int) -> dict[str, Any]:
     """Build one case in a shape production can actually produce.
 
@@ -385,8 +407,11 @@ def _build_case(seed: int) -> dict[str, Any]:
         'league': rng.choice(LEAGUES),
         'pipeline_scrape_done': True,
         'pipeline_phase': 'scrape',
-        'predicted_score': rng.choice(('', '2-1', '1-0', '1-1')),
-        'second_score': rng.choice(('', '1-0', '0-0')),
+        # The two candidates must share a direction: a real record's ①② come from
+        # one direction lock, and a cross-direction pair is exactly what the
+        # report must never print. Generating one would make the harness itself
+        # produce the defect it is supposed to detect.
+        **_score_pair(rng),
         'predicted_result': rng.choice(('', '胜', '平', '负')),
         'lam_h': lam_h,
         'lam_a': lam_a,
@@ -647,6 +672,15 @@ def _netblock() -> Any:
     return stack
 
 
+def _pack_absent_patch(case: dict[str, Any]) -> Any:
+    """Make rebuild raise for the `rebuild_failed` control, else a no-op patch."""
+    if case.get('pack_absent_state') == 'rebuild_failed':
+        def _boom(*a, **k):
+            raise RuntimeError('sweep-forced rebuild failure')
+        return mock.patch.object(APP, 'rebuild_pipeline_bundle_from_history', _boom)
+    return mock.patch.object(APP, '_sweep_noop_marker', 1, create=True)
+
+
 def _capture_send(sent: list) -> Any:
     """Record the body and answer like a healthy transport.
 
@@ -672,7 +706,19 @@ def _run_once(case: dict[str, Any], hist_path: str,
     rec = case['rec']
     app, pipe = APP, PIPE
     if reseed:
-        history = {str(rec['id']): json.loads(json.dumps(rec, ensure_ascii=False))}
+        seeded = json.loads(json.dumps(rec, ensure_ascii=False))
+        _state = case.get('pack_absent_state')
+        if _state == 'rebuild_failed':
+            # Facts present, bundle absent; the harness makes rebuild raise.
+            seeded.pop('pipeline_report_bundle', None)
+        elif _state == 'payload_broken':
+            seeded['pipeline_report_bundle'] = {'ds_payload': 'sweep-forced-broken'}
+        elif _state == 'no_scrape_facts':
+            for key in ('pipeline_report_bundle', 'predicted_score', 'second_score',
+                        'pipeline_scrape_done', 'deepseek_judgment',
+                        'model_primary_score', 'model_secondary_score'):
+                seeded.pop(key, None)
+        history = {str(rec['id']): seeded}
         with open(hist_path, 'w', encoding='utf-8') as fh:
             json.dump(history, fh, ensure_ascii=False)
 
@@ -693,6 +739,7 @@ def _run_once(case: dict[str, Any], hist_path: str,
                            side_effect=lambda items, *a, **k: items), \
          mock.patch.object(pipe, 'deepseek_chat_completion',
                            side_effect=_model_reply), \
+         _pack_absent_patch(case), \
          contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
         try:
             if case.get('bundle_prebuilt'):
@@ -715,8 +762,8 @@ def _run_once(case: dict[str, Any], hist_path: str,
         # Control for the E10 detector itself: overwrite the captured body with
         # the shape a refusal-only exit produces. If E10 cannot see this, then
         # `E10 == 0` on a real run proves nothing.
-        sent = ['⚠️【阶段2缺省】[control]\n'
-                'history 无可用精算结果，无法输出 DeepSeek 研判。请重新跑阶段1抓取。']
+        sent = [('⚠️【阶段2缺省】[control]\n'
+                 'history 无可用精算结果，无法输出 DeepSeek 研判。请重新跑阶段1抓取。')]
     return sent, buf.getvalue()
 
 
@@ -790,6 +837,7 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
         defects.extend(_check_model_output(case, stdout, text))
         defects.extend(_check_refusal_only(text))
         defects.extend(_check_no_non_finite_in_body(text))
+        defects.extend(_check_no_fabricated_gap(case, text))
         if produced_report:
             defects.extend(_check_split(text))
             defects.extend(_check_direction(text, case))
@@ -822,7 +870,15 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
         if stripped.startswith('📈') and '未形成（' in stripped:
             defects.append(('E2', f'degraded_section:{stripped[:40]}'))
 
-    missing = [name for name in TG_SECTIONS if name not in sections]
+    # The pack-absent exits cannot render 市短/市热/市热超理论/市均对比:
+    # those are views over a bundle payload that does not exist. Their contract is
+    # the 31 table plus the judgment section, so only those two are required
+    # there. Everywhere else all six are.
+    if case.get('pack_absent_state'):
+        required = ('31项市均×竞彩对比表', 'DeepSeek 数据分析研判报告')
+    else:
+        required = TG_SECTIONS
+    missing = [name for name in required if name not in sections]
     if missing:
         defects.append(('E3', 'missing_sections:' + ','.join(missing)))
 
@@ -833,7 +889,42 @@ def _check_report(case: dict[str, Any], sent: list[str], stdout: str) -> list[tu
     defects.extend(_check_judgment_fields(case, stdout))
     defects.extend(_check_refusal_only(text))
     defects.extend(_check_no_non_finite_in_body(text))
+    defects.extend(_check_no_fabricated_gap(case, text))
     return defects
+
+
+_BOARD_LABELS = ('亚盘让球', '大小球', '胜平负', '竞彩让球', '总进球', '半全场')
+_OU_LINE_LABEL = '大小球盘口'
+
+
+def _check_no_fabricated_gap(case: dict[str, Any], text: str) -> list[tuple[str, str]]:
+    """E12: a body may only say 无数据 for something the record really lacks.
+
+    The pack-absent path writes 无数据 when a source it read was empty. If the
+    record carries the value and the body denies it, that is fabrication — one
+    line denying what the next line prints. This checks the boards and the
+    大小球盘口 line against the record itself.
+    """
+    out: list[tuple[str, str]] = []
+    rec = case.get('rec') or {}
+    six = rec.get('six_market_mobile') if isinstance(rec.get('six_market_mobile'), dict) else {}
+    present = {label: six.get(key) is not None for label, key in (
+        ('亚盘让球', 'asian_handicap'), ('大小球', 'ou_line'),
+        ('胜平负', 'odds_1x2'), ('竞彩让球', 'jc_handicap'),
+        ('总进球', 'total_goals_odds'), ('半全场', 'htft_odds'),
+    )}
+    for line in text.splitlines():
+        stripped = line.strip()
+        for label in _BOARD_LABELS:
+            if stripped.startswith(f'{label}：') and '无数据' in stripped and present.get(label):
+                out.append(('E12', f'fabricated_gap:{label}'))
+                break
+    has_ou = six.get('ou_line') is not None or rec.get('ou_line') is not None
+    for line in text.splitlines():
+        if line.strip().startswith(f'{_OU_LINE_LABEL}：') and '无数据' in line and has_ou:
+            out.append(('E12', 'fabricated_gap:大小球盘口'))
+            break
+    return out
 
 
 def _check_no_non_finite_in_body(text: str) -> list[tuple[str, str]]:
@@ -919,7 +1010,18 @@ def _check_31_rows(text: str, sections: dict[str, str],
     missing = [o for o in JC_OPTIONS if o not in set(seen)]
     if missing:
         out.append(('E4', 'missing_options:' + ','.join(missing[:6])))
-    if '理论' not in sections.get('市热矩阵', '') and 'Δ=' not in text:
+    # 理论列只在有冻结 λ 时才有意义。包缺失路径可能既无 bundle 也无 λ，
+    # 此时 31 表只有市均/竞彩列，Δ 与理论列本就不存在——那是真缺，不是缺陷。
+    # 判据用它自己的实际内容：有 theory 值才要求理论列在场。
+    _rec = (case or {}).get('rec') or {}
+    has_theory = (
+        (_rec.get('lam_h') is not None and _rec.get('lam_a') is not None)
+        or (_rec.get('lam_home') is not None and _rec.get('lam_away') is not None)
+    )
+    # The theory value is visible either as the 市热矩阵 '理论' column or as the
+    # Δ column in the 31 table (Δ = 市均 − 理论, so Δ present means theory was
+    # computed). Requiring the word '理论' alone flagged a table that does show Δ.
+    if has_theory and '理论' not in text and 'Δ' not in text:
         out.append(('E4', 'theory_column_absent'))
     return out
 
@@ -1049,6 +1151,10 @@ def _cluster(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # worker entry points
 # --------------------------------------------------------------------------
 _INJECT_REFUSAL = bool(__import__('os').environ.get('SWEEP_INJECT_REFUSAL'))
+# The three pack-absent exits. The ordinary path never reaches them, so without
+# this the headline "0 failed" says nothing about them.
+_FORCE_PACK_ABSENT = bool(__import__('os').environ.get('SWEEP_FORCE_PACK_ABSENT'))
+_PACK_ABSENT_CYCLE = ('rebuild_failed', 'payload_broken', 'no_scrape_facts')
 
 
 def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
@@ -1060,15 +1166,26 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
     for index, seed in enumerate(cases):
         case = _build_case(seed_base + seed)
         if _INJECT_REFUSAL:
-            # Deliberate control, pinned to state 3 of the pack-absent path: no
-            # bundle AND no stage-1 facts. That is the only state where
-            # 「无法研判」 is a fact rather than a program defect, so it is the one
-            # that must still produce a report. If emit ever regresses to a
-            # one-line warning, E10 fires here.
             # Pure detector control: leave the record alone and only swap the
             # captured body for the refusal shape. That isolates "can E10 see a
             # refusal" from "does the pack-absent path still send a report".
             case['inject_refusal_body'] = True
+        # Deterministic coverage of the three pack-absent exits, which the
+        # ordinary path never reaches (every generated case carries a bundle).
+        # One case in twenty, rotating through the three states by index.
+        _absent_state = _PACK_ABSENT_CYCLE[index % len(_PACK_ABSENT_CYCLE)]
+        if _FORCE_PACK_ABSENT:
+            _absent_state = _PACK_ABSENT_CYCLE[index % len(_PACK_ABSENT_CYCLE)]
+        elif index % 20 == 0:
+            pass
+        else:
+            _absent_state = ''
+        if _absent_state:
+            case['pack_absent_state'] = _absent_state
+            # The harness prebuilds a bundle for some cases by calling rebuild
+            # itself; with rebuild forced to raise that would crash the harness
+            # rather than exercise emit. The pack-absent control owns the bundle.
+            case['bundle_prebuilt'] = False
         # One history file per case: sharing it let the previous case's record
         # leak into the replay and the determinism comparison.
         hist_path = os.path.join(tmpdir, f'h{index}.json')
@@ -1083,6 +1200,8 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
                 coverage['hostile_numeric_cases'] += 1
             else:
                 coverage['ordinary_cases'] += 1
+            if case.get('pack_absent_state'):
+                coverage[f'pack_absent_{case["pack_absent_state"]}'] += 1
             coverage['determinism_checked'] += 1
             # Determinism means "same input, same output". The input includes the
             # history file, so the comparison run gets a *fresh* copy — reusing the
@@ -1117,6 +1236,8 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
                 coverage['hostile_numeric_cases'] += 1
             else:
                 coverage['ordinary_cases'] += 1
+            if case.get('pack_absent_state'):
+                coverage[f'pack_absent_{case["pack_absent_state"]}'] += 1
     with contextlib.suppress(OSError):
         for name in os.listdir(tmpdir):
             os.unlink(os.path.join(tmpdir, name))

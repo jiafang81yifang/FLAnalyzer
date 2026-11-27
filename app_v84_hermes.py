@@ -31508,6 +31508,34 @@ def _match_matrix_for_gap(rec, payload=None, matrix=None):
     return built
 
 
+def _ou_line_truth(ou_line, rec=None, payload=None):
+    """大小球盘口的真值：形参 → rec → payload → 两者各自的 six_market_mobile。
+
+    只在形参为 None 时才往下找。主调用点显式传 `_ou_line`，行为不变；包缺失
+    路径不传形参，于是必须能读到记录上那份 `six_market_mobile.ou_line`——
+    否则同一段正文会出现「大小球盘口：无数据」紧跟「大小球：3.25」的自相矛盾。
+    """
+    candidates = [ou_line]
+    for holder in (rec, payload):
+        if not isinstance(holder, dict):
+            continue
+        candidates.append(holder.get('ou_line'))
+        six = holder.get('six_market_mobile')
+        if isinstance(six, dict):
+            candidates.append(six.get('ou_line'))
+        board = holder.get('cross_market_board')
+        if isinstance(board, dict):
+            candidates.append(board.get('ou_line'))
+            inner = board.get('six_market_mobile')
+            if isinstance(inner, dict):
+                candidates.append(inner.get('ou_line'))
+    for value in candidates:
+        if value is None or value == '':
+            continue
+        return value
+    return None
+
+
 def _deterministic_judgment_lines(judge_pack, rec=None, payload=None, bundle=None,
                                   gap=None, ou_line=None, ou_pred='', mng_result=None,
                                   heat_dual_compare=None, error='', cn_name=''):
@@ -31559,7 +31587,7 @@ def _deterministic_judgment_lines(judge_pack, rec=None, payload=None, bundle=Non
         except (TypeError, ValueError):
             return str(value)
 
-    ou_text = _line_text(ou_line, '大小球')
+    ou_text = _line_text(_ou_line_truth(ou_line, rec, payload), '大小球')
     lines.append(f'  大小球盘口：{ou_text}' + (f'（预测 {ou_pred}）' if ou_pred else ''))
     jc_live = _record_jc_handicap(rec)
     if jc_live is None:

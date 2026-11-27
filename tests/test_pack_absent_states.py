@@ -230,3 +230,86 @@ def test_send_failure_is_recorded_as_not_sent(monkeypatch: pytest.MonkeyPatch, t
     assert written.get('tg_sent') is False, (
         'a send that raised must not be recorded as delivered')
     assert written.get('tg_not_sent_reason'), 'the failure reason must be recorded'
+
+
+# ---------------------------------------------------------------------------
+# Defect D: 大小球盘口 denied a line the record carries, while the very next
+# line printed it. `_deterministic_judgment_lines` read only its `ou_line`
+# parameter; the pack-absent path does not pass one.
+# ---------------------------------------------------------------------------
+OU_SIX = {'ou_line': 3.25, 'asian_handicap': -0.25,
+          'odds_1x2': {'Home': 1.91, 'Draw': 3.6, 'Away': 4.2},
+          'jc_handicap': -1.0}
+
+
+def _ou_line_of(body: str) -> str:
+    for line in body.splitlines():
+        if line.strip().startswith('大小球盘口：'):
+            return line.strip()
+    return ''
+
+
+def _rec_with_ou_only(**over):
+    rec = _base_rec(six_market_mobile=dict(OU_SIX), predicted_score='2-1')
+    rec.update(over)
+    return rec
+
+
+def test_d_rebuild_failed_reads_ou_line_from_the_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    rec = _rec_with_ou_only()
+
+    def _boom(*a, **k):
+        raise RuntimeError('rebuild exploded')
+
+    monkeypatch.setattr(app, 'rebuild_pipeline_bundle_from_history', _boom)
+    body = '\n'.join(t for t in _emit(rec, monkeypatch, tmp_path) if t)
+    line = _ou_line_of(body)
+    assert '无数据' not in line, f'the record carries ou_line=3.25: {line!r}'
+    assert '3.25' in line, line
+
+
+def test_d_payload_broken_reads_ou_line_from_the_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    rec = _rec_with_ou_only(pipeline_report_bundle={'ds_payload': 'not-a-dict'})
+    monkeypatch.setattr(app, 'rebuild_pipeline_bundle_from_history',
+                        lambda *a, **k: {'ds_payload': 'still-broken'})
+    body = '\n'.join(t for t in _emit(rec, monkeypatch, tmp_path) if t)
+    line = _ou_line_of(body)
+    assert '无数据' not in line, f'the record carries ou_line=3.25: {line!r}'
+    assert '3.25' in line, line
+
+
+def test_d_no_scrape_facts_reads_ou_line_from_the_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    rec = _rec_with_ou_only()
+    for key in ('predicted_score', 'pipeline_scrape_done', 'pipeline_report_bundle'):
+        rec.pop(key, None)
+    body = '\n'.join(t for t in _emit(rec, monkeypatch, tmp_path) if t)
+    line = _ou_line_of(body)
+    assert '无数据' not in line, f'the record carries ou_line=3.25: {line!r}'
+    assert '3.25' in line, line
+
+
+def test_d_a_missing_ou_line_is_still_reported_as_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """The fallback must not turn a genuine absence into a value.
+
+    Revert tested: making the fallback invent a default -> this fails, because
+    the line would carry a number the record never had.
+    """
+    rec = _base_rec(six_market_mobile={'asian_handicap': -0.25, 'jc_handicap': -1.0},
+                    predicted_score='2-1')
+
+    def _boom(*a, **k):
+        raise RuntimeError('rebuild exploded')
+
+    monkeypatch.setattr(app, 'rebuild_pipeline_bundle_from_history', _boom)
+    body = '\n'.join(t for t in _emit(rec, monkeypatch, tmp_path) if t)
+    line = _ou_line_of(body)
+    assert '无数据' in line, f'no source has ou_line; must say so: {line!r}'
+    assert '原因' in line, line
