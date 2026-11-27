@@ -123,16 +123,18 @@ def reason_text(reason: Any) -> str:
 class _Cell:
     """一格值 + 出处。内部用，渲染前会转成普通 dict。"""
 
-    __slots__ = ('value', 'source', 'url', 'status', 'bytes', 'stage', 'reason')
+    __slots__ = ('value', 'source', 'url', 'status', 'bytes', 'stage', 'reason', 'elapsed_ms')
 
     def __init__(self, value: Any = None, *, source: str = '', reason: str = 'not_in_source',
-                 url: str = '', status: int = 0, bytes: int = 0, stage: str = '') -> None:  # noqa: A002 - 与 evidence 字典的键同名，调用点用 **ev 展开
+                 url: str = '', status: int = 0, bytes: int = 0, stage: str = '',  # noqa: A002 - 与 evidence 字典的键同名，调用点用 **ev 展开
+                 elapsed_ms: int = 0) -> None:
         self.value = value
         self.source = source
         self.reason = reason
         self.url = url
         self.status = status
         self.bytes = bytes
+        self.elapsed_ms = elapsed_ms
         self.stage = stage
 
     @property
@@ -156,6 +158,7 @@ class _Cell:
             'status': int(self.status or 0),
             'bytes': int(self.bytes or 0),
             'stage': self.stage,
+            'elapsed_ms': int(self.elapsed_ms or 0),
         }
 
 
@@ -166,6 +169,10 @@ def _evidence_of(block: dict[str, Any], key: str = 'report') -> dict[str, Any]:
         'status': int(rep.get('status') or block.get('status') or 0),
         'bytes': int(rep.get('bytes') or block.get('bytes') or 0),
         'stage': str(block.get('stage') or rep.get('stage') or ''),
+        # 顶层与 report 两处同源：先读顶层，再退回 report。缺就是 0，不编。
+        'elapsed_ms': int(
+            block.get('elapsed_ms') or rep.get('elapsed_ms') or 0
+        ),
     }
 
 
@@ -635,7 +642,9 @@ def _source_line(row: dict[str, Any]) -> str:
 
     five = prov.get(SRC_500) or {}
     if five.get('present'):
-        bits.append(_ev_line(f"500 fid={five.get('fid') or '-'}", five.get('board') or {}))
+        board_ev = five.get('board') or {}
+        extra = f"{board_ev.get('elapsed_ms')}ms" if board_ev.get('elapsed_ms') else ''
+        bits.append(_ev_line(f"500 fid={five.get('fid') or '-'}", board_ev, extra))
     else:
         bits.append('500 缺')
     okooo = prov.get(SRC_OKOOO) or {}

@@ -291,6 +291,7 @@ def scrape_500_board(
             return {
                 'available': False, 'source': source, 'stage': 'fetch_failed',
                 'match_count': 0, 'matches': [], 'fid_to_order': {}, 'order_to_fid': {},
+                'elapsed_ms': int((time.perf_counter() - started) * 1000),
                 'report': {'url': url, 'status': int(page.get('status') or 0),
                            'bytes': int(page.get('bytes') or 0),
                            'elapsed_ms': int((time.perf_counter() - started) * 1000),
@@ -298,13 +299,17 @@ def scrape_500_board(
             }
         html = page.get('html')
     parsed = parse_board(html, source=source)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     parsed['report'] = {
         'url': url,
         'status': int(page.get('status') or 0),
         'bytes': int(page.get('bytes') or 0) or len(str(html).encode('utf-8', 'ignore')),
-        'elapsed_ms': int((time.perf_counter() - started) * 1000),
+        'elapsed_ms': elapsed_ms,
         'title': str(page.get('title') or ''),
     }
+    # 顶层也放一份：只放在 `report` 里时，任何按顶层键读返回值的调用方都会
+    # 拿到 None（真实发生过）。两处同源同值，不存在漂移。
+    parsed['elapsed_ms'] = elapsed_ms
     return parsed
 
 

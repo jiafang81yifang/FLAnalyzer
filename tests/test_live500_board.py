@@ -242,3 +242,60 @@ def test_source_reachability_table_names_the_dead_pages() -> None:
     assert set(tabs) == {'亚盘', '欧指', '让球', '大小球', '盈亏'}
     assert all(row['reason'] == 'host_blocked_here' for row in tabs.values())
     assert '{fid}' in tabs['亚盘']['url']
+
+
+# --------------------------------------------------------------------------- #
+# 往返耗时必须可读：用户在**自己**机器上要能看到这个数
+# --------------------------------------------------------------------------- #
+def test_scrape_board_reports_elapsed_on_every_path() -> None:
+    """成功、失败、注入三条路径都要带 `elapsed_ms`，且顶层与 report 同值。
+
+    这个字段只有放在 `report` 里时，按顶层键读返回值的调用方拿到的是 None
+    ——真实发生过一次，所以两处都要有，且必须相等（同一次测量）。
+    """
+    raw = (FIXTURES / 'live500_board_20261127.html').read_bytes()
+    # 注入路径
+    injected = board_mod.scrape_500_board(html=board_mod.decode_500_html(raw))
+    assert isinstance(injected.get('elapsed_ms'), int)
+    assert injected['elapsed_ms'] == injected['report']['elapsed_ms']
+
+    # 网络成功路径
+    original = board_mod._fetch_detail
+    try:
+        board_mod._fetch_detail = lambda *a, **k: {  # type: ignore[assignment]
+            'ok': True, 'url': 'https://live.500.com/', 'status': 200, 'bytes': len(raw),
+            'html': board_mod.decode_500_html(raw), 'title': 't', 'error': '',
+            'origin_blocked': False,
+        }
+        ok = board_mod.scrape_500_board()
+        assert ok['report']['status'] == 200
+        assert isinstance(ok['elapsed_ms'], int)
+        assert ok['elapsed_ms'] == ok['report']['elapsed_ms']
+
+        # 失败路径
+        board_mod._fetch_detail = lambda *a, **k: {  # type: ignore[assignment]
+            'ok': False, 'url': 'https://live.500.com/', 'status': 500, 'bytes': 0,
+            'html': '', 'error': 'HTTP 500', 'origin_blocked': False,
+        }
+        failed = board_mod.scrape_500_board()
+        assert failed['available'] is False
+        assert isinstance(failed.get('elapsed_ms'), int)
+        assert failed['elapsed_ms'] == failed['report']['elapsed_ms']
+    finally:
+        board_mod._fetch_detail = original  # type: ignore[assignment]
+
+
+def test_parse_is_cheap_next_to_the_network_round_trip() -> None:
+    """解析必须是毫秒级：盘面挡在每场比赛之前，解析贵了就是整轮变慢。
+
+    真实数据上实测网络 1.4–2.4s、解析 3ms 量级。这里只断言解析远小于 1s，
+    留足机器差异的余量（不断言网络，因为那取决于出口）。
+    """
+    import time as _time
+    raw = (FIXTURES / 'live500_board_20261127.html').read_bytes()
+    html = board_mod.decode_500_html(raw)
+    t0 = _time.perf_counter()
+    parsed = board_mod.parse_board(html)
+    elapsed = _time.perf_counter() - t0
+    assert parsed['match_count'] == 39
+    assert elapsed < 1.0, f'解析耗时 {elapsed:.3f}s，不该这么贵'

@@ -169,6 +169,27 @@ CASES: tuple[tuple[str, str, str, str, str], ...] = (
         'tests/test_match_data_matrix_wiring.py::test_stage1_waits_instead_of_blocking_on_a_cold_fetch',
     ),
     (
+        'elapsed-on-success-path',
+        'live500_board.py',
+        "    parsed['elapsed_ms'] = elapsed_ms",
+        "    parsed.pop('elapsed_ms', None)",
+        'tests/test_live500_board.py::test_scrape_board_reports_elapsed_on_every_path',
+    ),
+    (
+        'elapsed-reaches-matrix-provenance',
+        'match_data_matrix.py',
+        "        'elapsed_ms': int(\n            block.get('elapsed_ms') or rep.get('elapsed_ms') or 0\n        ),",
+        "        'elapsed_ms': 0,",
+        'tests/test_match_data_matrix.py::test_matrix_provenance_carries_the_board_elapsed_time',
+    ),
+    (
+        'elapsed-not-invented-when-unknown',
+        'match_data_matrix.py',
+        "        'elapsed_ms': int(\n            block.get('elapsed_ms') or rep.get('elapsed_ms') or 0\n        ),",
+        "        'elapsed_ms': 1704,",
+        'tests/test_match_data_matrix.py::test_matrix_elapsed_is_zero_not_invented_when_unknown',
+    ),
+    (
         'prefetch-is-non-blocking',
         'app_v84_hermes.py',
         "    thread.start()\n    return True",

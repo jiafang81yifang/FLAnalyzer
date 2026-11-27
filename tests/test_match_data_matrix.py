@@ -202,11 +202,13 @@ def test_score_precedence_wins_when_both_sources_offer_the_field() -> None:
                     'sections': {'竞足保存盈亏': {'rows': [{'label': '胜', 'cells': ['4.55', '1', '+2']}]}}},
         }},
     )
-    assert row['fields']['home_score'] == {
-        'value': 3, 'source': 'live500', 'reason': 'ok',
-        'url': 'https://live.500.com/detail.php?fid=1430592&r=1',
-        'status': 200, 'bytes': 17362, 'stage': '',
-    }
+    cell = row['fields']['home_score']
+    assert cell['value'] == 3
+    assert cell['source'] == 'live500'
+    assert cell['reason'] == 'ok'
+    assert cell['url'] == 'https://live.500.com/detail.php?fid=1430592&r=1'
+    assert cell['status'] == 200
+    assert cell['bytes'] == 17362
     assert row['fields']['away_score']['value'] == 1
 def test_precedence_table_is_the_single_source_of_truth() -> None:
     """规则只写一处：任何字段的取源都从 FIELD_PRECEDENCE 读，不在调用点硬编码。"""
@@ -344,3 +346,31 @@ def test_tg_lines_never_fabricate_a_dash_as_a_number() -> None:
     text = '\n'.join(lines)
     assert '对方源无此场' in text
     assert '500 缺' in text and '澳客 缺' in text
+
+
+def test_matrix_provenance_carries_the_board_elapsed_time() -> None:
+    """耗时必须进到矩阵出处里，报告里那一行才有真实数字可读。"""
+    row = mdm.build_match_matrix(
+        order='5002',
+        five_hundred={
+            'fid': '1430592', 'home': 'A', 'away': 'B',
+            'report': {'url': 'https://live.500.com/', 'status': 200, 'bytes': 129080},
+            'elapsed_ms': 1704,
+        },
+    )
+    assert row['provenance']['live500']['board']['elapsed_ms'] == 1704
+    assert row['fields']['home']['elapsed_ms'] == 1704
+    lines = mdm.format_matrix_tg_lines({'rows': [row], 'duplicates': []})
+    assert '1704ms' in '\n'.join(lines), '报告里看不到真实耗时'
+
+
+def test_matrix_elapsed_is_zero_not_invented_when_unknown() -> None:
+    """没有耗时就写 0，不编一个好看的数。"""
+    row = mdm.build_match_matrix(
+        order='5002',
+        five_hundred={'fid': '1', 'home': 'A', 'away': 'B',
+                      'report': {'url': 'https://live.500.com/', 'status': 200}},
+    )
+    assert row['provenance']['live500']['board']['elapsed_ms'] == 0
+    text = '\n'.join(mdm.format_matrix_tg_lines({'rows': [row], 'duplicates': []}))
+    assert 'ms' not in text.split('500 fid=')[1].split('｜')[0], '没有耗时却印了毫秒'
