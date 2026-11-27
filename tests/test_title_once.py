@@ -277,3 +277,117 @@ def test_model_stub_resets_the_completion_latch(tmp_path) -> None:
     assert result.get('available') is True, (
         f'stale completion latch leaked into the stub: {result.get("error")!r}')
     assert not result.get('error'), result.get('error')
+
+
+# ---------------------------------------------------------------------------
+# Coverage: every exit the harness claims to sweep must actually be swept.
+#
+# `render_fallback_empty` was unreachable for two full 100k runs: the fallback
+# was chosen by `index % 4` inside a branch gated on `index % 10 == 0`, so the
+# index was always even and slot 3 ('empty') never came up. COVERAGE simply had
+# no such key, which reads as "fine" rather than "never ran".
+# ---------------------------------------------------------------------------
+def _harness():
+    import contextlib
+    import io
+    import sys as _sys
+    _scripts = str(ROOT / 'scripts')
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        import sweep_100k_e2e as S
+        import blade_deepseek_pipeline as _pipe_mod
+    S.APP.DeepSeekAnalyzer = _pipe_mod.DeepSeekAnalyzer
+    return S
+
+
+def test_both_render_fallbacks_are_reachable() -> None:
+    """Both exits must be selected by the cadence, and roughly balanced."""
+    S = _harness()
+    seen = {}
+    for seed in range(S._RENDER_FALLBACK_PERIOD):
+        mode = S._RENDER_FALLBACK_SLOTS.get(seed % S._RENDER_FALLBACK_PERIOD, '')
+        if mode:
+            seen[mode] = seen.get(mode, 0) + 1
+    assert set(seen) == {'raise', 'empty'}, f'unreachable fallback: {seen}'
+    assert seen['raise'] == seen['empty'], seen
+
+
+def test_render_fallback_cadence_is_not_tied_to_a_modulo_ten_selector() -> None:
+    """The regression itself: `index % 10 == 0` can never reach an odd slot.
+
+    Reconstructs the old selection exactly — cycle indexed by `index % 4`,
+    gated on `index % 10 == 0` — and asserts 'empty' is unreachable, so this
+    test fails if someone re-introduces that coupling.
+    """
+    old_cycle = ('', '', 'raise', 'empty')
+    reached = set()
+    for index in range(200):
+        if index % 10 == 0:
+            reached.add(old_cycle[index % len(old_cycle)])
+    assert 'empty' not in reached, 'the old coupling was expected to miss "empty"'
+
+    S = _harness()
+    reached_now = set()
+    for seed in range(200):
+        mode = S._RENDER_FALLBACK_SLOTS.get(seed % S._RENDER_FALLBACK_PERIOD, '')
+        if mode:
+            reached_now.add(mode)
+    assert reached_now == {'raise', 'empty'}, reached_now
+
+
+def test_coverage_lists_every_class_even_at_zero() -> None:
+    """A class that never ran must print as `=0`, not vanish."""
+    S = _harness()
+    cov = S._zero_coverage()
+    for name in ('render_fallback_raise', 'render_fallback_empty',
+                 'pack_absent_rebuild_failed', 'pack_absent_payload_broken',
+                 'pack_absent_no_scrape_facts', 'operator_direction_cases'):
+        assert name in cov, f'{name} missing from the initialised Counter'
+
+
+def test_clean_run_with_a_dead_coverage_class_is_not_reported_clean() -> None:
+    """`failed=0` plus a never-run class must exit non-zero and say why."""
+    S = _harness()
+    cov = S._zero_coverage()
+    for name in cov:
+        cov[name] = 10
+    cov['render_fallback_empty'] = 0
+    issues = S._coverage_defects(cov, 100000)
+    assert any('render_fallback_empty=0' in i for i in issues), issues
+    assert any('HARNESS DEFECT' in i for i in issues), issues
+
+    # And a fully covered run reports nothing.
+    cov['render_fallback_empty'] = 5000
+    assert S._coverage_defects(cov, 100000) == []
+
+
+def test_e14_fires_on_the_empty_render_fallback() -> None:
+    """E14 must assert the empty-render delivery, not just the raising one.
+
+    Drives the sweep's own E14 with a real case forced through
+    `render_fallback='empty'`, then re-checks the same captured delivery
+    against a mutated copy where the 31 table is gone: that must be an E14
+    failure, which is what "the fallback kept the table" is worth.
+    """
+    S = _harness()
+    case = S._build_case(20261127)
+    case['render_fallback'] = 'empty'
+    import tempfile
+    from pathlib import Path
+    hist = str(Path(tempfile.mkdtemp()) / 'h.json')
+    sent, _out = S._run_once(case, hist)
+    modes = case.get('_sent_modes') or []
+    assert modes, 'nothing was delivered for the empty fallback'
+    assert not S._check_render_fallback_html(case, modes), (
+        f'empty fallback delivery violates E14: '
+        f'{S._check_render_fallback_html(case, modes)}')
+    # The delivery must genuinely be plain text, not HTML.
+    assert all(pm is None for pm, _b in modes), [pm for pm, _b in modes]
+
+    # Now prove the check has teeth: strip the 31 table from the body.
+    stripped = [(pm, '\n'.join(ln for ln in str(b).splitlines()
+                               if not ln.startswith('  ')))
+                for pm, b in modes]
+    defects = S._check_render_fallback_html(case, stripped)
+    assert any('31' in d for _inv, d in defects), defects

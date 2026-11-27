@@ -955,16 +955,24 @@ def _check_render_fallback_html(case: dict[str, Any],
     """E14: the two HTML fallbacks must not leak markup or over-bold.
 
     * a `parse_mode=None` delivery carries no HTML tags at all;
-    * the raising path produces exactly one `<b>…</b>` pair, wrapping the title.
+    * the raising path produces exactly one `<b>…</b>` pair, wrapping the title;
+    * the empty-render path delivers plain text *and still carries the 31 table*
+      — the fallback replaces the HTML matrix, not the report.
 
     #28 replaced `align_displayed_landings`/`mark_*` with real behaviour and made
     these fallbacks reachable; a sweep that never triggers them cannot claim
-    anything about them.
+    anything about them. The `empty` exit went unswept for two full 100k runs
+    (see `_RENDER_FALLBACK_SLOTS`), so this check is written per-mode rather
+    than as one shared tag scan: a rule that only fires for `raise` is how a
+    whole exit stays unexamined.
     """
     out: list[tuple[str, str]] = []
     mode = case.get('render_fallback')
     if not mode:
         return out
+    if not sent:
+        return [('E14', f'{mode}_fallback_delivered_nothing')]
+    joined = '\n'.join(str(body or '') for _pm, body in sent)
     for parse_mode, body in sent:
         body = str(body or '')
         if parse_mode is None:
@@ -981,6 +989,18 @@ def _check_render_fallback_html(case: dict[str, Any],
                 first = next((ln for ln in body.splitlines() if ln.strip()), '')
                 if not (first.startswith('<b>') and '</b>' in first):
                     out.append(('E14', f'bold_does_not_wrap_title:{first[:60]}'))
+        elif parse_mode == 'HTML' and mode == 'empty':
+            # The empty-render fallback must not fall back to HTML at all.
+            out.append(('E14', f'empty_fallback_still_html:{body[:60]}'))
+    if mode == 'empty':
+        # `format_matrix_dual_prejudge_html` returning '' must not cost the
+        # reader the 31 table or the rest of the report: the fallback swaps the
+        # matrix for plain text, it does not truncate the body.
+        if '31项市均×竞彩对比表' not in joined:
+            out.append(('E14', 'empty_fallback_lost_31_table'))
+        rows = [ln for ln in joined.splitlines() if re.match(r'^  \d{2} ', ln)]
+        if len(rows) != 31:
+            out.append(('E14', f'empty_fallback_31_rows={len(rows)}'))
     return out
 
 
@@ -1302,18 +1322,66 @@ _FORCE_PACK_ABSENT = bool(__import__('os').environ.get('SWEEP_FORCE_PACK_ABSENT'
 # renderer returns '' -> plain-text body. Neither was reachable in a normal run.
 _FORCE_RENDER_FAIL = bool(__import__('os').environ.get('SWEEP_FORCE_RENDER_FAIL'))
 _FORCE_RENDER_EMPTY = bool(__import__('os').environ.get('SWEEP_FORCE_RENDER_EMPTY'))
-_RENDER_FALLBACK_CYCLE = ('', '', 'raise', 'empty')
+# The fallback cadence used to be `index % 10 == 0` selecting from
+# `('', '', 'raise', 'empty')` by `index % 4`. Every index divisible by 10 is
+# even, so `index % 4` could only ever be 0 or 2: slot 3 ('empty') was
+# unreachable, and 100,000 cases exercised `raise` 5,000 times and `empty`
+# exactly zero times — with no `render_fallback_empty` key in COVERAGE to say so.
+# The period and the slots are now written down separately, so both exits are
+# reachable and neither depends on another selector's modulo.
+_RENDER_FALLBACK_PERIOD = 20
+_RENDER_FALLBACK_SLOTS = {4: 'raise', 14: 'empty'}
 _PACK_ABSENT_CYCLE = ('rebuild_failed', 'payload_broken', 'no_scrape_facts')
+# Every coverage class a shard is supposed to hit. A class that silently never
+# runs is how the `empty` hole survived two 100k runs: the counter simply had no
+# key, and an absent key reads as "nothing to report" rather than "never ran".
+# `main` refuses to call a run clean while any of these is zero.
+_BASE_COVERAGE_CLASSES = (
+    'cases', 'produced', 'determinism_checked',
+    'hostile_numeric_cases', 'ordinary_cases', 'operator_direction_cases',
+)
+_PACK_ABSENT_CLASSES = tuple(f'pack_absent_{s}' for s in _PACK_ABSENT_CYCLE)
+_RENDER_FALLBACK_CLASSES = tuple(f'render_fallback_{m}' for m in ('raise', 'empty'))
+
+
+def _expected_coverage_classes() -> tuple[str, ...]:
+    """Which coverage classes this process must actually reach.
+
+    The force flags deliberately narrow the run to one exit, so expecting the
+    other one would be a false alarm — but under a normal run both fallbacks and
+    all three pack-absent states must appear.
+    """
+    render = _RENDER_FALLBACK_CLASSES
+    if _FORCE_RENDER_FAIL:
+        render = ('render_fallback_raise',)
+    elif _FORCE_RENDER_EMPTY:
+        render = ('render_fallback_empty',)
+    return _BASE_COVERAGE_CLASSES + _PACK_ABSENT_CLASSES + render
+
+
+def _zero_coverage() -> Counter:
+    """A Counter carrying every intended class at 0, so absence is visible."""
+    cov: Counter = Counter()
+    for name in _expected_coverage_classes():
+        cov[name] = 0
+    return cov
 
 
 def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
     """Run one shard of seed indices; returns counts, failures, coverage."""
     failures: list[dict[str, Any]] = []
-    coverage: Counter = Counter()
+    coverage: Counter = _zero_coverage()
     produced = 0
     tmpdir = tempfile.mkdtemp(prefix='sweep100k-')
     for index, seed in enumerate(cases):
         case = _build_case(seed_base + seed)
+        # Which coverage class a case takes is decided by `seed`, the *global*
+        # case ordinal, never by `index`, the position inside this shard.
+        # With `--workers N` each shard restarts `index` at 0, so index-driven
+        # selectors silently multiply coverage by N without adding new cases —
+        # and on a single worker they hide the real rate behind the shard
+        # boundary. `seed` is `range(total)[i]` either way, so the same total
+        # gets the same classes regardless of worker count.
         if _INJECT_REFUSAL:
             # Pure detector control: leave the record alone and only swap the
             # captured body for the refusal shape. That isolates "can E10 see a
@@ -1321,28 +1389,30 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
             case['inject_refusal_body'] = True
         # Deterministic coverage of the three pack-absent exits, which the
         # ordinary path never reaches (every generated case carries a bundle).
-        # One case in twenty, rotating through the three states by index.
-        _absent_state = _PACK_ABSENT_CYCLE[index % len(_PACK_ABSENT_CYCLE)]
+        # One case in twenty (`seed % 20 == 0`), rotating through the three
+        # states; 5% of the run, split evenly across the states.
         if _FORCE_PACK_ABSENT:
-            _absent_state = _PACK_ABSENT_CYCLE[index % len(_PACK_ABSENT_CYCLE)]
-        elif index % 20 == 0:
-            pass
+            _absent_state = _PACK_ABSENT_CYCLE[seed % len(_PACK_ABSENT_CYCLE)]
+        elif seed % 20 == 0:
+            _absent_state = _PACK_ABSENT_CYCLE[(seed // 20) % len(_PACK_ABSENT_CYCLE)]
         else:
             _absent_state = ''
-        # Render-fallback coverage: one case in ten alternates the two fallbacks.
+        # Render-fallback coverage: its own cadence, so both exits are reachable.
+        # `seed % _RENDER_FALLBACK_PERIOD` hits every slot in
+        # `_RENDER_FALLBACK_SLOTS` once per period: 5% raise, 5% empty.
         if _FORCE_RENDER_FAIL:
             case['render_fallback'] = 'raise'
         elif _FORCE_RENDER_EMPTY:
             case['render_fallback'] = 'empty'
-        elif index % 10 == 0:
-            _rf = _RENDER_FALLBACK_CYCLE[index % len(_RENDER_FALLBACK_CYCLE)]
+        else:
+            _rf = _RENDER_FALLBACK_SLOTS.get(seed % _RENDER_FALLBACK_PERIOD)
             if _rf:
                 case['render_fallback'] = _rf
         # /方向 coverage: one case in ten carries an operator direction, which
         # makes `_emit_pack_absent_report`'s sibling path prepend the
         # 「操作员已指定方向」 line. Counted separately.
-        if index % 10 == 3:
-            case['rec']['operator_direction'] = ('胜', '平', '负')[(index // 10) % 3]
+        if seed % 10 == 3:
+            case['rec']['operator_direction'] = ('胜', '平', '负')[(seed // 10) % 3]
             case['operator_direction'] = case['rec']['operator_direction']
         if _absent_state:
             case['pack_absent_state'] = _absent_state
@@ -1466,6 +1536,33 @@ def _run_parallel(total: int, seed: int, workers: int) -> dict[str, Any]:
     return {'produced': produced, 'failures': failures, 'coverage': coverage}
 
 
+def _coverage_defects(coverage: Counter, n_cases: int) -> list[str]:
+    """Every intended coverage class must actually have run.
+
+    A missing key used to be the silent failure mode: `COVERAGE` simply had no
+    `render_fallback_empty`, so two 100k runs reported 5,000 `raise` cases and
+    nothing at all about `empty` while still printing `failed=0`. Reporting a
+    class as "not covered" is impossible if the class is never counted, so the
+    absence has to be an error of its own.
+
+    The small-n floor keeps tiny probes honest without failing them: below one
+    full cycle of each cadence a zero may simply mean "too few cases".
+    """
+    out: list[str] = []
+    # One render period (20) and one pack-absent period (20) plus slack.
+    floor = 40
+    for name in _expected_coverage_classes():
+        if name in ('cases', 'produced', 'determinism_checked'):
+            continue
+        if coverage.get(name, 0) > 0:
+            continue
+        if n_cases < floor:
+            out.append(f'{name}=0 (n_cases={n_cases} < {floor}, not conclusive)')
+        else:
+            out.append(f'{name}=0 (HARNESS DEFECT: this class never ran)')
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--cases', type=int, default=100000)
@@ -1479,11 +1576,15 @@ def main(argv: list[str] | None = None) -> int:
         result = _run_parallel(args.cases, args.seed, args.workers)
     else:
         result = run_shard(list(range(args.cases)), args.seed)
-        result['coverage'] = Counter(result['coverage'])
+    # Union with the intended classes so a zero prints as `=0`, not by absence.
+    cov: Counter = _zero_coverage()
+    cov.update(result['coverage'])
+    result['coverage'] = cov
     elapsed = time.time() - started
 
     clusters = _cluster(result['failures'])
     n_fail = args.cases - result['produced']
+    cov_issues = _coverage_defects(result['coverage'], args.cases)
     print(f'REPORT n_cases={args.cases} produced={result["produced"]} failed={n_fail}')
     print(f'CLUSTERS n={len(clusters)}')
     for cluster in clusters:
@@ -1493,17 +1594,24 @@ def main(argv: list[str] | None = None) -> int:
               f' heat={cluster["example"]["heat_shape"]} pool={cluster["example"]["pool_len"]}')
     cov = result['coverage']
     print('COVERAGE ' + ' '.join(f'{k}={v}' for k, v in sorted(cov.items())))
+    if cov_issues:
+        # A clean `failed=0` on a run that never reached half its exits is not a
+        # clean run. Say so in the same breath as the headline number.
+        print(f'COVERAGE-INCOMPLETE n={len(cov_issues)}')
+        for issue in cov_issues:
+            print(f'  {issue}')
     print(f'WALL seconds={elapsed:.2f} throughput_cases_per_s={args.cases / max(elapsed, 1e-9):.1f}')
     if args.json_path:
         Path(args.json_path).write_text(json.dumps({
             'n_cases': args.cases,
             'produced': result['produced'],
             'failed': n_fail,
+            'coverage_incomplete': cov_issues,
             'clusters': clusters,
             'coverage': dict(cov),
             'wall_seconds': round(elapsed, 3),
         }, ensure_ascii=False, indent=2), encoding='utf-8')
-    return 0 if n_fail == 0 else 1
+    return 0 if (n_fail == 0 and not cov_issues) else 1
 
 
 if __name__ == '__main__':
