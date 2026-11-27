@@ -294,8 +294,14 @@ def run() -> tuple[int, str, dict[str, Any]]:
     for result in stage2_results:
         if not result.get('ok'):
             failures.append(f'阶段2 未走通: {result}')
-        if result.get('judgment_error'):
-            failures.append(f'阶段2 研判 error={result["judgment_error"]}')
+        # 这个回放刻意不配 DEEPSEEK_API_KEY（见 run() 里的 environ.pop）。
+        # 自 (e) 起，没有 key 时 deepseek 只返回本地占位，**不算**研判：
+        # available 必须为 False、error 必须点名原因。这正是在验证修复本身，
+        # 所以「有 error」是对的；错的只有「声称可用却给了占位」。
+        if result.get('judgment_available'):
+            failures.append(f'阶段2 无 key 却报 available=True: {result}')
+        elif result.get('judgment_error') != 'deepseek_api_key_missing':
+            failures.append(f'阶段2 研判 error={result.get("judgment_error")!r}（应为 deepseek_api_key_missing）')
     stats['failures'] = failures
     return (0 if not failures else 1), log, stats
 

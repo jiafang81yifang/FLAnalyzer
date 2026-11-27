@@ -284,6 +284,17 @@ def _history_record(jc: dict[str, float], *, lam_keys: dict[str, Any]) -> dict[s
     return rec
 
 
+def _fake_model_completion(messages=None, *a, **k):
+    """模型正文（不是本地占位）：让 analyze_match_judgment 走真实成功路径。"""
+    return (
+        '📌 模型表现自动分析报告\n'
+        'DeepSeek 数据分析研判报告\n'
+        '方向锁判定报告 台账01｜三者作用｜缺失判定｜命中率改进\n'
+        '市短市热对照 台账01｜数据：已核｜策略：无\n'
+        '①比分 2-1 ②比分 1-0\n'
+    )
+
+
 def _run_emit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -313,6 +324,13 @@ def _run_emit(
         app, 'enrich_history_okooo_cs_facts', lambda rec, cn_name='', force_rescrape=False: False,
     )
     monkeypatch.setattr(app, 'is_history_match_not_started', lambda rec: True)
+    # 自 (e) 起，没有 API key 时 deepseek 返回的本地占位不再算研判
+    # （available=False），闸门会拒发。这些用例测的是「门禁放行 → 正文照发」，
+    # 所以必须让底层补全返回一段**模型正文**，而不是本地占位串。
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-key')
+    monkeypatch.setattr(pipe_mod, 'deepseek_chat_completion', _fake_model_completion, raising=False)
+    monkeypatch.setattr(pipe_mod, '_LAST_COMPLETION_LOCAL', False, raising=False)
+    monkeypatch.setattr(pipe_mod, '_LAST_COMPLETION_ERROR', '', raising=False)
 
     lines: list[str] = []
     real_print = print

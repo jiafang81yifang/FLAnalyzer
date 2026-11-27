@@ -391,7 +391,7 @@ def _next_referer(referers: list[str], current: str) -> str | None:
 # 缓存版本：打包格式一变就 +1，旧包一律拒绝并重抓。
 # 没有版本的缓存会让「任何跑过旧版本的机器」永久看不到之后的修复——
 # 用户的 channel=desktop_cs / books=25 / jc=0 正是旧包被当成新数据。
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
 _ACCEPTED_CS_CHANNELS = {'mobile', 'okooo_cs'}
 
 
@@ -406,14 +406,28 @@ def _cache_stamp(pack: dict[str, Any]) -> dict[str, Any]:
 def _cache_reject_reason(cache: Path, data: Any, *, require_31: bool = False) -> str:
     """判断一个缓存包还能不能用。返回拒绝原因，'' 表示可用。
 
-    三条硬规则：
+    四条硬规则：
       * cache_schema 必须是当前版本（旧包 = 旧解析逻辑的产物）；
+      * 六盘口包必须带 schema 3 引入的四个竞彩盘口字段，
+        否则是「用旧解析器写的包」——它永远不会有 jc_handicap /
+        total_goals_odds / htft_odds，继续复用等于让新解析器一次都不跑；
       * correct_score_channel 必须是现在真正会写出的通道
         （desktop_cs 是旧标签，出现即说明是旧包）；
       * 若要求 31 全表，包里必须有合并后的 31 项（cs31_complete / 31 个键）。
     """
     if not isinstance(data, dict) or not data:
         return 'cache_empty'
+    # 六盘口包专用判据放在版本号之前：旧解析器写的 six 包与当前版本号只差一个数字，
+    # 报「cache_schema_old」看不出是解析器换过，报「cache_schema_board_parser」
+    # 才能让用户知道该重抓。cs 包（带 correct_score_page_avg）不适用这条。
+    _is_six_pack = (
+        'correct_score_page_avg' not in data
+        and any(k in data for k in ('boards_hit', 'source_report', 'fetch_urls'))
+    )
+    if _is_six_pack and not any(
+        k in data for k in ('jc_list_boards', 'total_goals_odds', 'htft_odds', 'jc_handicap')
+    ):
+        return 'cache_schema_board_parser'
     if int(data.get('cache_schema') or 0) != CACHE_SCHEMA:
         return 'cache_schema_old'
     if 'correct_score_channel' in data:
@@ -897,6 +911,227 @@ def fetch_jczq31(match_id: Any, proxies: Any = None, session: Any = None) -> dic
     }
 
 
+def _jc_line_of_boundary(raw: Any) -> float | None:
+    """页面 `Boundary.SportteryWDL` 的竞彩让球值（`+1` / `-1` / `-2` / `0`）。
+
+    只认整数：竞彩让球是整球，出现小数说明字段含义变了，宁可不用也不硬转。
+    符号保持页面原样（正数=主队受让），与 `derive_markets_from_matrix` 的
+    `net + handicap` 判胜平负口径一致。
+    """
+    text = str(raw if raw is not None else '').strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or abs(value - round(value)) > 1e-9:
+        return None
+    return float(round(value))
+
+
+def parse_jczq_list_boards(html: Any, match_id: Any) -> dict[str, Any]:
+    """从 `m.okooo.com/jczq/` 同一份 oddsData 取胜平负/竞彩让球/总进球/半全场。
+
+    这四项与比分块（`parse_jczq_score_odds`）同页同一次请求，是它们的真实来源；
+    以前只读 SportteryScore，其余四块在本仓库零命中，于是这四块只能去撞
+    被 WAF 拦的桌面端点，日志里就出现「六盘口缺三个」。
+
+    返回 {'available', 'orderid', 'blocks': {板名: {...}}, 'hit': [板名], 'stage'}。
+    每块各自带 `stage`：`ok` / `block_absent`（本场没开这个玩法）/
+    `odds_incomplete_N_of_M`（块在但项数不够，半填）。缺就是缺，绝不补值。
+    """
+    text = str(html or '')
+    out: dict[str, Any] = {
+        'available': False, 'orderid': '', 'blocks': {}, 'hit': [], 'stage': 'ok',
+        'source': 'jczq_list_oddsData',
+    }
+    data = _decode_js_object(text)
+    if not data:
+        out['stage'] = 'odds_data_missing'
+        return out
+    orderid = _jc_orderid_for_match(text, match_id)
+    if not orderid:
+        out['stage'] = 'orderid_not_found'
+        return out
+    out['orderid'] = orderid
+    _slot_raw = data.get(orderid)
+    slot: dict[str, Any] = _slot_raw if isinstance(_slot_raw, dict) else {}
+    if not slot:
+        out['stage'] = 'orderid_slot_absent'
+        return out
+    odds_list_raw = slot.get('OddsList')
+    odds_list: dict[str, Any] = odds_list_raw if isinstance(odds_list_raw, dict) else {}
+
+    def _price(block: dict[str, Any], code: str) -> float | None:
+        value = _num_of(block.get(code))
+        return value if value is not None and value > 1 else None
+
+    # 胜平负 ← SportteryNWDL（16/15/14）+ 平手块。见上方编码表的三条证据。
+    straight_raw = odds_list.get('SportteryNWDL') or {}
+    wdl: dict[str, Any] = {'odds_1x2': {}, 'stage': 'block_absent'}
+    if isinstance(straight_raw, dict) and straight_raw:
+        odds = {}
+        for code, side in _JCZQ_STRAIGHT_CODES:
+            value = _price(straight_raw, code)
+            if value is not None:
+                odds[side] = value
+        if len(odds) == 3:
+            wdl.update({
+                'odds_1x2': {
+                    **odds,
+                    'Home': odds['home'], 'Draw': odds['draw'], 'Away': odds['away'],
+                },
+                'stage': 'ok',
+                'source': 'jczq_list_oddsData',
+                'source_block': 'SportteryNWDL',
+                'source_url': 'https://m.okooo.com/jczq/#oddsData.OddsList.SportteryNWDL',
+            })
+        else:
+            wdl['stage'] = f'odds_incomplete_{len(odds)}_of_3'
+    out['blocks']['胜平负'] = wdl
+
+    # 竞彩让球胜平负 ← SportteryWDL（13/11/10）+ Boundary 让球数
+    handicap_raw = odds_list.get('SportteryWDL') or {}
+    _boundary_raw = slot.get('Boundary')
+    boundary: dict[str, Any] = _boundary_raw if isinstance(_boundary_raw, dict) else {}
+    jc_line = _jc_line_of_boundary(boundary.get('SportteryWDL'))
+    nwdl: dict[str, Any] = {'odds': {}, 'line': jc_line, 'stage': 'block_absent'}
+    if isinstance(handicap_raw, dict) and handicap_raw:
+        odds = {}
+        for code, side in _JCZQ_HANDICAP_CODES:
+            value = _price(handicap_raw, code)
+            if value is not None:
+                odds[side] = value
+        if len(odds) == 3 and jc_line is not None:
+            nwdl.update({
+                'odds': {**odds, 'Home': odds['home'], 'Draw': odds['draw'], 'Away': odds['away']},
+                'stage': 'ok',
+                'source': 'jczq_list_oddsData',
+                'source_block': 'SportteryWDL+Boundary.SportteryWDL',
+            })
+        elif len(odds) == 3:
+            # 赔率齐但让球数读不出来：不能把三项赔率挂到错误的盘口上，整块不用。
+            nwdl['stage'] = 'boundary_absent'
+        else:
+            nwdl['stage'] = f'odds_incomplete_{len(odds)}_of_3'
+    out['blocks']['竞彩让球'] = nwdl
+
+    # 总进球 0..7+
+    tg_raw = odds_list.get('SportteryTotalGoals') or {}
+    total_goals: dict[str, Any] = {'odds': {}, 'stage': 'block_absent'}
+    if isinstance(tg_raw, dict) and tg_raw:
+        odds = {}
+        for code, goals in _JCZQ_TOTAL_GOALS_CODES:
+            value = _price(tg_raw, code)
+            if value is not None:
+                odds[goals] = value
+        total_goals.update({
+            'odds': odds,
+            'stage': 'ok' if len(odds) == 8 else f'odds_incomplete_{len(odds)}_of_8',
+            'source': 'jczq_list_oddsData',
+            'source_block': 'SportteryTotalGoals',
+        })
+    out['blocks']['总进球'] = total_goals
+
+    # 半全场 3x3
+    hf_raw = odds_list.get('SportteryHalfFull') or {}
+    half_full: dict[str, Any] = {'odds': {}, 'stage': 'block_absent'}
+    if isinstance(hf_raw, dict) and hf_raw:
+        odds = {}
+        for code, label in _JCZQ_HALF_FULL_CODES:
+            value = _price(hf_raw, code)
+            if value is not None:
+                odds[label] = value
+        half_full.update({
+            'odds': odds,
+            'stage': 'ok' if len(odds) == 9 else f'odds_incomplete_{len(odds)}_of_9',
+            'source': 'jczq_list_oddsData',
+            'source_block': 'SportteryHalfFull',
+        })
+    out['blocks']['半全场'] = half_full
+
+    out['hit'] = [name for name, block in out['blocks'].items() if block.get('stage') == 'ok']
+    out['available'] = bool(out['hit'])
+    return out
+
+
+def _stage_reason(stage: Any, page: dict[str, Any] | None = None) -> str:
+    """把解析阶段翻成一个能指导处置的原因码。
+
+    这四个原因对应四种完全不同的动作，混成一个「fetch_failed」会让用户
+    无法判断该等缓存还是该改解析：
+      transport_failed   请求根本没拿到响应（超时/DNS/连接被重置）→ 重试/查网络
+      http_error         拿到响应但状态码不是 200                    → 查 CDN/源站
+      origin_blocked     源站按出口 IP 拦（WAF 拦截页）              → 换出口/等缓存命中
+      parsed_no_rows     页面是我们认识的页，但一个公司行都没有       → 页面结构变了，改解析
+      parsed_no_line     有公司行，但取不出盘口线                     → 页面结构变了，改解析
+      parsed_no_company  有页面，但找不到「竞**方」公司行             → 页面结构变了，改解析
+      unmapped_line      盘口线文本取到了，但中文盘口词典没收录       → 补词表
+      ok                 成功
+    绝不把「页面取到了但解析不出」叫 fetch_failed。
+    """
+    text = str(stage or '').strip()
+    page = page if isinstance(page, dict) else {}
+    _failed = page.get('ok') is False or (
+        # attempt 记录不带 ok 键，靠它自己的 stage 判断这次尝试成没成
+        page.get('ok') is None and text in ('', 'fetch_failed')
+    )
+    if page and _failed:
+        if page.get('origin_blocked'):
+            return 'origin_blocked'
+        if page.get('transport_error'):
+            return 'transport_failed'
+        status = int(page.get('status') or 0)
+        if status and status != 200:
+            return f'http_error_{status}'
+        if not status:
+            return 'transport_failed'
+        # 200 但 ok=False：拿到响应却没有可用正文（空体/非 HTML），这不是传输失败。
+        return 'response_empty'
+    # 没有 ok 标志时按状态码兜底判「拿到了没有」。
+    if page and page.get('ok') is None:
+        status = int(page.get('status') or 0)
+        if status and status != 200 and text in ('', 'fetch_failed'):
+            return f'http_error_{status}'
+    if not text or text == 'ok':
+        return 'ok'
+    if text.startswith('unmapped_line_text'):
+        return 'unmapped_line'
+    if text in {'no_line', 'no_line_text', 'avg_row_has_no_line', 'avg_row_missing',
+                'page_shell_only_data_loaded_by_js', 'latest_odds_incomplete', 'odds_incomplete',
+                'no_odds'}:
+        return 'parsed_no_line'
+    if text in {'no_rows', 'no_odds_rows', 'page_avg_from_books'}:
+        return 'parsed_no_rows'
+    if text in {'company_row_missing'}:
+        return 'parsed_no_company'
+    return text
+
+
+def _attempt_chain(attempts: Any) -> str:
+    """把同一块盘口的每次尝试渲染成一条链，一次尝试只带自己的状态码与阶段。
+
+    历史缺陷：summary 的 `status` 取第一次尝试、`stage` 取最后一次尝试，
+    于是日志出现 `ou:fetch_failed/HTTP200`——HTTP 200 来自手机页，
+    fetch_failed 来自桌面页，两者根本不是同一次请求。用户据此无法判断
+    该等 CDN 缓存还是该改解析。
+    """
+    rows = [a for a in (attempts or []) if isinstance(a, dict)]
+    if not rows:
+        return ''
+    return ' → '.join(
+        '{ch} {status} {stage} {bytes}B{title}'.format(
+            ch=str(a.get('channel') or '?'),
+            status=('HTTP' + str(a.get('status'))) if a.get('status') else 'no-response',
+            stage=_stage_reason(a.get('stage'), a),
+            bytes=int(a.get('bytes') or 0),
+            title=(f" {str(a.get('title'))[:40]}" if a.get('title') else ''),
+        ).strip()
+        for a in rows
+    )
+
+
 def _jc31_side_channel(
     match_id: Any, proxies: Any = None, session: Any = None,
 ) -> dict[str, Any]:
@@ -1116,33 +1351,82 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
     return heat
 
 
-_AH_TEXT_TO_LINE = {
-    '平手': 0.0, '平/半': 0.25, '平手/半球': 0.25, '半球': 0.5, '半/一': 0.75, '半球/一球': 0.75,
-    '一球': 1.0, '一/球半': 1.25, '一球/球半': 1.25, '球半': 1.5, '球半/两球': 1.75,
-    '两球': 2.0, '两球/两球半': 2.25, '两球半': 2.5, '两球半/三球': 2.75, '三球': 3.0,
+_AH_NUMERALS = {
+    '一': 1, '二': 2, '两': 2, '兩': 2, '三': 3, '四': 4, '五': 5,
+    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
 }
+
+
+def _ah_term_value(term: str) -> float | None:
+    """把单个盘口词（不含 X/Y 与 受/让 前缀）换成球数。
+
+    构造规则（不是查表）：数字 + 球 + 半。`半` 结尾加 0.5，
+    `球半` 是「一球半」的省略，`半球`/`半` 是 0.5，`平`/`平手` 是 0。
+    例：半球=0.5 一球=1 球半=1.5 两球半=2.5 三球=3 三半=3.5 三球半=3.5。
+
+    这条规则是从原查表里既有的项反推出来的，每一项都自洽：
+    球半=1.5、两球半=2.5、球半/两球=1.75、两球/两球半=2.25、两球半/三球=2.75。
+    历史实现用 `key in body` 做模糊包含匹配，于是「三球半」先命中「球半」得到 1.5，
+    一个更长的盘口被更短的词静默截断——这类错误比缺映射更危险，因为它给出一个
+    看起来合法却错了一球半的数。
+    """
+    text = str(term or '').strip()
+    if not text:
+        return None
+    if text in {'平', '平手'}:
+        return 0.0
+    if not any(ch in text for ch in ('球', '半')) and not re.search(r'[一两兩二三四五六七八九十\d]', text):
+        return None
+    # `半` 出现在哪里都表示 .5（半球 / 半 / 球半 / 三半 / 三球半），
+    # 去掉「球」「半」后剩下的才是整数部分。顺序无关，因为中文两种写法
+    # 「半球」与「球半」语义不同（0.5 vs 1.5）：前者没有整数部分，后者整数是 1。
+    has_half = '半' in text
+    core = text.replace('半', '').replace('球', '')
+    if not core:
+        if text.startswith('球'):
+            # 「球半」= 一球半 = 1.5；光一个「球」按一球。
+            return 1.5 if has_half else 1.0
+        return 0.5 if has_half else 0.0
+    if core in _AH_NUMERALS:
+        base = _AH_NUMERALS[core]
+    else:
+        digits = re.fullmatch(r'(\d{1,2})', core)
+        if not digits:
+            return None
+        base = int(digits.group(1))
+    return float(base) + (0.5 if has_half else 0.0)
 
 
 def ah_text_to_line(text: Any) -> float | None:
     """把亚盘中文盘口（含「受」前缀）换成以主队为基准的有符号盘口。
 
     「受半/一」= 主队受让 0.75 → -0.75；「半/一」= 主队让 0.75 → +0.75。
+    `X/Y` 是两档之间的中间值：(X + Y) / 2，例如 三/三半 = (3.0+3.5)/2 = 3.25。
     认不出的写法返回 None，绝不用猜测值凑数。
     """
-    raw = str(text or '').strip()
+    raw = str(text or '').strip().replace(' ', '')
     if not raw:
         return None
-    receive = raw.startswith('受')
-    body = raw[1:] if receive else raw
-    line = _AH_TEXT_TO_LINE.get(body)
-    if line is None:
-        for key, value in _AH_TEXT_TO_LINE.items():
-            if key and key in body:
-                line = value
-                break
-    if line is None:
+    negative = raw.startswith('受')
+    body = raw[1:] if negative else raw
+    # 「让球」前缀与不写前缀同义（主队让球为正）。
+    body = re.sub(r'^让(球)?', '', body)
+    body = body.replace('讓', '让')
+    if not body:
         return None
-    return -line if receive else line
+    if '/' in body:
+        parts = [p for p in body.split('/') if p]
+        if len(parts) != 2:
+            return None
+        left, right = _ah_term_value(parts[0]), _ah_term_value(parts[1])
+        if left is None or right is None:
+            return None
+        line = (left + right) / 2.0
+    else:
+        line = _ah_term_value(body)
+        if line is None:
+            return None
+    return -line if negative else line
 
 
 def _first_avg_index_row(html: Any) -> dict[str, Any]:
@@ -1274,28 +1558,48 @@ def _mobile_ah_line(html: Any) -> dict[str, Any]:
         return out
     out['company_rows'] = len(per_row)
     pick = next((r for r in per_row if '平均' in r['name']), per_row[0])
+    # 公司众数是另一路独立意见，无论最终用哪一路都要记下来，供日志指出分歧。
+    # 本场真实分歧（okooo_mobile_ah.html）：平均指数 受一球(-1.0)，26 家里 14 家 受半/一(-0.75)。
+    # 裁决：**平均行优先**。它是站方自己对全部公司的汇总，与桌面波胆页
+    # `correct_score_page_avg` 的「平均值」是同一层级的概念；众数只是「最多公司怎么说」，
+    # 会把 14/26 当成全体。分歧本身不隐藏——写进 `line_disagreement`，
+    # 日志能直接看到两路各给了什么，下游也不会误以为全市场一致。
+    counted: dict[str, int] = {}
+    for row in per_row:
+        label = str(row['latest'].get('xin') or '')
+        if label:
+            counted[label] = counted.get(label, 0) + 1
+    mode_label = max(counted.items(), key=lambda kv: kv[1])[0] if counted else ''
+    out['mode_line_text'] = mode_label
+    out['mode_line'] = ah_text_to_line(mode_label) if mode_label else None
+    out['mode_hits'] = f'{counted.get(mode_label, 0)}/{len(per_row)}' if mode_label else ''
     if '平均' in pick['name']:
         out['line_source'] = 'avg_row'
     else:
         # 没有平均行：用最新盘口的众数，并标明来源，绝不写死一条盘口。
-        counted: dict[str, int] = {}
-        for row in per_row:
-            label = str(row['latest'].get('xin') or '')
-            if label:
-                counted[label] = counted.get(label, 0) + 1
         if counted:
-            best = max(counted.items(), key=lambda kv: kv[1])[0]
-            pick = next(r for r in per_row if str(r['latest'].get('xin')) == best)
-            out['line_source'] = f'mode({counted[best]}/{len(per_row)})'
+            pick = next(r for r in per_row if str(r['latest'].get('xin')) == mode_label)
+            out['line_source'] = f'mode({out["mode_hits"]})'
         else:
             out['stage'] = 'no_line_text'
             return out
-    out['line_text'] = str(pick['latest'].get('xin') or '')
-    out['start_text'] = str(pick['start'].get('chu') or '')
+    out['line_text'] = str(pick['latest'].get('xin') or '').strip()
+    out['start_text'] = str(pick['start'].get('chu') or '').strip()
     out['asian_handicap'] = ah_text_to_line(out['line_text'])
     out['start_line'] = ah_text_to_line(out['start_text'])
     out['home_water'] = _num_of(pick['latest'].get('xinzhu'))
     out['away_water'] = _num_of(pick['latest'].get('xinke'))
+    if (
+        out['line_source'] == 'avg_row'
+        and out['mode_line'] is not None
+        and out['asian_handicap'] is not None
+        and abs(float(out['mode_line']) - float(out['asian_handicap'])) > 1e-9
+    ):
+        out['line_disagreement'] = (
+            f"avg_row={out['asian_handicap']:g}({out['line_text']}) "
+            f"vs mode={out['mode_line']:g}({out['mode_line_text']},{out['mode_hits']})"
+            f"｜采用 avg_row"
+        )
     if out['asian_handicap'] is None:
         out['stage'] = f'unmapped_line_text:{out["line_text"][:12]}'
     return out
@@ -1562,6 +1866,11 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
                 'bytes': int(page.get('bytes') or 0),
                 'title': str(page.get('title') or ''),
                 'blocked': bool(page.get('blocked')),
+                # 这两个标志决定「该换出口等缓存」还是「该改解析」，必须逐次保留；
+                # 丢掉它们，summary 就只剩一个状态码，原因会退化成 http_error_405。
+                'origin_blocked': bool(page.get('origin_blocked')),
+                'transport_error': str(page.get('transport_error') or ''),
+                'cache_hit': bool(page.get('cache_hit')),
                 'error': str(page.get('error') or ''),
                 'stage': '',
             }
@@ -1607,18 +1916,29 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
             if pack['boards_hit'].get(board):
                 break
         if len(_attempts) == 1:
-            pack['source_report'][kind] = _attempts[0]
+            _only = dict(_attempts[0])
+            _only['reason'] = _stage_reason(_only.get('stage'), _only)
+            _only['chain'] = _attempt_chain(_attempts)
+            pack['source_report'][kind] = _only
         else:
             last = _attempts[-1] if _attempts else {}
+            # status/stage/bytes/title 全部取自**同一次**尝试（最后一次）。
+            # 历史缺陷：status 取第一次、stage 取最后一次，于是手机页 200 与
+            # 桌面页失败拼成 `ou:fetch_failed/HTTP200` 这种自相矛盾的记录。
+            # 每次尝试的完整明细留在 attempts 里，并渲染成可读的链。
             pack['source_report'][kind] = {
-                'url': _attempts[0]['url'] if _attempts else '',
-                'channel': _attempts[0]['channel'] if _attempts else '',
-                'status': _attempts[0]['status'] if _attempts else 0,
-                'bytes': _attempts[0]['bytes'] if _attempts else 0,
-                'title': _attempts[0]['title'] if _attempts else '',
+                'url': last.get('url', ''),
+                'channel': last.get('channel', ''),
+                'status': last.get('status', 0),
+                'bytes': last.get('bytes', 0),
+                'title': last.get('title', ''),
                 'blocked': any(a.get('blocked') for a in _attempts),
+                'origin_blocked': any(a.get('origin_blocked') for a in _attempts),
+                'cache_hit': bool(last.get('cache_hit')),
                 'error': last.get('error', ''),
                 'stage': last.get('stage', ''),
+                'reason': _stage_reason(last.get('stage'), last),
+                'chain': _attempt_chain(_attempts),
                 'attempts': _attempts,
             }
         if not pack['boards_hit'].get(board):
@@ -1679,11 +1999,51 @@ def scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session:
                     f"oddsData 未取到本场31项 stage={_jc.get('stage')} "
                     f"orderid={_jc.get('orderid') or '-'}"
                 )
+            # 同一份 oddsData 里另外四块：胜平负 / 竞彩让球(+让球数) / 总进球 / 半全场。
+            # 与比分块共用这一次已抓到的页面，不额外发请求，也不碰会被 WAF 拦的桌面端点。
+            _lb = parse_jczq_list_boards(_jc_fetch.get('html'), mid)
+            _jc_report['list_boards'] = {
+                name: {'stage': blk.get('stage'), 'reason': _stage_reason(blk.get('stage'))}
+                for name, blk in (_lb.get('blocks') or {}).items()
+            }
+            _jc_report['list_boards_hit'] = list(_lb.get('hit') or [])
+            pack['jc_list_boards'] = _lb
+            _filled_fields: set[str] = set()
+            for _name, _blk in (_lb.get('blocks') or {}).items():
+                _stage = str(_blk.get('stage') or '')
+                if _stage != 'ok':
+                    pack.setdefault('jc_list_board_gaps', {})[_name] = _stage
+                    continue
+                # 专用通道已经拿到这块时不覆盖：那条路是「竞**方」公司行，与本页同源同价，
+                # 覆盖只会让 source 字段在两次解析之间跳变。
+                if pack['boards_hit'].get(_name):
+                    continue
+                pack['boards_hit'][_name] = True
+                pack[f'{_name}_source'] = 'jczq_list_oddsData'
+                if _name == '胜平负':
+                    pack['odds_1x2'] = dict(_blk.get('odds_1x2') or {})
+                    pack['odds_1x2_company'] = '竞彩官方'
+                    pack['odds_1x2_channel'] = 'mobile'
+                    pack['odds_1x2_source'] = 'jczq_list_oddsData'
+                    _filled_fields.add('odds_1x2')
+                elif _name == '竞彩让球':
+                    pack['jc_handicap'] = _blk.get('line')
+                    pack['jc_handicap_source'] = 'jczq_list_oddsData'
+                    pack['jc_handicap_odds'] = dict(_blk.get('odds') or {})
+                elif _name == '总进球':
+                    pack['total_goals_odds'] = dict(_blk.get('odds') or {})
+                    pack['total_goals_source'] = '手机竞足→更多玩法→总进球'
+                elif _name == '半全场':
+                    pack['htft_odds'] = dict(_blk.get('odds') or {})
+                    pack['htft_source'] = '手机竞足→更多玩法→半全场'
+            if _filled_fields:
+                pack['missing'] = [m for m in (pack.get('missing') or []) if m not in _filled_fields]
         else:
             _jc_report['stage'] = 'fetch_failed'
             pack['jc_score_block_reason'] = (
                 f"HTTP {_jc_report['status'] or _jc_fetch.get('error')}"
             )
+        _jc_report['reason'] = _stage_reason(_jc_report.get('stage'), _jc_fetch)
         pack['source_report']['jczq_scores'] = _jc_report
     except Exception as _jc_err:  # noqa: BLE001 - 比分赔率抓取失败不影响三块水位
         pack['jc_score_block_reason'] = f'{type(_jc_err).__name__}: {_jc_err}'
@@ -2140,6 +2500,50 @@ _JCZQ_SCORE_CODES: tuple[tuple[str, str], ...] = (
 )
 _JCZQ_CODE_TO_SCORE = dict(_JCZQ_SCORE_CODES)
 JCZQ_SCORE_OPTIONS = tuple(score for _code, score in _JCZQ_SCORE_CODES)
+
+# 同一条 oddsData 记录里另外四个玩法块。此前只有 SportteryScore 被读过，
+# 另外四块在本仓库零命中——而它们正是胜平负/竞彩让球/总进球/半全场的真实来源，
+# 且与比分块同页同一次请求，不依赖任何会被 WAF 拦的桌面端点。
+#
+# 哪一块是哪个市场，三条独立证据（都来自 tests/fixtures/okooo_jczq_list_20261126.html）：
+#   1. 渲染行里 `betway="0"` 的 rangqiu 标签是 `rangqiu grayd` 且值 `0`（平手，即胜平负），
+#      那一块的三元组等于 NWDL 的 16/15/14；`betway="1"` 的标签是
+#      `rangqiu fontgreen ctrl_special data-type="rangfen" data-v="+1"`（让分），
+#      那一块的三元组等于 WDL 的 13/11/10。
+#   2. optionConfig：group '0' → mix 16/15/14 + ltype SportteryNWDL；
+#      group '1' → mix 13/11/10 + ltype SportteryWDL，且带 `special: true`（让分那一组）。
+#   3. Result 作 oracle：4 场直盘与让球盘赛果不同的比赛（4005/4007/4009/4011）里，
+#      Result.SportteryWDL 4/4 等于让球盘赛果，Result.SportteryNWDL 4/4 等于直盘赛果。
+# 价格相关性同样印证：Boundary 与 WDL 主胜赔率负相关（-0.70，让球线对冲了实力），
+# 与 NWDL 主胜赔率正相关（+0.82，直盘随实力走）。
+#
+# 所以：NWDL(16/15/14) = 胜平负；WDL(13/11/10) + Boundary = 竞彩让球。
+# 两块内部都是 10=客胜、13/16=主胜（与比分块「先主队」一致，但**块与块的顺序相反**）。
+_JCZQ_STRAIGHT_CODES: tuple[tuple[str, str], ...] = (('16', 'home'), ('15', 'draw'), ('14', 'away'))
+_JCZQ_HANDICAP_CODES: tuple[tuple[str, str], ...] = (('13', 'home'), ('11', 'draw'), ('10', 'away'))
+_JCZQ_TOTAL_GOALS_CODES: tuple[tuple[str, str], ...] = (
+    ('00', '0'), ('01', '1'), ('02', '2'), ('03', '3'),
+    ('04', '4'), ('05', '5'), ('06', '6'), ('07', '7+'),
+)
+# 半全场 20..28：optionConfig 的 cn 表给出「胜/胜, 胜/平, 胜/负, 平/胜, 平平, 平/负, 负/胜, 负/平, 负/负」，
+# 与 20..28 同序。价格结构独立复核（23 场 69 组）：20 组 20 恒最低 23/23、21 恒居中 23/23、22 恒最高 23/23；
+# 26 组 28 最低 22/23、27 居中 21/23、26 最高 20/23。23 组的 24 居中 19/23，
+# 23(平/胜) 与 25(平/负) 谁高谁低取决于双方实力，本就无价格序——这两个标签靠
+# optionConfig 的同序表与「先主队」约定确定，不靠价格极值。
+_JCZQ_HALF_FULL_CODES: tuple[tuple[str, str], ...] = (
+    ('20', '胜胜'), ('21', '胜平'), ('22', '胜负'),
+    ('23', '平胜'), ('24', '平平'), ('25', '平负'),
+    ('26', '负胜'), ('27', '负平'), ('28', '负负'),
+)
+
+# 本页能给出的六盘口项（中文板名 → 包内键名）。亚盘/大小球是博彩公司盘口线，
+# 不在竞彩赔率里，也不在这个页面上，不在此表内。
+_JCZQ_LIST_BOARDS: tuple[tuple[str, str], ...] = (
+    ('胜平负', 'odds_1x2'),
+    ('竞彩让球', 'jc_handicap'),
+    ('总进球', 'total_goals_odds'),
+    ('半全场', 'htft_odds'),
+)
 
 
 def _decode_js_object(text: str, marker: str = 'var oddsData') -> dict[str, Any] | None:

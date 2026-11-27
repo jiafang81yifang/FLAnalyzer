@@ -1379,15 +1379,29 @@ class DeepSeekAnalyzer:
         body = str(text or '')
         pay: dict[str, Any] = payload if isinstance(payload, dict) else {}
 
+        # 六盘口可能分散在三层：研判包顶层、pay['six_market_mobile']、board['six_market_mobile']。
+        # 历史实现是「第一个非空的 dict 赢」，于是包里只要非空就把顶层整块遮住——
+        # 而亚盘/大小球来自公司明细路径（写在记录上、再写回包），
+        # `build_cross_market_board` 又把它们放在顶层，两边不同步时
+        # 「包里 AH=None、顶层 AH=-0.75」会被判缺盘口，一份有效报告被拒。
+        # 现在按层叠加取并集：有值压过无值，一旦某层给了值就不会被后面的层改回缺失。
         board_src: dict[str, Any] = {}
         board = pay.get('cross_market_board')
-        if isinstance(board, dict) and isinstance(board.get('six_market_mobile'), dict):
-            board_src = board['six_market_mobile']
-        if not board_src and isinstance(pay.get('six_market_mobile'), dict):
-            board_src = pay['six_market_mobile']
-        if not board_src:
-            # 兜底：研判包顶层也可能直接放盘口标量。
-            board_src = pay
+        _layers: list[Any] = [pay]
+        _layers.append(pay.get('six_market_mobile'))
+        if isinstance(board, dict):
+            _layers.append(board)
+            _layers.append(board.get('six_market_mobile'))
+        for _layer in _layers:
+            if not isinstance(_layer, dict):
+                continue
+            for _k, _v in _layer.items():
+                if _k == 'six_market_mobile':
+                    continue
+                if _v in (None, '', {}, []):
+                    board_src.setdefault(_k, _v)
+                    continue
+                board_src[_k] = _v
         missing_boards = DeepSeekAnalyzer.six_market_gaps(board_src)
 
         section_status = {
@@ -1400,7 +1414,24 @@ class DeepSeekAnalyzer:
 
         reasons: list[str] = []
         if missing_boards:
-            reasons.append('缺六盘口(' + '/'.join(missing_boards) + ')')
+            # 分开写「结构性不可达」与「本次没解析出来」，因为处置完全不同：
+            # 亚盘/大小球是博彩公司盘口线，不在竞彩赔率页上，抓不到就是抓不到；
+            # 其余四项在 m.okooo.com/jczq/ 的 oddsData 里，解析失败说明有东西可修。
+            # 这个分类只改原因文案，不改拒发结论——门禁照旧不许放宽。
+            _structural = {'亚盘让球', '大小球'} & set(missing_boards)
+            _transient = [b for b in missing_boards if b not in _structural]
+            _bits = []
+            if _structural:
+                _bits.append(
+                    '结构性缺(' + '/'.join(sorted(_structural)) + ')'
+                    '=博彩公司盘口线，不在竞彩赔率源，需另找可达来源'
+                )
+            if _transient:
+                _bits.append(
+                    '本次未取到(' + '/'.join(_transient) + ')'
+                    '=竞彩 oddsData 里有，属解析/抓取问题，可修'
+                )
+            reasons.append('缺六盘口(' + '/'.join(missing_boards) + ')｜' + '；'.join(_bits))
         if missing_sections:
             reasons.append('缺DeepSeek外壳(' + '/'.join(missing_sections) + ')')
         reject = bool(reasons)
@@ -1512,6 +1543,17 @@ class DeepSeekAnalyzer:
                 'content': '',
                 'error': f'{type(exc).__name__}: {exc}',
                 'model': model or deepseek_config()['chat_model'],
+            }
+        if completion_failed(text):
+            # 调用失败或没有 API key（本地占位）：available 必须为假、
+            # error 必须带真实原因、content 必须为空。
+            # 绝不能让占位串或告警串变成研判正文。
+            return {
+                'available': False,
+                'content': '',
+                'error': completion_error() or 'empty_completion',
+                'model': model or deepseek_config()['chat_model'],
+                'provider': 'deepseek' if deepseek_config()['api_key'] else 'local',
             }
         body = str(text or '').strip()
         return {
@@ -1716,6 +1758,51 @@ def _env(name: str, default: str = '') -> str:
     return os.environ.get(name, default).strip()
 
 
+_LAST_COMPLETION_ERROR = ''
+# 最近一次调用是不是走了「没有 API key」的本地占位路径。
+# 与 `_LAST_COMPLETION_ERROR` 分开：本地占位不是传输失败，
+# 但它同样不是模型产出，下游据此决定 available。
+_LAST_COMPLETION_LOCAL = False
+
+
+def completion_failed(result: Any) -> bool:
+    """这次 deepseek_chat_completion 调用是否失败。
+
+    失败信号是「空结果」或「没有 API key 的本地占位」，不是「非空字符串」。
+    文本模式成功返回 str，失败返回 {}；json_mode 成功返回 dict/str，
+    失败返回 {'available': False, 'error': ...}。
+
+    没有 API key 时两种模式必须给出**同一个判断**：
+    json_mode 本来就说 available=False，文本模式以前拿一句像正文的
+    「本地确定性分析…」冒充成功，同一条件两种结论。现在文本模式也走
+    `_LAST_COMPLETION_LOCAL`，两边一致。
+    """
+    if isinstance(result, dict):
+        if result.get('available') is False:
+            return True
+        return not result
+    if isinstance(result, str):
+        if not result.strip():
+            return True
+        # 文本模式的本地占位：内容仍在（调用方要用就用），但这次不是模型产出。
+        return _LAST_COMPLETION_LOCAL
+    if result is None:
+        return True
+    return False
+
+
+def completion_is_local(result: Any = None) -> bool:
+    """这次结果是不是「没有 API key 的本地占位」，而不是模型真的写了正文。"""
+    if isinstance(result, dict):
+        return str(result.get('provider') or '') == 'local'
+    return bool(_LAST_COMPLETION_LOCAL)
+
+
+def completion_error() -> str:
+    """最近一次失败的原始原因（成功时为空串）。"""
+    return _LAST_COMPLETION_ERROR
+
+
 def deepseek_config() -> dict[str, Any]:
     return {
         'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),
@@ -1757,9 +1844,24 @@ def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bo
 
     Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import
     and tests never require paid credentials.
+
+    失败契约（与 json_mode 一致）：绝不把失败编码成一个「看起来像正文」的字符串。
+    文本模式失败返回 `{}`（空 dict，布尔为假），原因写在模块级
+    `_LAST_COMPLETION_ERROR` 里，调用方用 `completion_failed()` / 
+    `completion_error()` 读。历史实现返回 `'DeepSeek调用失败，已降级：...'`，
+    于是 `analyze_match_judgment` 把它当成非空正文，`available=True`、`error=''`，
+    一份 API 故障被当成研判成功，并原样发进报告。
     """
+    global _LAST_COMPLETION_ERROR, _LAST_COMPLETION_LOCAL
+    _LAST_COMPLETION_ERROR = ''
+    _LAST_COMPLETION_LOCAL = False
     cfg = deepseek_config()
     if not cfg['api_key']:
+        # 契约不变：没有 key 仍然返回确定性本地分析（测试与离线可用）。
+        # 但打上「这是本地占位」的标记，与 json_mode 的 available=False 对齐，
+        # 消费者据此不把它当研判正文。
+        _LAST_COMPLETION_LOCAL = True
+        _LAST_COMPLETION_ERROR = 'deepseek_api_key_missing'
         return _local_analysis(messages, json_mode=json_mode)
     import json
     import time
@@ -1777,13 +1879,16 @@ def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bo
     headers = {'Authorization': f"Bearer {cfg['api_key']}", 'Content-Type': 'application/json'}
     last_err: Exception | None = None
     request_timeout = float(timeout or cfg['timeout'] or 60)
+    # (connect, read)：read 超时按「两次 read 之间的静默」计，单给一个数会让
+    # 慢速涌流的响应长时间不返回却永不超时。这里把两端都钉住。
+    _timeout_arg: Any = (min(10.0, request_timeout), request_timeout)
     for attempt in range(max(1, int(max_retries or 1))):
         try:
             resp = requests.post(
                 url,
                 headers=headers,
                 json=payload,
-                timeout=request_timeout,
+                timeout=_timeout_arg,
                 stream=stream,
             )
             if resp.status_code == 429 and attempt < max_retries - 1:
@@ -1816,9 +1921,12 @@ def deepseek_chat_completion(messages: Any, model: str | None = None, stream: bo
             last_err = exc
             if attempt < max_retries - 1:
                 time.sleep(min(30, 2 ** attempt))
+    _LAST_COMPLETION_ERROR = str(last_err or 'unknown')[:300]
     if json_mode:
-        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}
-    return f'DeepSeek调用失败，已降级：{str(last_err or "unknown")[:160]}'
+        return {'available': False, 'provider': 'deepseek', 'error': _LAST_COMPLETION_ERROR[:200]}
+    # 文本模式：失败就回空 dict，让调用方靠 completion_failed() 判失败，
+    # 绝不返回一句「调用失败」的字符串冒充正文。
+    return {}
 
 
 def deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1827,7 +1935,16 @@ def deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:
 
 
 def run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:
-    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))
+    """赛后复盘正文。失败返回空串，绝不复述失败原因冒充复盘内容。
+
+    历史实现 `return str(deepseek_chat_completion(...))` 把
+    「DeepSeek调用失败，已降级：...」原样当复盘正文，复盘面板会显示成功。
+    需要区分失败与空内容时用 `completion_failed()` / `completion_error()`。
+    """
+    result = deepseek_chat_completion(assemble_prompt(facts=facts, task=task))
+    if completion_failed(result):
+        return ''
+    return str(result or '')
 
 
 def get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:
