@@ -371,6 +371,16 @@ class JcToMarketMap:
     book_size: int = MARKET_26_COUNT
     one_to_many_buckets: tuple[str, ...] = ()
     bucket_gaps: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
+    #: 盘面报了价、竞彩却落不进任何键的桶。它们的 Δ 由构造决定。
+    unreachable_buckets: tuple[str, ...] = ()
+    #: 口径与该盘面尺寸自相矛盾（桶在必报键里，口径却判它覆盖集为空）。
+    self_contradictory_buckets: tuple[str, ...] = ()
+    #: 逐桶无损（每桶覆盖集全等且无不可达桶）。
+    per_bucket_lossless: bool = True
+    #: 聚合无损（所有桶覆盖集之并 == 竞彩「其他」类覆盖集之并）。
+    aggregate_lossless: bool = True
+    aggregate_sizes: dict[str, int] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
 
 
 def _jc_side_bucket_coverage(
@@ -410,19 +420,44 @@ def _jc_side_bucket_coverage(
     return {bucket: tuple(sorted(scores, key=_score_sort_key)) for bucket, scores in out.items()}
 
 
+def jc_other_class_coverage() -> set[str]:
+    """竞彩「其他」类覆盖的比分全集：三个其他桶 + 6 个 5 球独立格。
+
+    这是聚合无损比对的对照组：市场所有桶的覆盖集之并，应当恰好等于它。
+    """
+    out: set[str] = set()
+    for key in JC_OTHER_KEYS:
+        out |= set(_jc_key_coverage(key))
+    out |= set(JC_FIVE_GOAL_CELLS)
+    return out
+
+
 def verify_lossless(
     policy: MarketBucketPolicy = DEFAULT_MARKET_POLICY,
     book: MarketBook = MARKET_BOOK_26,
     mapping: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """逐桶比对「竞彩侧覆盖集」与「市场桶覆盖集」，算出这条口径是否无损。
+    """算出这条口径在**两个层次**上是否无损，并找出不可达桶。
 
-    无损的判据是**集合全等**：某个市场桶在竞彩侧覆盖的比分集合，必须与
-    `market_bucket_coverage` 给它的覆盖集逐元素相同。只要有一个桶不等，
-    把竞彩分布聚合到该桶上就不再是无损聚合，Δ 里必然混着口径伪差。
+    层次一 · 逐桶无损（`per_bucket_lossless`）
+        每个 book 桶在竞彩侧的覆盖集（映射到它的竞彩键覆盖集之并）必须与
+        `market_bucket_coverage` 给它的覆盖集逐元素相同。只要有一个桶不等，
+        把竞彩分布聚合到该桶上就不再无损。
 
-    这不是从 policy 标志位推断的：`five_goals_in_team_other` 恰好无损、
-    `five_goals_in_any_other` 恰好不是，是覆盖集比对出来的结论，不是设定。
+    层次二 · 聚合无损（`aggregate_lossless`）
+        所有桶覆盖集之并，是否等于竞彩「其他」类覆盖集之并。这一层管的是
+        「总量对不对」，逐桶层管的是「每个桶对不对」——
+        26 项盘面下 `TEAM_OTHER` 与 `ANY_OTHER` 聚合层都无损（234==234），
+        但逐桶层只有前者（见 `unreachable_buckets` 与 `one_to_many_buckets`）。
+        只报一个布尔会让读者把「聚合无损」读成「逐桶无损」。
+
+    不可达桶（`unreachable_buckets`）
+        盘面**报了价**的桶，竞彩却一个键都落不进去。此时该桶的 Δ 恒等于
+        −market，是构造出来的，不是市场定错价。它必须被单独列出来，
+        并且在比较里给 `delta=None`，不许当成数字参与排序。
+        26 项盘面的 `任何其他` 在 `five_goals_in_team_other` 下就是这种桶：
+        盘面键表必然包含它（required key），口径却判定它覆盖集为空。
+        这不是让你改默认，而是这个组合本身自相矛盾，必须告警。
     """
     table = jc_to_market_map(policy, book) if mapping is None else mapping
     pairs = table.mapping if isinstance(table, JcToMarketMap) else dict(table)
@@ -431,9 +466,18 @@ def verify_lossless(
 
     gaps: dict[str, dict[str, tuple[str, ...]]] = {}
     one_to_many: list[str] = []
+    unreachable: list[str] = []
+    self_contradictory: list[str] = []
+
     for bucket in book.buckets:
         jc_side = set(jc_cov.get(bucket, ()))
         mk_side = set(market_cov.get(bucket, ()))
+        if not jc_side:
+            # 盘面报了价，竞彩却落不进任何键：Δ 由构造决定。
+            unreachable.append(bucket)
+            if not mk_side:
+                # 连市场自己的覆盖集都是空的 —— 这个口径与该盘面尺寸自相矛盾。
+                self_contradictory.append(bucket)
         if jc_side == mk_side:
             continue
         one_to_many.append(bucket)
@@ -446,13 +490,45 @@ def verify_lossless(
                 "+only_in_market" if only_mk else ""
             ) or "",
         }
+
+    market_union: set[str] = set()
+    for bucket in book.buckets:
+        market_union |= set(market_cov.get(bucket, ()))
+    jc_other_union = jc_other_class_coverage()
+    aggregate_lossless = market_union == jc_other_union
+
+    per_bucket_lossless = not one_to_many and not unreachable
+    warnings: list[str] = []
+    if unreachable:
+        warnings.append(
+            "结构性差异：盘面报了价但竞彩无法落键的桶 "
+            f"{unreachable} —— 这些桶的 Δ 恒等于 −市场值，是口径构造出来的，"
+            "不是定价错位，已给 delta=None 且不参与排序"
+        )
+    if self_contradictory:
+        warnings.append(
+            f"口径与盘面尺寸自相矛盾（{book.size} 项）：{self_contradictory} "
+            "在本书单里是必报键，当前口径却判定它覆盖集为空。"
+            "26 项盘面请改用 five_goals_in_any_other，或按逐桶口径只读可达桶"
+        )
+
     return {
-        "lossless": not one_to_many,
+        # 旧的单布尔保留，语义收紧为「逐桶 + 可达」都成立，避免老调用点误读。
+        "lossless": per_bucket_lossless,
+        "per_bucket_lossless": per_bucket_lossless,
+        "aggregate_lossless": aggregate_lossless,
+        "aggregate_sizes": {
+            "market_buckets_union": len(market_union),
+            "jc_other_union": len(jc_other_union),
+        },
         "one_to_many_buckets": tuple(one_to_many),
+        "unreachable_buckets": tuple(unreachable),
+        "self_contradictory_buckets": tuple(self_contradictory),
         "bucket_gaps": gaps,
         "policy": policy.as_dict(),
         "policy_label": policy.label(),
         "book_size": book.size,
+        "warnings": warnings,
     }
 
 
@@ -486,11 +562,17 @@ def jc_to_market_map(
     return JcToMarketMap(
         mapping=mapping,
         unresolved=unresolved,
-        lossless=verdict["lossless"],
+        lossless=verdict["per_bucket_lossless"],
         policy_label=policy.label(),
         book_size=book.size,
         one_to_many_buckets=verdict["one_to_many_buckets"],
         bucket_gaps=verdict["bucket_gaps"],
+        unreachable_buckets=verdict["unreachable_buckets"],
+        self_contradictory_buckets=verdict["self_contradictory_buckets"],
+        per_bucket_lossless=verdict["per_bucket_lossless"],
+        aggregate_lossless=verdict["aggregate_lossless"],
+        aggregate_sizes=verdict["aggregate_sizes"],
+        warnings=tuple(verdict["warnings"]),
     )
 
 
@@ -605,10 +687,16 @@ def project_jc31_onto_market(
         "probs": agg,
         "used": {k: tuple(sorted(v)) for k, v in used.items()},
         "skipped": tuple(skipped),
-        "lossless": mapping.lossless,
+        "lossless": mapping.per_bucket_lossless,
+        "per_bucket_lossless": mapping.per_bucket_lossless,
+        "aggregate_lossless": mapping.aggregate_lossless,
+        "aggregate_sizes": dict(mapping.aggregate_sizes),
         "unresolved": mapping.unresolved,
         "one_to_many_buckets": mapping.one_to_many_buckets,
+        "unreachable_buckets": mapping.unreachable_buckets,
+        "self_contradictory_buckets": mapping.self_contradictory_buckets,
         "bucket_gaps": mapping.bucket_gaps,
+        "warnings": mapping.warnings,
     }
 
 
@@ -1201,15 +1289,31 @@ def bucket_deltas(
 ) -> dict[str, Any]:
     """档 A：把竞彩分布聚合到市场桶上，逐桶做差。
 
-    这是唯一可以直接当「定价错位」读的差额——**仅当口径无损时**。
-    口径不可无损时，`caliber_self_check` 会把「同分布两边喂应得 0」的自检
-    数字一并交出来，读者据此知道 Δ 里有多少是纯口径伪差，而不是定价差。
+    差额分两类，绝不混在一起：
+
+    **定价差**（`rows`）—— 可达桶上的 Δ，只有在逐桶无损时才可以当定价错位读。
+    **结构性差异**（`structural_rows`）—— 盘面报了价、竞彩却落不进任何键的桶。
+    这类桶的 Δ 恒等于 −market，是口径构造出来的。它们 `delta=None`、
+    带 `reason`，不进 `rows`，也不参与任何排序。
     """
     projected = project_jc31_onto_market(jc_probs, policy=policy, book=book)
+    unreachable = set(projected.get("unreachable_buckets") or ())
     rows: list[dict[str, Any]] = []
+    structural_rows: list[dict[str, Any]] = []
     for key in book.keys:
         jc_value = projected["probs"].get(key, 0.0)
         mk_value = _finite_float(market_probs.get(key))
+        if key in unreachable:
+            # 竞彩一个键都落不进这个桶：Δ 由构造决定，不许当数字算、不许排序。
+            structural_rows.append({
+                "bucket": key,
+                "jc": jc_value,
+                "market": mk_value,
+                "delta": None,
+                "reason": "本口径下竞彩无法在该桶落任何概率，Δ 由构造决定",
+                "is_other": key in book.buckets,
+            })
+            continue
         rows.append({
             "bucket": key,
             "jc": jc_value,
@@ -1218,16 +1322,33 @@ def bucket_deltas(
             "is_other": key in book.buckets,
         })
     other_keys = set(book.buckets)
-    other_jc = sum(r["jc"] for r in rows if r["is_other"])
+    other_jc = sum(r["jc"] for r in rows if r["is_other"]) + sum(
+        r["jc"] for r in structural_rows if r["is_other"]
+    )
     other_mk_values = [r["market"] for r in rows if r["is_other"] and r["market"] is not None]
     other_mk = sum(other_mk_values) if len(other_mk_values) == len(book.buckets) else None
 
     self_check = caliber_self_check(policy=policy, book=book)
     warnings: list[str] = []
-    if not projected["lossless"]:
-        buckets = ", ".join(projected["unresolved"] and list(projected["unresolved"]) or [])
+    if structural_rows:
         warnings.append(
-            f"口径不可无损比较（横跨多个市场桶的竞彩键：{buckets or '见 one_to_many_buckets'}）。"
+            "结构性差异（不是定价差）："
+            f"{[r['bucket'] for r in structural_rows]} 这些桶盘面报了价，"
+            "但当前口径下竞彩无法落任何概率，Δ 恒等于 −市场值，已排除出排序"
+        )
+    if projected.get("self_contradictory_buckets"):
+        warnings.append(
+            f"口径与盘面尺寸自相矛盾（{book.size} 项）："
+            f"{list(projected['self_contradictory_buckets'])} 在本书单里是必报键，"
+            "当前口径却判定它覆盖集为空 —— 26 项盘面请改用 five_goals_in_any_other，"
+            "或只读可达桶"
+        )
+    # 只有「竞彩键横跨多个桶」才是口径伪差；不可达桶已在上面单列，
+    # 两者叠加时不再重复说一遍，也绝不在自检为 0 时声称存在伪差。
+    if projected["one_to_many_buckets"]:
+        buckets = ", ".join(projected["unresolved"] or []) or "见 one_to_many_buckets"
+        warnings.append(
+            f"逐桶不可无损比较（横跨多个市场桶的竞彩键：{buckets}）。"
             f"自检：同一份分布同时喂两边，Δ 应全为 0，实测 max|Δ|={self_check['max_abs_delta']:.5f}——"
             "这部分 Δ 是口径伪差，不是定价错位。"
         )
@@ -1236,12 +1357,19 @@ def bucket_deltas(
         "book_size": book.size,
         "policy": policy.as_dict(),
         "policy_label": policy.label(),
-        "lossless": projected["lossless"],
+        # 兼容旧字段：`lossless` 现在等于逐桶无损（更严格的那个）。
+        "lossless": projected["per_bucket_lossless"],
+        "per_bucket_lossless": projected["per_bucket_lossless"],
+        "aggregate_lossless": projected["aggregate_lossless"],
+        "aggregate_sizes": dict(projected.get("aggregate_sizes") or {}),
         "unresolved": list(projected["unresolved"]),
         "one_to_many_buckets": list(projected["one_to_many_buckets"]),
+        "unreachable_buckets": list(projected.get("unreachable_buckets") or ()),
+        "self_contradictory_buckets": list(projected.get("self_contradictory_buckets") or ()),
         "bucket_gaps": dict(projected["bucket_gaps"]),
         "caliber_self_check": self_check,
         "rows": rows,
+        "structural_rows": structural_rows,
         "other_jc": other_jc,
         "other_market": other_mk,
         "other_delta": None if other_mk is None else other_jc - other_mk,
@@ -1562,12 +1690,23 @@ def format_analysis_text(analysis: Mapping[str, Any], top_n: int = 10) -> str:
                 f"  ⚠️ {side}样本不完整（缺 {len(block.get('missing') or [])} 项），RTP 不可估"
             )
 
-    lines.append("【档 A｜无损可比：竞彩聚合到市场桶上做差】")
+    lines.append("【档 A｜竞彩聚合到市场桶上做差】")
     tier_a = analysis.get("tier_a") or {}
-    if not tier_a.get("lossless"):
+    per_bucket = tier_a.get("per_bucket_lossless")
+    aggregate = tier_a.get("aggregate_lossless")
+    sizes = tier_a.get("aggregate_sizes") or {}
+    # 两层必须分开说：只说「无损」会被读成逐桶无损。
+    lines.append(
+        f"  无损性：逐桶={'是' if per_bucket else '否'}"
+        f"（{'每个桶覆盖集全等' if per_bucket else '有桶不可达或覆盖集不等'}）"
+        f" · 聚合={'是' if aggregate else '否'}"
+        f"（市场桶并集 {num_text(sizes.get('market_buckets_union'), '.0f')}"
+        f" vs 竞彩其他类并集 {num_text(sizes.get('jc_other_union'), '.0f')}）"
+    )
+    if tier_a.get("one_to_many_buckets"):
         check = tier_a.get("caliber_self_check") or {}
         lines.append(
-            "  ⚠️ 本口径不可无损比较：Δ 含口径伪差，不可当定价错位读。"
+            "  ⚠️ 逐桶不可无损比较：Δ 含口径伪差，不可当定价错位读。"
             f"自检（同分布两边喂应得 0）：max|Δ|={num_text(check.get('max_abs_delta'), '.5f')}"
         )
         if tier_a.get("one_to_many_buckets"):
@@ -1579,11 +1718,21 @@ def format_analysis_text(analysis: Mapping[str, Any], top_n: int = 10) -> str:
                 f"     {bucket}: 竞彩多出 {len(gap.get('only_in_jc') or [])} 个比分"
                 f"{('（如 ' + ', '.join(only_jc) + '）') if only_jc else ''}"
             )
+
+    lines.append("  · 定价差（|Δ| 排序）")
     for row in (analysis.get("top_deltas") or [])[:top_n]:
         lines.append(
-            f"  {row['bucket']:<6} 竞彩{_pct(row['jc']):>8} "
+            f"    {row['bucket']:<6} 竞彩{_pct(row['jc']):>8} "
             f"市场{_pct(row['market']):>8} Δ{num_text((row['delta'] or 0) * 100, '+.2f')}pp"
         )
+    structural = tier_a.get("structural_rows") or []
+    if structural:
+        lines.append("  · 结构性差异（不参与排序，不是定价差）")
+        for row in structural:
+            lines.append(
+                f"    {row['bucket']:<6} 竞彩{_pct(row['jc']):>8} "
+                f"市场{_pct(row['market']):>8} Δ不适用 — {row.get('reason') or ''}"
+            )
     lines.append(
         f"  「其他」合计：竞彩{_pct(tier_a.get('other_jc'))} 市场{_pct(tier_a.get('other_market'))}"
         f" Δ{num_text((tier_a.get('other_delta') or 0) * 100, '+.2f')}pp"

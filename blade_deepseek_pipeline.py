@@ -221,12 +221,17 @@ def _same_caliber_buckets(pack: Any) -> dict[str, Any]:
         policy=_sb.DEFAULT_MARKET_POLICY, book=_sb.MARKET_BOOK_26,
     )
     comparable = [r for r in result['rows'] if r['market'] is not None]
+    structural = result.get('structural_rows') or []
     result.update({
         'available': bool(comparable),
         'comparable_buckets': sorted(r['bucket'] for r in comparable),
+        # 不可比现在有两个来源：市场没报价，以及结构性不可达（竞彩落不进）。
+        # 两者混在一个列表里会让读者以为「不可达」只是「缺数据」。
         'incomparable_buckets': sorted(
-            r['bucket'] for r in result['rows'] if r['market'] is None
+            {r['bucket'] for r in result['rows'] if r['market'] is None}
+            | {r['bucket'] for r in structural}
         ),
+        'structural_buckets': sorted(r['bucket'] for r in structural),
         'reason': '' if comparable else '市场侧没有任何一个桶有可比报价',
     })
     return result

@@ -431,14 +431,27 @@ def test_tier_a_five_goal_total_equals_the_six_cells() -> None:
 
 
 def test_tier_a_other_delta_is_sum_of_bucket_deltas() -> None:
-    """「其他」合计差 = 各桶差之和；且它不等于按竞彩三桶直接相减。"""
+    """「其他」合计差 = 各可达桶差之和；有不可达桶时合计**必须**不可比（None）。
+
+    竞彩 31 / 市场 26 的对照里，「任何其他」在默认口径下不可达，
+    它那份市场概率无法换算到竞彩侧，所以「其他」合计差没有可比值 ——
+    给 None 是诚实的，凑一个「只加可达桶」的数字反而会读成定价差。
+    """
     analysis = sb.analyze_residuals(load_fixture(JC_FIXTURE), load_fixture(MARKET26_FIXTURE))
     tier_a = analysis['tier_a']
     other_rows = [r for r in tier_a['rows'] if r['is_other'] and r['delta'] is not None]
     assert other_rows
-    assert tier_a['other_delta'] == pytest.approx(
-        sum(r['delta'] for r in other_rows), abs=1e-12,
-    )
+    if tier_a['structural_rows']:
+        # 有结构性桶：合计不可比，且每个结构性桶的 delta 都是 None。
+        assert tier_a['other_market'] is None
+        assert tier_a['other_delta'] is None
+        for row in tier_a['structural_rows']:
+            assert row['delta'] is None
+        assert any('结构性差异' in w for w in tier_a['warnings'])
+    else:
+        assert tier_a['other_delta'] == pytest.approx(
+            sum(r['delta'] for r in other_rows), abs=1e-12,
+        )
 
 
 def test_tier_a_is_lossless_only_under_default_policy() -> None:
@@ -447,11 +460,11 @@ def test_tier_a_is_lossless_only_under_default_policy() -> None:
     反证：把 `jc_to_market_map` 里的 `lossless=not policy.keep_43_34` 改成
     恒 True → 第一条断言变红。
     """
-    lossless = sb.jc_to_market_map(sb.DEFAULT_MARKET_POLICY, sb.MARKET_BOOK_26)
+    lossless = sb.jc_to_market_map(sb.DEFAULT_MARKET_POLICY, sb.MARKET_BOOK_25)
     lossy = sb.jc_to_market_map(sb.POLICY_KEEP_43_34, sb.MARKET_BOOK_26)
-    assert lossless.lossless is True
+    assert lossless.per_bucket_lossless is True
     assert lossless.unresolved == ()
-    assert lossy.lossless is False
+    assert lossy.per_bucket_lossless is False
     assert set(lossy.unresolved) == {'胜其他', '负其他'}
 
 
@@ -953,10 +966,20 @@ def test_lossless_is_computed_from_coverage_not_declared_from_policy() -> None:
     assert set(lossy.one_to_many_buckets) == {'主胜其他', '客胜其他', '任何其他'}
     assert set(lossy.unresolved) == {'胜其他', '负其他'}
 
-    good = sb.jc_to_market_map(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_26)
-    assert good.lossless is True
-    assert good.one_to_many_buckets == ()
-    assert good.bucket_gaps == {}
+    # 26 项盘面下 TEAM_OTHER 的「任何其他」不可达：盘面必报这个键，
+    # 口径却判定竞彩落不进任何概率 —— 逐桶不成立（聚合层仍成立，另测）。
+    good26 = sb.jc_to_market_map(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_26)
+    assert good26.per_bucket_lossless is False
+    assert good26.unreachable_buckets == ('任何其他',)
+    assert good26.one_to_many_buckets == ()
+    assert good26.bucket_gaps == {}
+
+    # 25 项盘面没有独立平局其他，平局其他落进任何其他，因此逐桶无损。
+    good25 = sb.jc_to_market_map(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_25)
+    assert good25.per_bucket_lossless is True
+    assert good25.unreachable_buckets == ()
+    assert good25.one_to_many_buckets == ()
+    assert good25.bucket_gaps == {}
 
 
 def test_lossless_verdict_agrees_with_the_same_distribution_self_check() -> None:
@@ -969,8 +992,7 @@ def test_lossless_verdict_agrees_with_the_same_distribution_self_check() -> None
     `POLICY_ANY_OTHER` 的 `assert check['max_abs_delta'] > 1e-6` 之前，
     `assert lossy.lossless is False` 先变红。
     """
-    good = sb.caliber_self_check(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_26)
-    assert good['lossless'] is True
+    good = sb.caliber_self_check(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_25)
     assert good['max_abs_delta'] < 1e-12, good['max_abs_delta']
 
     lossy = sb.caliber_self_check(sb.POLICY_ANY_OTHER, sb.MARKET_BOOK_26)
@@ -989,10 +1011,20 @@ def test_default_policy_is_the_lossless_one() -> None:
     """
     assert sb.DEFAULT_MARKET_POLICY.five_goals_in_team_other is True
     assert sb.DEFAULT_MARKET_POLICY.five_goals_in_any_other is False
-    for size in (25, 26):
-        book = sb.market_book(size)
-        assert sb.jc_to_market_map(sb.DEFAULT_MARKET_POLICY, book).lossless is True
-        assert sb.caliber_self_check(sb.DEFAULT_MARKET_POLICY, book)['clean'] is True
+
+    # 25 项盘面：逐桶与聚合都无损。
+    book25 = sb.market_book(25)
+    assert sb.jc_to_market_map(sb.DEFAULT_MARKET_POLICY, book25).per_bucket_lossless is True
+    assert sb.caliber_self_check(sb.DEFAULT_MARKET_POLICY, book25)['clean'] is True
+
+    # 26 项盘面：默认口径的「任何其他」不可达，所以逐桶不成立，聚合仍成立。
+    # 这是盘面尺寸决定的，不是默认口径选错 —— 见
+    # `test_book26_with_team_other_warns_its_any_other_is_empty`。
+    book26 = sb.market_book(26)
+    default26 = sb.jc_to_market_map(sb.DEFAULT_MARKET_POLICY, book26)
+    assert default26.per_bucket_lossless is False
+    assert default26.aggregate_lossless is True
+    assert default26.unreachable_buckets == ('任何其他',)
 
 
 def test_non_lossless_policy_warns_with_the_self_check_number() -> None:
@@ -1013,11 +1045,14 @@ def test_non_lossless_policy_warns_with_the_self_check_number() -> None:
 
 
 def test_lossless_policy_emits_no_caliber_warning() -> None:
+    """真正逐桶无损的组合（25 项 + TEAM_OTHER）不该有任何口径告警。"""
     jc = {k: 1.0 / 31.0 for k in sb.JC_31_KEYS}
-    market = {k: 1.0 / 26.0 for k in sb.MARKET_26_KEYS}
-    tier_a = sb.bucket_deltas(jc, market, policy=sb.POLICY_TEAM_OTHER, book=sb.MARKET_BOOK_26)
-    assert tier_a['lossless'] is True
+    market = {k: 1.0 / 25.0 for k in sb.MARKET_25_KEYS}
+    tier_a = sb.bucket_deltas(jc, market, policy=sb.POLICY_TEAM_OTHER, book=sb.MARKET_BOOK_25)
+    assert tier_a['per_bucket_lossless'] is True
+    assert tier_a['aggregate_lossless'] is True
     assert tier_a['warnings'] == []
+    assert tier_a['structural_rows'] == []
 
 
 def test_jc_key_spans_buckets_identifies_win_other() -> None:
@@ -1197,3 +1232,124 @@ def test_wrong_shaped_market_probs_is_refused_not_silently_zero() -> None:
     wrong = sb.dixon_coles_to_jc31(1.4, 1.1)          # {'probs': ..., 'lam_h': ...}
     with pytest.raises(ValueError, match='没有任何交集'):
         sb.expand_market_to_jc31(wrong, 1.4, 1.1)
+
+
+# --------------------------------------------------------------------------- #
+# 16. 缺陷 5 回归：不可达桶 + 逐桶/聚合两层无损
+# --------------------------------------------------------------------------- #
+def test_unreachable_quoted_bucket_is_not_reported_as_a_price_gap() -> None:
+    """26 项盘面 + TEAM_OTHER：`任何其他` 盘面必报、竞彩却落不进任何键。
+
+    此时它的 Δ 恒等于 −market，是构造出来的。修前它被当成定价差排在榜上
+    （用户实测：`任何其他 jc=0.00% market=2.35% Δ-2.35pp` 排第 3 行），
+    而且 `lossless=True`、零告警。
+
+    反证 1：把 `verify_lossless` 里的 `unreachable` 收集删掉 →
+      本测试 `assert verdict['unreachable_buckets'] == ('任何其他',)` 变红。
+    反证 2：把 `bucket_deltas` 里 `if key in unreachable:` 分支删掉
+      （恢复算数字）→ `assert '任何其他' not in gap_buckets` 变红。
+    """
+    mk = {k: 20.0 for k in sb.MARKET_26_KEYS}
+    mk['任何其他'] = 2.0
+    jc = {k: 20.0 for k in sb.JC_31_KEYS}
+
+    analysis = sb.analyze_residuals(jc, mk)
+    tier_a = analysis['tier_a']
+
+    # 1) 不可达桶被识别，逐桶无损为假，且带明确告警。
+    assert list(tier_a['unreachable_buckets']) == ['任何其他']
+    assert tier_a['per_bucket_lossless'] is False
+    assert any('结构性差异' in w for w in tier_a['warnings'])
+
+    # 2) 它不在定价差行里，而在结构性差异行里，delta 是 None。
+    gap_buckets = {r['bucket'] for r in tier_a['rows']}
+    assert '任何其他' not in gap_buckets
+    structural = {r['bucket']: r for r in tier_a['structural_rows']}
+    assert '任何其他' in structural
+    assert structural['任何其他']['delta'] is None
+    assert '构造' in structural['任何其他']['reason']
+
+    # 3) 排序里没有它 —— 不许用「Δ 最大」把构造值排到前面。
+    assert all(r['bucket'] != '任何其他' for r in analysis['top_deltas'])
+
+    # 4) 它的 Δ 若被算出来，会恰好等于 −market（这就是「构造」的定义）。
+    market_norm = sb.normalize_market_odds(mk, sb.MARKET_BOOK_26)
+    assert market_norm.probs['任何其他'] > 0.0
+
+
+def test_unreachable_bucket_delta_is_none_not_a_number() -> None:
+    """不可达桶的 delta 必须是 None，不许是 0 或 −market。
+
+    反证：把 `bucket_deltas` 里结构性分支改成 `jc_value - mk_value`
+    → `assert row['delta'] is None` 变红。
+    """
+    jc = {k: 1.0 / 31.0 for k in sb.JC_31_KEYS}
+    mk = {k: 1.0 / 26.0 for k in sb.MARKET_26_KEYS}
+    tier_a = sb.bucket_deltas(jc, mk, policy=sb.DEFAULT_MARKET_POLICY, book=sb.MARKET_BOOK_26)
+    assert tier_a['structural_rows'], '26 项 + 默认口径必有不可达桶'
+    for row in tier_a['structural_rows']:
+        assert row['delta'] is None
+        assert 'delta' in row and row['delta'] is None
+    # 定价差行里不许出现结构性桶
+    assert not ({r['bucket'] for r in tier_a['structural_rows']}
+                & {r['bucket'] for r in tier_a['rows']})
+
+
+def test_per_bucket_and_aggregate_losslessness_are_reported_separately() -> None:
+    """两个层次必须分别报，且实测数字对得上用户复验结果。
+
+    - book26 TEAM_OTHER：逐桶否（任何其他不可达）／聚合是 234==234
+    - book26 ANY_OTHER：逐桶否（胜其他横跨）／聚合是 234==234
+    - book26 KEEP：逐桶否／聚合否 232 vs 234
+    - book25 TEAM_OTHER：逐桶是／聚合是
+
+    反证：把 `verify_lossless` 的返回值合并成一个布尔（只留 `lossless`）
+    → 本测试读 `aggregate_lossless` 时 KeyError/断言红。
+    """
+    cases = [
+        (26, sb.POLICY_TEAM_OTHER, False, True, 234, 234),
+        (26, sb.POLICY_ANY_OTHER, False, True, 234, 234),
+        (26, sb.POLICY_KEEP_43_34, False, False, 232, 234),
+        (25, sb.POLICY_TEAM_OTHER, True, True, None, None),
+    ]
+    for size, policy, per, agg, m_union, jc_union in cases:
+        verdict = sb.verify_lossless(policy, sb.market_book(size))
+        assert verdict['per_bucket_lossless'] is per, (size, policy.label())
+        assert verdict['aggregate_lossless'] is agg, (size, policy.label())
+        if m_union is not None:
+            assert verdict['aggregate_sizes']['market_buckets_union'] == m_union
+            assert verdict['aggregate_sizes']['jc_other_union'] == jc_union
+
+
+def test_book26_with_team_other_warns_its_any_other_is_empty() -> None:
+    """26 项 + TEAM_OTHER 自相矛盾：盘面必报「任何其他」，口径判它覆盖集为空。
+
+    这不是让改默认，而是必须告警并指明出路。
+
+    反证：把 `verify_lossless` 里 `self_contradictory` 与那条告警删掉
+    → `assert verdict['self_contradictory_buckets']` / `'自相矛盾' in joined` 变红。
+    """
+    verdict = sb.verify_lossless(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_26)
+    assert verdict['self_contradictory_buckets'] == ('任何其他',)
+    joined = '\n'.join(verdict['warnings'])
+    assert '自相矛盾' in joined
+    assert 'five_goals_in_any_other' in joined or '只读可达桶' in joined
+
+    # 同一口径在 25 项盘面上没有这个矛盾（平局其他落进任何其他，覆盖集非空）。
+    verdict25 = sb.verify_lossless(sb.POLICY_TEAM_OTHER, sb.MARKET_BOOK_25)
+    assert verdict25['self_contradictory_buckets'] == ()
+    assert verdict25['unreachable_buckets'] == ()
+
+
+def test_default_policy_choice_depends_on_book_size() -> None:
+    """默认口径的可用性依赖盘面尺寸：26 项下逐桶无损不可得，25 项下可得。
+
+    反证：把 `book.has_draw_other()` 在桶覆盖里忽略掉（25 项也留平局其他）
+    → 本测试 25 项那段变红。
+    """
+    v26 = sb.verify_lossless(sb.DEFAULT_MARKET_POLICY, sb.MARKET_BOOK_26)
+    v25 = sb.verify_lossless(sb.DEFAULT_MARKET_POLICY, sb.MARKET_BOOK_25)
+    assert v26['per_bucket_lossless'] is False      # 任何其他不可达
+    assert v26['aggregate_lossless'] is True
+    assert v25['per_bucket_lossless'] is True
+    assert v25['aggregate_lossless'] is True

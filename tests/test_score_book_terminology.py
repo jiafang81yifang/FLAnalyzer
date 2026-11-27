@@ -98,13 +98,15 @@ def test_same_caliber_buckets_is_attached_and_uses_score_books_mapping() -> None
     for score in ('0:5', '1:5', '2:5'):
         assert sb.jc_to_market_key(score) == '客胜其他'
 
-    buckets = {r['bucket']: r for r in same['rows']}
-    # 31 表里市场没报「任何其他」这个键，所以它必然在不可比集合里，
-    # 而不是被当成 0 参与排序 —— 这正是「缺失不许当 0」的落地。
+    # 31 表里市场没报「任何其他」这个键（而且默认口径下它结构上不可达），
+    # 所以它必须出现在不可比集合里，而不是被当成 0 参与排序。
     assert '任何其他' in same['incomparable_buckets']
     assert '任何其他' not in same['comparable_buckets']
-    assert buckets['任何其他']['market'] is None
-    assert buckets['任何其他']['delta'] is None
+    # 结构性不可达单独点名，不与「市场没报价」混为一个概念。
+    assert '任何其他' in same['structural_buckets']
+    assert all(
+        r['bucket'] != '任何其他' for r in same['rows']
+    ), '不可达桶不许出现在定价差行里（它没有 Δ）'
 
 
 def test_same_caliber_comparable_buckets_have_real_deltas() -> None:
@@ -128,7 +130,9 @@ def test_same_caliber_five_goal_mass_goes_to_directional_buckets() -> None:
     也钉住默认口径是 `five_goals_in_team_other`（缺陷 1 的回归）。
     """
     same = bd.DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(_pack())['same_caliber']
-    assert same['lossless'] is True
+    # 26 项盘面 + TEAM_OTHER：逐桶不成立（任何其他不可达），聚合层成立。
+    assert same['per_bucket_lossless'] is False
+    assert same['aggregate_lossless'] is True
     home_other = next(r for r in same['rows'] if r['bucket'] == '主胜其他')
     away_other = next(r for r in same['rows'] if r['bucket'] == '客胜其他')
     per_cell = (100.0 / 31.0) / 100.0
@@ -136,9 +140,9 @@ def test_same_caliber_five_goal_mass_goes_to_directional_buckets() -> None:
     assert home_other['jc'] == pytest.approx(4 * per_cell, abs=1e-9)
     # 客胜其他 = 负其他 + 0:5 + 1:5 + 2:5（4 格）
     assert away_other['jc'] == pytest.approx(4 * per_cell, abs=1e-9)
-    # 任何其他在竞彩侧已无独立质量
-    any_other = next(r for r in same['rows'] if r['bucket'] == '任何其他')
-    assert any_other['jc'] == pytest.approx(0.0, abs=1e-12)
+    # 任何其他在竞彩侧无独立质量，且被归到结构性差异（不是定价差行）
+    assert '任何其他' in same['structural_buckets']
+    assert all(r['bucket'] != '任何其他' for r in same['rows'])
 
 
 def test_existing_per_row_numbers_are_unchanged() -> None:

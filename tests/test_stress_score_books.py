@@ -118,6 +118,10 @@ def test_stress_covers_the_four_defect_regressions() -> None:
         'alias_duplicate_rejected', 'out_of_universe_rejected',
         'rtp_impossible_rejected', 'lossless_verified_true',
         'lossless_verified_false',
+        # 缺陷 5：不可达桶与两层无损
+        'unreachable_bucket_detected', 'unreachable_bucket_delta_suppressed',
+        'aggregate_lossless_true', 'aggregate_lossless_false',
+        'book26_team_other_contradiction_warned',
     ):
         assert counters.get(name, 0) > 0, name
 

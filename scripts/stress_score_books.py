@@ -63,6 +63,12 @@ REQUIRED_COUNTERS: tuple[str, ...] = (
     'rtp_impossible_rejected',
     'lossless_verified_true',
     'lossless_verified_false',
+    # 缺陷 5 回归后新增的真实出口
+    'unreachable_bucket_detected',
+    'unreachable_bucket_delta_suppressed',
+    'aggregate_lossless_true',
+    'aggregate_lossless_false',
+    'book26_team_other_contradiction_warned',
 )
 
 #: 固定种子。报告里原样给出，任何两次同 seed 的运行必须逐字一致。
@@ -323,24 +329,71 @@ def _run_one_case(rng: random.Random, counters: Counter) -> list[str]:
     if policy.keep_43_34:
         counters['keep_43_34'] += 1
 
-    # ---- 判据 5b：lossless 必须是算出来的，且与自检数字一致（缺陷 1） ----
+    # ---- 判据 5b：lossless 必须是算出来的，两层分别报（缺陷 1 + 缺陷 5） ----
     verdict = sb.verify_lossless(policy, book)
-    if verdict['lossless']:
+    if verdict['per_bucket_lossless']:
         counters['lossless_verified_true'] += 1
     else:
         counters['lossless_verified_false'] += 1
+    if verdict['aggregate_lossless']:
+        counters['aggregate_lossless_true'] += 1
+    else:
+        counters['aggregate_lossless_false'] += 1
+
+    # 不可达桶：盘面报了价、竞彩落不进任何键。
+    if verdict['unreachable_buckets']:
+        counters['unreachable_bucket_detected'] += 1
+    # 它们必须在比较里被压成 delta=None 且不进行排序。
+    if jc_norm.probs:
+        tier = sb.bucket_deltas(jc_norm.probs, market_norm.probs, policy=policy, book=book)
+        structural = {r['bucket'] for r in tier['structural_rows']}
+        if structural == set(verdict['unreachable_buckets']):
+            counters['unreachable_bucket_delta_suppressed'] += 1
+        elif structural != set(verdict['unreachable_buckets']):
+            failures.append(
+                f'结构性行与不可达桶不一致：structural={sorted(structural)} '
+                f'unreachable={sorted(verdict["unreachable_buckets"])}'
+            )
+        for row in tier['structural_rows']:
+            if row['delta'] is not None:
+                failures.append(f'不可达桶 {row["bucket"]} 仍有数值 delta')
+        gap_buckets = {r['bucket'] for r in tier['rows']}
+        if gap_buckets & structural:
+            failures.append('不可达桶同时出现在定价差行里')
+        # 结构桶不得出现在按 |Δ| 排序的输出里
+        ranked = [r['bucket'] for r in tier['rows'] if r['delta'] is not None]
+        if set(ranked) & structural:
+            failures.append('不可达桶进了排序')
+
+    # 26 项 + TEAM_OTHER 自相矛盾必须告警。
+    contradiction = (
+        book.size == 26 and policy.five_goals_in_team_other
+        and not policy.five_goals_in_any_other
+    )
+    if contradiction:
+        if verdict['self_contradictory_buckets']:
+            counters['book26_team_other_contradiction_warned'] += 1
+        else:
+            failures.append('26 项 + TEAM_OTHER 未报「任何其他」为空桶的矛盾')
+        joined = '\n'.join(verdict['warnings'])
+        if '自相矛盾' not in joined:
+            failures.append('26 项 + TEAM_OTHER 的告警文案缺失')
+
     check = sb.caliber_self_check(policy, book)
-    if verdict['lossless'] != check['clean']:
+    truly_lossless = verdict['per_bucket_lossless'] and not verdict['unreachable_buckets']
+    # 真正逐桶无损时，自检必须为 0。
+    if truly_lossless and check['max_abs_delta'] >= 1e-12:
         failures.append(
-            f'lossless 判定与自检不一致：lossless={verdict["lossless"]} '
-            f'max|delta|={check["max_abs_delta"]}'
+            f'逐桶无损但同分布两边喂 max|delta|={check["max_abs_delta"]}'
         )
-    if verdict['lossless'] and check['max_abs_delta'] >= 1e-12:
-        failures.append(f'自称无损但同分布两边喂 max|delta|={check["max_abs_delta"]}')
-    if policy == sb.POLICY_TEAM_OTHER and not verdict['lossless']:
-        failures.append('five_goals_in_team_other 本应是无损口径')
-    if policy == sb.POLICY_ANY_OTHER and verdict['lossless']:
-        failures.append('five_goals_in_any_other 本不该被判为无损')
+    # 聚合无损是更弱的一层：它成立不代表逐桶成立，反之亦然，不互相推断。
+    if verdict['aggregate_lossless']:
+        sizes = verdict['aggregate_sizes']
+        if sizes['market_buckets_union'] != sizes['jc_other_union']:
+            failures.append(
+                f'声称聚合无损但并集不等：{sizes["market_buckets_union"]} '
+                f'vs {sizes["jc_other_union"]}'
+            )
 
     # ---- 判据 6：档 B（有模型时）守恒与 KL -------------------------------
     lam_h = rng.uniform(0.3, 3.5)
