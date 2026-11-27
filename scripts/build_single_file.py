@@ -26,6 +26,7 @@ MODULES = [
     'unified_odds_evaluator',
     'score_convergence_engine',
     'tg_goal_table',
+    'score_matrices',
 ]
 START = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
 END = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'

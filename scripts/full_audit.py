@@ -37,6 +37,7 @@ MODULES = [
     'unified_odds_evaluator',
     'score_convergence_engine',
     'tg_goal_table',
+    'score_matrices',
 ]
 
 APP = 'app_v84_hermes.py'
