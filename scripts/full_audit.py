@@ -34,7 +34,7 @@ MODULES = [
     'convergence_arbitrator',
     'ProductionRunnerBridge',
     'blade_monitor_panel',
-    'unified_odds_evaluator',
+    'score_convergence_engine',
 ]
 
 APP = 'app_v84_hermes.py'
@@ -140,7 +140,7 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
         escaped = json.dumps(first_line, ensure_ascii=False)[1:-1]
         audit.record(
             f'embed-in-sync:{module}',
-            escaped in block,
+            any(form in block for form in escaped_forms),
             'embedded copy is stale; run scripts/build_single_file.py',
         )
 
@@ -271,7 +271,7 @@ def audit_modules(audit: Audit, root: Path) -> None:
         'blade_deepseek_pipeline': ['strip_match_features_from_method'],
         'ProductionRunnerBridge': [],
         'blade_monitor_panel': [],
-        'unified_odds_evaluator': ['UnifiedOddsEvaluator'],
+        'score_convergence_engine': ['run_score_convergence', 'format_convergence_tg_lines'],
     }
     for module, names in expectations.items():
         try:

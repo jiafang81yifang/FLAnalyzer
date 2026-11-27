@@ -17,7 +17,7 @@ PYTHON_FILES = [
     'convergence_arbitrator.py',
     'ProductionRunnerBridge.py',
     'blade_monitor_panel.py',
-    'unified_odds_evaluator.py',
+    'score_convergence_engine.py',
     'scripts/audit_module_api.py',
     'scripts/build_single_file.py',
     'scripts/full_audit.py',

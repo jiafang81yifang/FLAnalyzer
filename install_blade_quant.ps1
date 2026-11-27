@@ -30,10 +30,10 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # 已并入 cursor/fix-live-log-gaps 的 0a7341d（#5/#6 血统），本 pin 指向该合并点
-# 057c455 = 统一赔率评估器 unified_odds_evaluator.py（含 CN/INTL 同场按名对齐、
-#           走水凯利修正说明、保本概率别名）+ 单文件内嵌同步
-# ce23836 = 说明 EV 为何不含走水项（push*0 精确为 0，只有凯利用 1/(1-push_prob)）
-$PinCommit = 'fd41b97339fea2ce01229d1f25508e3f2d8a9431'
+# 260c102 = 内置六步比分收敛引擎（score_convergence_engine，含31项完备树/宏观裁决/
+#           全方向预判）；Step4 读结构化市热/市短（ranking/counts 优先，文本仅兜底），
+#           生产形态下可正常锁定 2 个比分；TG 新增「六步收敛」段。已过全套审计
+$PinCommit = 'd6680cf2d301fec766609282f8c8e7d563db168d'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
