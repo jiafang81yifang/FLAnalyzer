@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "kind": "statistical_skills",
+  "note": "竞彩31项比分/盘口的可复算统计技能。trigger_conditions 里的数值阈值由 SkillMatchingEngine 直接比对本场特征；confidence_weight 是命中后的权重（0-1）。",
+  "skills": [
+    {
+      "id": "STAT-001",
+      "name": "31池理论概率头部集中",
+      "category": "比分结构",
+      "trigger_conditions": [
+        "理论概率>15%",
+        "样本充足"
+      ],
+      "analysis_method": "取31池理论概率最大值，判断是否存在单一比分主导。",
+      "decision_rule": "头部项理论概率>15%时，首选比分只在头部3项内选，不做分散。",
+      "confidence_weight": 0.62
+    },
+    {
+      "id": "STAT-002",
+      "name": "市场低估正偏差",
+      "category": "理论市场偏离",
+      "trigger_conditions": [
+        "理论概率与市场隐含概率偏离>=3%"
+      ],
+      "analysis_method": "逐项算 理论-市场 偏差，正偏差=市场低估。",
+      "decision_rule": "正偏差>=3%的项进入价值观察，但不单独改方向锁。",
+      "confidence_weight": 0.58
+    },
+    {
+      "id": "STAT-003",
+      "name": "市场高估负偏差",
+      "category": "理论市场偏离",
+      "trigger_conditions": [
+        "理论概率与市场隐含概率偏离>=5%"
+      ],
+      "analysis_method": "负偏差=市场把钱压在该比分上但理论不支持。",
+      "decision_rule": "负偏差>=5%的项降级为诱饵，不作首选。",
+      "confidence_weight": 0.6
+    },
+    {
+      "id": "STAT-004",
+      "name": "IBI 极端偏离",
+      "category": "庄家防备",
+      "trigger_conditions": [
+        "IBI偏离度>0.35"
+      ],
+      "analysis_method": "IBI 偏离 1.0 的绝对值，衡量庄家防备强度。",
+      "decision_rule": "IBI 偏离>0.35 的项标记为高防备，不追。",
+      "confidence_weight": 0.65
+    },
+    {
+      "id": "STAT-005",
+      "name": "IBI 低位集中",
+      "category": "庄家防备",
+      "trigger_conditions": [
+        "IBI<1.0"
+      ],
+      "analysis_method": "IBI 低于 1 表示庄家对该比分防备最弱。",
+      "decision_rule": "IBI 最低的 3 项作为冷门防范观察池。",
+      "confidence_weight": 0.5
+    },
+    {
+      "id": "STAT-006",
+      "name": "亚指深盘",
+      "category": "盘口结构",
+      "trigger_conditions": [
+        "让球>=1.0"
+      ],
+      "analysis_method": "读取亚指绝对值，判定是否深盘。",
+      "decision_rule": "深盘时不选受让方小胜比分，优先让球方净胜2球以上的比分。",
+      "confidence_weight": 0.55
+    },
+    {
+      "id": "STAT-007",
+      "name": "亚指平手盘",
+      "category": "盘口结构",
+      "trigger_conditions": [
+        "让球<=0.25"
+      ],
+      "analysis_method": "浅盘/平手盘时两队实力接近。",
+      "decision_rule": "平手盘把平局比分权重上调，首选不写大比分。",
+      "confidence_weight": 0.52
+    },
+    {
+      "id": "STAT-008",
+      "name": "大小球低位",
+      "category": "进球结构",
+      "trigger_conditions": [
+        "大小球<=2.25"
+      ],
+      "analysis_method": "读取大小球盘口线。",
+      "decision_rule": "盘口<=2.25 时排除总进球>=4 的比分。",
+      "confidence_weight": 0.56
+    },
+    {
+      "id": "STAT-009",
+      "name": "大小球高位",
+      "category": "进球结构",
+      "trigger_conditions": [
+        "大小球>=3.0"
+      ],
+      "analysis_method": "盘口>=3.0 表示市场预期多球。",
+      "decision_rule": "盘口>=3.0 时首选比分总进球不低于 3。",
+      "confidence_weight": 0.56
+    },
+    {
+      "id": "STAT-010",
+      "name": "必发主胜亏损",
+      "category": "资金面",
+      "trigger_conditions": [
+        "必发主胜亏损"
+      ],
+      "analysis_method": "必发盈亏主胜方向为负，表示庄家在主胜方向承担亏损。",
+      "decision_rule": "主胜亏损且金额显著时，主胜方向作为真实风险方向记录。",
+      "confidence_weight": 0.6
+    },
+    {
+      "id": "STAT-011",
+      "name": "必发客胜亏损",
+      "category": "资金面",
+      "trigger_conditions": [
+        "必发客队亏损"
+      ],
+      "analysis_method": "必发盈亏客胜方向为负。",
+      "decision_rule": "客胜亏损时，客胜方向进入方向锁候选。",
+      "confidence_weight": 0.6
+    },
+    {
+      "id": "STAT-012",
+      "name": "水位缺项不写待定",
+      "category": "数据完整性",
+      "trigger_conditions": [
+        "返还率"
+      ],
+      "analysis_method": "六盘口水位（亚指/大小球/胜平负）是否齐全。",
+      "decision_rule": "任一水位缺失时只记缺口，不写待定数字、不用其他源冒充。",
+      "confidence_weight": 0.7
+    },
+    {
+      "id": "STAT-013",
+      "name": "市短方向集中",
+      "category": "市均结构",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "analysis_method": "市均低于竞彩的项按胜平负聚合，看方向是否集中。",
+      "decision_rule": "方向集中度>60% 时该方向进入方向锁候选。",
+      "confidence_weight": 0.5
+    },
+    {
+      "id": "STAT-014",
+      "name": "相邻比分概率递减",
+      "category": "比分结构",
+      "trigger_conditions": [
+        "理论概率>5%"
+      ],
+      "analysis_method": "检查同方向相邻比分理论概率是否单调递减。",
+      "decision_rule": "出现非单调（远处比分概率高于近处）时标记异常，不改方向锁。",
+      "confidence_weight": 0.45
+    },
+    {
+      "id": "STAT-015",
+      "name": "λ 未形成时不出比分",
+      "category": "数据完整性",
+      "trigger_conditions": [
+        "样本充足"
+      ],
+      "analysis_method": "上游 λ 或概率矩阵是否形成。",
+      "decision_rule": "λ 未形成时不补默认进球期望，比分概率矩阵按空处理，出数据不足报告。",
+      "confidence_weight": 0.75
+    }
+  ]
+}

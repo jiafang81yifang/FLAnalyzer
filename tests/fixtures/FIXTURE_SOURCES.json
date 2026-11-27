@@ -1,0 +1,90 @@
+{
+  "_note": "Provenance for every captured page in this folder. Each entry records the exact URL, the HTTP status and the byte count observed when it was captured from the live site on 2026-11-25. Tests assert against these bytes; do not hand-edit a fixture.",
+  "okooo_formation_1347776.html": {
+    "url": "https://www.okooo.com/soccer/match/1347776/formation/",
+    "status": 200,
+    "bytes": 191730,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "test_formation_parser_* (lineup: 11/11 starters, substitutes, absences)"
+  },
+  "okooo_formation_1347778.html": {
+    "url": "https://www.okooo.com/soccer/match/1347778/formation/",
+    "status": 200,
+    "bytes": 199508,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "test_formation_parser_* (second match, 6 absences)"
+  },
+  "okooo_ah_change_1347776_pid84.html": {
+    "url": "https://m.okooo.com/match/change.php?mid=1347776&pid=84&Type=Handicap&c=1",
+    "status": 200,
+    "bytes": 15627,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "test_ah_change_timeline_* (澳**票 8 changes, 2.18/受半球/1.60 @ 赛前33小时9分)"
+  },
+  "okooo_mobile_ah.html": {
+    "url": "https://m.okooo.com/match/handicap.php?MatchID=1347776",
+    "status": 200,
+    "bytes": 95392,
+    "encoding": "gbk",
+    "captured": "2026-11-25",
+    "used_by": "test_mobile_ah_parser_*"
+  },
+  "okooo_mobile_ou.html": {
+    "url": "https://m.okooo.com/match/ah.php?type=daxiao&matchId=1347776",
+    "status": 200,
+    "bytes": 13148,
+    "encoding": "utf-8 (no charset tag)",
+    "captured": "2026-11-25",
+    "used_by": "test_mobile_ou_parser_*"
+  },
+  "okooo_mobile_1x2.html": {
+    "url": "https://m.okooo.com/match/odds.php?MatchID=1347776",
+    "status": 200,
+    "bytes": 90907,
+    "encoding": "gbk",
+    "captured": "2026-11-25",
+    "used_by": "test_mobile_1x2_parser_*"
+  },
+  "okooo_mobile_exchanges.html": {
+    "url": "https://m.okooo.com/match/exchanges.php?MatchID=1347776",
+    "status": 200,
+    "bytes": 15324,
+    "encoding": "gbk",
+    "captured": "2026-11-25",
+    "used_by": "test_mobile_exchange_pnl_*"
+  },
+  "okooo_six_market_pack_1347776.json": {
+    "url": "derived from the four mobile pages above via scrape_okooo_mobile_six_markets('1347776')",
+    "status": 200,
+    "bytes": null,
+    "captured": "2026-11-25",
+    "used_by": "test_apply_mobile_books_lines_* / test_seed_then_apply_*"
+  },
+  "okooo_jczq_oddsdata.html": {
+    "url": "https://m.okooo.com/jczq/",
+    "status": 200,
+    "bytes": 183625,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "test_jczq_oddsdata_* (orderid 4005 = match 1347780, 31/31 SportteryScore codes 30..60)"
+  },
+  "okooo_jczq_oddsdata_20slots.html": {
+    "url": "https://m.okooo.com/jczq/",
+    "status": 200,
+    "bytes": 184010,
+    "encoding": "utf-8",
+    "captured": "2026-11-25",
+    "used_by": "31-merge tests: 20 oddsData slots; 1347778 oid4003, 1347775 oid4004, 1347776 oid4002, 1347789 oid4010, each 31/31. oddsData at byte 155524."
+  },
+  "okooo_desktop_cs_1347776.html": {
+    "url": "https://www.okooo.com/soccer/match/1347776/cs/",
+    "status": 200,
+    "bytes": 213729,
+    "encoding": "gb18030",
+    "captured": "2026-11-25",
+    "used_by": "31-merge tests: 25 score columns (22 on-grid + 4-3/3-4/4-4 off-grid), gb18030"
+  }
+}

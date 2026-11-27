@@ -17,13 +17,13 @@ def _flanalyzer_install_embedded_runtime_modules():
     import types as _fl_embed_types
 
     _sources = {
-  "blade_deepseek_pipeline": "\"\"\"Lightweight DeepSeek analysis pipeline helpers for FLAnalyzer.\n\nThis module is intentionally dependency-light.  It provides deterministic\nformatting, payload-building and degraded-mode helpers used by app_v84_hermes.\nExternal DeepSeek calls remain in the main app where credentials/config live.\n\"\"\"\nfrom __future__ import annotations\n\nimport re\nfrom html import escape\nfrom typing import Any, ClassVar\n\nJCZQ_MACRO_BAIT_SCORES = {\"1-0\", \"0-1\", \"1-1\", \"2-1\", \"1-2\"}\n_RUNTIME: dict[str, Any] = {}\n\n\ndef bind_hermes_runtime(**kwargs: Any) -> None:\n    _RUNTIME.update(kwargs)\n\n\ndef strip_tg_color_marks(text: Any) -> str:\n    return str(text or '').replace('🟨', '').replace('🟥', '').replace('🟩', '')\n\n\ndef split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:\n    s = str(text or '')\n    limit = max(100, int(max_len or 3900))\n    return [s[i:i + limit] for i in range(0, len(s), limit)] or ['']\n\n\ndef compute_score_occ(scores: Any) -> dict[str, int]:\n    out: dict[str, int] = {}\n    for item in scores or []:\n        key = str(item[0] if isinstance(item, (list, tuple)) and item else item or '').replace(':', '-').strip()\n        if key:\n            out[key] = out.get(key, 0) + 1\n    return out\n\n\ndef _norm_score(score: Any) -> str:\n    return str(score or '').replace('：', '-').replace(':', '-').strip()\n\n\ndef _score_wdl(score: Any) -> str:\n    s = _norm_score(score)\n    if '胜' in s and '其它' in s:\n        return '胜'\n    if '负' in s and '其它' in s:\n        return '负'\n    if '平' in s and '其它' in s:\n        return '平'\n    m = re.match(r'^\\s*(\\d+)\\s*-\\s*(\\d+)\\s*$', s)\n    if not m:\n        return ''\n    h, a = int(m.group(1)), int(m.group(2))\n    return '胜' if h > a else ('平' if h == a else '负')\n\n\ndef audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]:\n    ctx = match_context if isinstance(match_context, dict) else {}\n    raw_payload = ctx.get('direction_lock_payload')\n    payload = raw_payload if isinstance(raw_payload, dict) else {}\n    ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0\n    try:\n        ratio_f = float(ratio or 0)\n    except (TypeError, ValueError):\n        ratio_f = 0.0\n    return {'available': ratio_f > 0, 'mean_gap_ratio': ratio_f, 'tier': 'high' if ratio_f >= 5 else ('mid' if ratio_f >= 1.35 else 'low')}\n\n\ndef check_rtm_collapse_guard(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'collapse': False, 'reason': 'deterministic_guard'}\n\n\ndef apply_game_surface_policy(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    data = dict(payload) if isinstance(payload, dict) else {}\n    data.setdefault('surface_policy_applied', True)\n    return data\n\n\ndef batch_ledger_integrity_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'ok': True, 'issues': []}\n\n\ndef build_v1631_clearing_view(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'rows': []}\n\n\ndef count_log_mismatches(*args: Any, **kwargs: Any) -> int:\n    return 0\n\n\ndef detect_sparse_game_signals(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'signals': []}\n\n\ndef per_match_review_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'gaps': []}\n\n\ndef review_direction_lock_recognition(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = source if isinstance(source, dict) else {}\n    return {'available': True, 'line': '方向锁复盘: 已按本地规则形成。', 'lock_side': info.get('lock_side')}\n\n\ndef settle_display_score_pair(first: Any, second: Any = None, *args: Any, **kwargs: Any) -> tuple[str, str]:\n    return _norm_score(first), _norm_score(second)\n\n\ndef split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'both_wrong': False}\n\n\ndef strip_match_features_from_method(text: Any, identity_names: Any = None) -> str:\n    cleaned = str(text or '')\n    names = identity_names if isinstance(identity_names, (list, tuple, set)) else []\n    for name in names:\n        token = str(name or '').strip()\n        if token:\n            cleaned = cleaned.replace(token, '')\n    return cleaned\n\n\ndef compare_short_abs_hot(info: Any) -> dict[str, Any]:\n    return {'available': False, 'line': '市短市热对照: 本地轻量模块未形成外部热度差。'}\n\n\nclass V1631StandardUnifiedEngine:\n    _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}\n    _TEMPLATE_FALLBACK = '未形成'\n\n\nclass DeepSeekAnalyzer:\n    \"\"\"Deterministic analyzer/formatter surface used by app_v84_hermes.\"\"\"\n\n    @staticmethod\n    def _classify_score_wdl(score: Any) -> str:\n        return _score_wdl(score)\n\n    @staticmethod\n    def _is_tg_match_title_line(line: Any) -> bool:\n        s = str(line or '')\n        return bool(s.startswith('📌') or ' vs ' in s or 'VS' in s)\n\n    @staticmethod\n    def _is_tg_section_suppressed(line: Any) -> bool:\n        return False\n\n    @staticmethod\n    def format_tg_match_header(match: Any, kickoff: Any = '', match_no: Any = '') -> str:\n        bits = ['📌']\n        if match_no:\n            bits.append(f'[{match_no}]')\n        bits.append(str(match or '未知比赛'))\n        if kickoff:\n            bits.append(str(kickoff))\n        return ' '.join(bits)\n\n    @staticmethod\n    def build_jc_cross_only_payload(data: Any, **kwargs: Any) -> dict[str, Any]:\n        payload = dict(data) if isinstance(data, dict) else {}\n        payload.update({k: v for k, v in kwargs.items() if v is not None})\n        rows = payload.get('jc_cross_rows') or payload.get('rows') or []\n        payload.setdefault('jc_cross_rows', rows if isinstance(rows, list) else [])\n        payload.setdefault('mkt_short_wdl_matrix', {'available': False, 'counts': {}})\n        payload.setdefault('allowed_scores', [])\n        payload.setdefault('judgment_universe', 'mkt_short_wdl_matrix')\n        return payload\n\n    @staticmethod\n    def attach_score_odds_cold_hedge(payload: dict[str, Any], arbitration: Any = None) -> dict[str, Any]:\n        payload['score_odds_cold_hedge'] = {'available': False, 'scores': [], 'writes_first_score': False, 'changes_direction': False}\n        return payload\n\n    @staticmethod\n    def build_cross_market_board(data: Any, first_score: Any = '', second_score: Any = '') -> dict[str, Any]:\n        d = data if isinstance(data, dict) else {}\n        return {\n            'available': True,\n            'first_score': _norm_score(first_score),\n            'second_score': _norm_score(second_score),\n            'asian_handicap': d.get('asian_handicap') or d.get('ah_line'),\n            'ou_line': d.get('ou_line'),\n            'jc_handicap': d.get('jc_handicap'),\n            'odds_1x2': d.get('odds_1x2') or {},\n        }\n\n    @staticmethod\n    def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:\n        m = matrix if isinstance(matrix, dict) else {}\n        return ['📊【市短胜平负矩阵】', f\"  状态: {'可用' if m.get('available') else '未形成'} {home} {away}\".rstrip()]\n\n    @staticmethod\n    def format_mkt_hot_wdl_matrix_tg_lines(payload: Any) -> list[str]:\n        return ['🔥【市热胜平负矩阵】', '  本地轻量模块按已落盘数据展示。']\n\n    @staticmethod\n    def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:\n        src = source if isinstance(source, dict) else {}\n        odds: dict[str, float] = {}\n        for key in ('correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg', 'odds_correct_score'):\n            val = src.get(key)\n            if isinstance(val, dict):\n                for score, odd in val.items():\n                    try:\n                        if isinstance(odd, dict):\n                            odd = odd.get('odds') or odd.get('avg') or odd.get('value')\n                        if odd is None:\n                            continue\n                        f = float(odd)\n                    except (TypeError, ValueError):\n                        continue\n                    if f > 1:\n                        odds[_norm_score(score)] = f\n        return odds\n\n    @staticmethod\n    def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:\n        clean = [r for r in (rows or []) if isinstance(r, dict)]\n        pos = [\n            r for r in clean\n            if float(r.get('market', r.get('mkt', 0)) or 0) > float(r.get('theory', r.get('prob', 0)) or 0)\n        ]\n        return {'available': bool(clean), 'rows': clean, 'pos_rows': pos, 'pos_count': len(pos), 'system_prejudge': {}}\n\n    @staticmethod\n    def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📈【31项理论×市场】', f\"  市场超理论项: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📉【市热超理论专表】', f\"  条数: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_matrix_learning_tg_lines(info: Any, score: Any) -> list[str]:\n        return ['📌【学习改进意见】', f'  完场比分 {score or \"未形成\"}，本地模块记录样本，不改首选/次选/方向锁。']\n\n    @staticmethod\n    def build_matrix_learning_report(info: Any, score: Any) -> dict[str, Any]:\n        return {'available': True, 'actual_score': _norm_score(score), 'changes_first_score': False, 'changes_direction': False}\n\n    @staticmethod\n    def learning_match_teams_line(info: Any) -> str:\n        d = info if isinstance(info, dict) else {}\n        return f\"开赛球队：{d.get('home_team') or ''} vs {d.get('away_team') or ''}\".strip()\n\n    @staticmethod\n    def build_system_ml_dual_matrix_pack(info: Any) -> dict[str, Any]:\n        return {\n            'top8_dominant': '未形成', 'top8_share_pct': {'胜': 0.0, '平': 0.0, '负': 0.0},\n            'top15_ou_dominant': '未形成', 'top15_ou_share_pct': {'少球': 0.0, '多球': 0.0},\n            'short_vs_hot': '未形成', 'abs_vs_short_hot': '未形成',\n        }\n\n    @staticmethod\n    def build_direction_lock_judgment_report(info: Any) -> dict[str, Any]:\n        return {'verdict': '', 'available': False}\n\n    @staticmethod\n    def classify_result_score_origin(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '比分出处: 本地轻量模块未形成外部出处。'}\n\n    @staticmethod\n    def explain_score_hot_short_reason(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '冷热理由: 本地轻量模块未形成。'}\n\n    @staticmethod\n    def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_direction_lock_score_close(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False}\n\n    @staticmethod\n    def build_batch_anti_homogen_pack(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': True, 'homogenized': False, 'items': []}\n\n    @staticmethod\n    def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        return dict(payload) if isinstance(payload, dict) else {}\n\n    @staticmethod\n    def ensure_judgment_standard_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:\n        return {'available': False, 'in_hot8': False}\n\n    @staticmethod\n    def extract_dual_scores_from_judgment_text(text: Any) -> tuple[str, str]:\n        scores = re.findall(r'\\d+\\s*[-:]\\s*\\d+', str(text or ''))\n        return (_norm_score(scores[0]) if scores else '', _norm_score(scores[1]) if len(scores) > 1 else '')\n\n    @staticmethod\n    def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_matrix_dual_prejudge_html(*args: Any, **kwargs: Any) -> str:\n        return ''\n\n    @staticmethod\n    def format_structural_model_tg(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_structural_review_lines(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def align_displayed_landings(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def apply_operator_direction(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def bold_tg_match_title_html(text: Any) -> str:\n        return f'<b>{escape(str(text or \"\"))}</b>'\n\n    @staticmethod\n    def collapse_repeated_judgment_blocks(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_locked_direction_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_prob_ou_wdl_red(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_selected_scores_deep_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def match_identity_fields(\n        info: Any,\n        kickoff: Any = '',\n        match_no: Any = '',\n        *args: Any,\n        **kwargs: Any,\n    ) -> dict[str, str]:\n        \"\"\"Parse 赛号 / 星期 / 开赛时间 / 对阵 from whatever the caller has.\n\n        Callers in app_v84_hermes pass either a dict record or a raw match name\n        plus `kickoff=` / `match_no=` keywords, so both shapes must work here.\n        \"\"\"\n        if isinstance(info, dict):\n            d = info\n        else:\n            d = {}\n        name = str(d.get('match') or d.get('cn_name') or ('' if d else (info or '')))\n        kickoff_text = str(kickoff or d.get('kickoff') or d.get('match_time') or d.get('time') or '')\n        number_text = str(match_no or d.get('no') or d.get('local_id') or d.get('match_no') or '')\n        code = ''\n        weekday = ''\n        found = re.search(r'周[一二三四五六日]\\s*\\d{1,3}', f'{number_text} {name}')\n        if found:\n            code = found.group(0).replace(' ', '')\n            weekday = code[:2]\n        if not number_text and code:\n            number_text = code\n        return {\n            'match': name,\n            'teams': name,\n            'time': kickoff_text,\n            'kickoff': kickoff_text,\n            'code': code or number_text,\n            'weekday': weekday,\n            'match_no': number_text,\n        }\n\n    @staticmethod\n    def pin_match_title_first(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def restrict_tg_text_to_direction_lock(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def sanitize_bot_output(text: Any) -> str:\n        return str(text or '').strip()\n\n    @staticmethod\n    def sanitize_six_market_tg_text(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:\n        return _norm_score(first), _norm_score(second)\n\n    @staticmethod\n    def strip_judgment_tg_suppressed_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def strip_tg_english(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def summarize_hot_top8_hit_rate(items: Any) -> dict[str, Any]:\n        rows = list(items or []) if not isinstance(items, dict) else list(items.values())\n        total = len(rows)\n        hits = sum(1 for r in rows if isinstance(r, dict) and r.get('in_hot8'))\n        return {'total': total, 'hits': hits, 'hit_rate': (hits / total if total else 0.0)}\n\n\n\n# ---- Real DeepSeek/OpenAI-compatible client helpers ----\ndef _env(name: str, default: str = '') -> str:\n    import os\n    return os.environ.get(name, default).strip()\n\n\ndef deepseek_config() -> dict[str, Any]:\n    return {\n        'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),\n        'base_url': (_env('DEEPSEEK_BASE_URL') or _env('OPENAI_BASE_URL') or 'https://api.deepseek.com').rstrip('/'),\n        'chat_model': _env('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),\n        'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),\n        'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),\n    }\n\n\ndef assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:\n    \"\"\"Build OpenAI-compatible messages for review/learning style calls.\"\"\"\n    messages: list[dict[str, str]] = []\n    sys_text = str(system or '你是足球量化分析助手，输出必须简洁、可审计、不得编造外部数据。')\n    messages.append({'role': 'system', 'content': sys_text})\n    body_parts = []\n    if task:\n        body_parts.append(f'任务: {task}')\n    if facts is not None:\n        import json\n        body_parts.append('事实数据:\\n' + json.dumps(facts, ensure_ascii=False, default=str))\n    if user:\n        body_parts.append(str(user))\n    messages.append({'role': 'user', 'content': '\\n\\n'.join(body_parts) or '请基于已有事实给出本地分析。'})\n    return messages\n\n\ndef _local_analysis(messages: Any, json_mode: bool = False) -> Any:\n    joined = '\\n'.join(str(m.get('content', '')) for m in (messages or []) if isinstance(m, dict))\n    if json_mode:\n        return {'available': False, 'provider': 'local', 'summary': '未配置 DEEPSEEK_API_KEY，已使用本地确定性分析。', 'input_chars': len(joined)}\n    return f'本地确定性分析：未配置 DEEPSEEK_API_KEY，已基于现有事实生成降级摘要（输入{len(joined)}字）。'\n\n\ndef deepseek_chat_completion(messages: Any, model: str | None = None, stream: bool = False,\n                             json_mode: bool = False, max_retries: int = 3,\n                             temperature: float = 0.2, timeout: float | None = None) -> Any:\n    \"\"\"Call DeepSeek/OpenAI-compatible chat completions when a key is configured.\n\n    Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import\n    and tests never require paid credentials.\n    \"\"\"\n    cfg = deepseek_config()\n    if not cfg['api_key']:\n        return _local_analysis(messages, json_mode=json_mode)\n    import json\n    import time\n\n    import requests\n    url = f\"{cfg['base_url']}/v1/chat/completions\"\n    payload: dict[str, Any] = {\n        'model': model or cfg['chat_model'],\n        'messages': list(messages or []),\n        'temperature': temperature,\n        'stream': bool(stream),\n    }\n    if json_mode:\n        payload['response_format'] = {'type': 'json_object'}\n    headers = {'Authorization': f\"Bearer {cfg['api_key']}\", 'Content-Type': 'application/json'}\n    last_err: Exception | None = None\n    request_timeout = float(timeout or cfg['timeout'] or 60)\n    for attempt in range(max(1, int(max_retries or 1))):\n        try:\n            resp = requests.post(\n                url,\n                headers=headers,\n                json=payload,\n                timeout=request_timeout,\n                stream=stream,\n            )\n            if resp.status_code == 429 and attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt)); continue\n            resp.raise_for_status()\n            if stream:\n                chunks=[]\n                for raw in resp.iter_lines(decode_unicode=True):\n                    if not raw or not str(raw).startswith('data:'):\n                        continue\n                    data=str(raw)[5:].strip()\n                    if data == '[DONE]':\n                        break\n                    try:\n                        obj=json.loads(data)\n                        chunks.append(obj.get('choices', [{}])[0].get('delta', {}).get('content', ''))\n                    except json.JSONDecodeError:\n                        continue\n                text=''.join(chunks)\n            else:\n                obj=resp.json()\n                text=obj.get('choices', [{}])[0].get('message', {}).get('content', '')\n            if json_mode:\n                try:\n                    return json.loads(text)\n                except json.JSONDecodeError:\n                    return {'available': True, 'provider': 'deepseek', 'raw': text}\n            return text\n        except Exception as exc:  # noqa: BLE001 - network/API retry wrapper\n            last_err = exc\n            if attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt))\n    if json_mode:\n        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}\n    return f'DeepSeek调用失败，已降级：{str(last_err or \"unknown\")[:160]}'\n\n\ndef deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:\n    result = deepseek_chat_completion(messages, json_mode=True, **kwargs)\n    return result if isinstance(result, dict) else {'available': False, 'raw': str(result)}\n\n\ndef run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:\n    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))\n\n\ndef get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:\n    return DeepSeekAnalyzer()\n",
-  "blade_ml_engine": "\"\"\"Local deterministic ML helpers for FLAnalyzer.\n\nThe real app can use sklearn when present, but this module is importable without\noptional ML dependencies and provides stable Poisson-based fallbacks.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport math\nimport os\n\n# Trusted local model-cache compatibility; load paths are constrained before use.\nimport pickle  # nosec B403\nfrom pathlib import Path\nfrom typing import Any\n\ntry:\n    import sklearn  # type: ignore  # noqa: F401\n\n    SKLEARN_OK = True\nexcept ImportError:\n    SKLEARN_OK = False\n\nML_SKLEARN_OK = SKLEARN_OK\n\n\ndef ml_predict_enabled() -> bool:\n    return True\n\n\ndef _safe_float(value: Any, default: float = 0.0) -> float:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef calc_bivariate_poisson_matrix(\n    lam_h: Any,\n    lam_a: Any,\n    lambda_shared: Any = 0.0,\n    max_goals: int = 10,\n) -> dict[str, float]:\n    lh = max(0.01, _safe_float(lam_h, 1.2))\n    la = max(0.01, _safe_float(lam_a, 0.9))\n    limit = max(1, int(max_goals or 10))\n    out: dict[str, float] = {}\n    total = 0.0\n    for h in range(limit + 1):\n        ph = math.exp(-lh) * (lh**h) / math.factorial(h)\n        for a in range(limit + 1):\n            pa = math.exp(-la) * (la**a) / math.factorial(a)\n            p = ph * pa\n            out[f'{h}-{a}'] = p\n            total += p\n    if total > 0:\n        out = {k: v / total for k, v in out.items()}\n    return out\n\n\n# ---- Persistent training bundle ----\ndef _models_dir() -> str:\n    return os.environ.get('MODELS_DIR') or os.environ.get('FLANALYZER_MODELS_DIR') or 'models'\n\n\ndef _models_root() -> Path:\n    return Path(_models_dir()).expanduser().resolve()\n\n\ndef _bundle_path() -> str:\n    return str(_models_root() / 'blade_ml_bundle.pkl')\n\n\ndef _constrained_bundle_path() -> Path:\n    root = _models_root()\n    path = Path(_bundle_path()).expanduser().resolve()\n    if root not in path.parents and path != root:\n        raise ValueError(f'model bundle path escapes MODELS_DIR: {path}')\n    return path\n\n\ndef _extract_training_rows(history: Any) -> list[dict[str, Any]]:\n    rows = []\n    source = history.values() if isinstance(history, dict) else (history or [])\n    for rec in source:\n        if not isinstance(rec, dict):\n            continue\n        score = str(rec.get('actual_score') or '').replace(' (进行中)', '').replace(':', '-')\n        if '-' not in score:\n            continue\n        left, right = [part.strip() for part in score.split('-', 1)]\n        if not (left.isdigit() and right.isdigit()):\n            continue\n        h, a = int(left), int(right)\n        rows.append({\n            'lam_h': _safe_float(rec.get('lam_h') or rec.get('lambda_home'), 1.2),\n            'lam_a': _safe_float(rec.get('lam_a') or rec.get('lambda_away'), 0.9),\n            'ou_line': _safe_float(rec.get('ou_line'), 2.5),\n            'ah_line': _safe_float(rec.get('asian_handicap') or rec.get('ah_line'), 0.0),\n            'home_goals': h,\n            'away_goals': a,\n        })\n    return rows\n\n\ndef train_from_history(history: Any, save: bool = True) -> dict[str, Any]:\n    rows = _extract_training_rows(history)\n    bundle = {\n        'trained': False,\n        'rows': len(rows),\n        'sklearn_ok': SKLEARN_OK,\n        'model_type': 'poisson_mean',\n        'created_from': 'history',\n    }\n    if not rows:\n        bundle.update({'home_mean': 1.2, 'away_mean': 0.9, 'reason': 'no_completed_scores'})\n    else:\n        bundle['home_mean'] = sum(r['home_goals'] for r in rows) / len(rows)\n        bundle['away_mean'] = sum(r['away_goals'] for r in rows) / len(rows)\n        bundle['trained'] = True\n        if SKLEARN_OK and len(rows) >= 5:\n            try:\n                from sklearn.ensemble import GradientBoostingRegressor  # type: ignore\n\n                x_rows = [[r['lam_h'], r['lam_a'], r['ou_line'], r['ah_line']] for r in rows]\n                yh = [r['home_goals'] for r in rows]\n                ya = [r['away_goals'] for r in rows]\n                mh = GradientBoostingRegressor(random_state=42).fit(x_rows, yh)\n                ma = GradientBoostingRegressor(random_state=43).fit(x_rows, ya)\n                bundle.update({'model_type': 'gradient_boosting', 'home_model': mh, 'away_model': ma})\n            except (ImportError, AttributeError, TypeError, ValueError) as exc:\n                bundle['train_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    if save:\n        save_bundle(bundle)\n    return bundle\n\n\ndef save_bundle(bundle: dict[str, Any]) -> bool:\n    path = _constrained_bundle_path()\n    path.parent.mkdir(parents=True, exist_ok=True)\n    with path.open('wb') as fh:\n        pickle.dump(bundle, fh)\n    return True\n\n\ndef load_bundle() -> dict[str, Any] | None:\n    path = _constrained_bundle_path()\n    if not path.exists():\n        return None\n    # Trusted local model cache constrained to MODELS_DIR.\n    with path.open('rb') as fh:\n        bundle = pickle.load(fh)  # nosec B301\n    return bundle if isinstance(bundle, dict) else None\n\n\ndef _predict_lambdas_from_bundle(bundle: dict[str, Any], info: dict[str, Any]) -> tuple[float, float]:\n    base = [\n        _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2)),\n        _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)),\n        _safe_float(info.get('ou_line'), 2.5),\n        _safe_float(info.get('asian_handicap') or info.get('ah_line'), 0.0),\n    ]\n    if bundle.get('model_type') == 'gradient_boosting' and bundle.get('home_model') and bundle.get('away_model'):\n        try:\n            return (\n                max(0.05, float(bundle['home_model'].predict([base])[0])),\n                max(0.05, float(bundle['away_model'].predict([base])[0])),\n            )\n        except (AttributeError, TypeError, ValueError) as exc:\n            bundle['predict_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    return (\n        max(0.05, _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2))),\n        max(0.05, _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9))),\n    )\n\n\ndef ensure_ml_bundle(force_train: bool = False) -> dict[str, Any]:\n    bundle = None if force_train else load_bundle()\n    if bundle is None:\n        return {\n            'enabled': True,\n            'reason': 'no_trained_bundle',\n            'poisson': None,\n            'sample_count': 0,\n            'sklearn_ok': SKLEARN_OK,\n            'bundle_path': _bundle_path(),\n        }\n    return {\n        'enabled': True,\n        'reason': 'trained_bundle_loaded',\n        'poisson': bundle,\n        'sample_count': int(bundle.get('rows') or 0),\n        'sklearn_ok': SKLEARN_OK,\n        'bundle_path': _bundle_path(),\n    }\n\n\ndef predict_match_ml(match_info: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = match_info if isinstance(match_info, dict) else {}\n    bundle = load_bundle()\n    if bundle:\n        lam_h, lam_a = _predict_lambdas_from_bundle(bundle, info)\n    else:\n        lam_h = _safe_float(info.get('lam_h') or info.get('lambda_home'), 1.2)\n        lam_a = _safe_float(info.get('lam_a') or info.get('lambda_away'), 0.9)\n    matrix = calc_bivariate_poisson_matrix(lam_h, lam_a, max_goals=7)\n    preferred = max(matrix, key=lambda score: matrix[score]) if matrix else ''\n    sorted_scores = sorted(matrix.items(), key=lambda kv: kv[1], reverse=True)[:8]\n    return {\n        'enabled': True,\n        'used': True,\n        'reason': 'trained_bundle' if bundle else 'local_poisson_fallback',\n        'preferred_score': preferred,\n        'top_scores': sorted_scores,\n        'poisson_lambda': {'home': lam_h, 'away': lam_a},\n        'expected_total_goals': round(lam_h + lam_a, 4),\n    }\n\n\ndef learn_match_after_result(info: Any) -> dict[str, Any]:\n    return {\n        'ok': True,\n        'sample_count': 1 if isinstance(info, dict) else 0,\n        'feature_count': 0,\n        'actual_score': (info or {}).get('actual_score') if isinstance(info, dict) else None,\n    }\n\n\ndef train_daily_poisson(force: bool = True) -> tuple[bool, str, int, int]:\n    hist_path = os.environ.get('HISTORY_FILE', 'match_history.json')\n    history = {}\n    if os.path.exists(hist_path):\n        try:\n            with open(hist_path, encoding='utf-8') as fh:\n                history = json.load(fh)\n        except (OSError, json.JSONDecodeError) as exc:\n            print(f\"   ⚠️ [ML引擎] 历史样本读取失败，使用空样本: {type(exc).__name__}\")\n            history = {}\n    bundle = train_from_history(history, save=True)\n    return bool(bundle.get('trained')), str(bundle.get('model_type') or 'poisson_mean'), int(bundle.get('rows') or 0), 4\n\n\ndef deepseek_flash_ml_brief(*args: Any, **kwargs: Any) -> str:\n    return 'deepseek-flash ML 摘要需用户配置 DeepSeek 服务；本地泊松兜底已可用。'\n",
-  "okooo_mobile_cs": "\"\"\"Mobile Okooo correct-score/market helpers.\n\nThe functions here are real deterministic parsers/normalizers. Network scraping\nreturns structured unavailable payloads when caller has not provided a session or\nreachable service data, so app_v84_hermes can run without optional private code.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport os\nimport re\nimport time\nfrom pathlib import Path\nfrom typing import Any\n\nimport requests\n\n_STORE = Path('reports/six_market_contradictions.json')\n\n\n# ---- HTTP/cache helpers ----\ndef _cache_dir() -> Path:\n    d = Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))\n    d.mkdir(parents=True, exist_ok=True)\n    return d\n\n\ndef _safe_id(value: Any) -> str:\n    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or 'unknown'))\n\n\ndef _cache_path(kind: str, match_id: Any) -> Path:\n    return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'\n\n\ndef _proxy_dict(proxies: Any = None) -> dict[str, str] | None:\n    if isinstance(proxies, dict):\n        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}\n    proxy = str(\n        proxies\n        or os.environ.get('OKOOO_PROXY')\n        or os.environ.get('HTTPS_PROXY')\n        or os.environ.get('HTTP_PROXY')\n        or ''\n    ).strip()\n    return {'http': proxy, 'https': proxy} if proxy else None\n\n\ndef _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:\n    headers = {\n        'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Mobile Safari/537.36',\n        'Accept-Language': 'zh-CN,zh;q=0.9',\n    }\n    last = ''\n    for attempt in range(max(1, retries)):\n        try:\n            sess = session or requests\n            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)\n            if resp.status_code == 200 and resp.text:\n                resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'\n                return resp.text\n            last = f'HTTP {resp.status_code}'\n        except requests.RequestException as exc:\n            last = f'{type(exc).__name__}: {str(exc)[:120]}'\n        time.sleep(min(4, 2**attempt))\n    raise RuntimeError(last or 'empty response')\n\n\ndef _read_json_cache(path: Path) -> dict[str, Any] | None:\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [澳客手机CS] 缓存读取跳过 {path.name}: {type(exc).__name__}\")\n        return None\n    return data if isinstance(data, dict) else None\n\n\ndef _parse_score_odds_from_text(text: str) -> dict[str, float]:\n    odds = {}\n    # Handles compact HTML/text containing score followed by decimal odds.\n    for score, odd in re.findall(r'(?:>|\\b)(\\d+\\s*[-:：]\\s*\\d+)(?:<|\\b)[^\\d]{0,80}([1-9]\\d?(?:\\.\\d+)?)', text):\n        try:\n            odds[score.replace('：', '-').replace(':', '-').replace(' ', '')] = float(odd)\n        except ValueError:\n            continue\n    return odds\n\n\ndef _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:\n    return bool(kwargs.get('data_only', False))\n\n\ndef _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:\n    try:\n        return float(od) >= float(floor)\n    except (TypeError, ValueError):\n        return False\n\n\ndef _okooo_apply_jc_score_fill(\n    record: dict[str, Any],\n    pack: dict[str, Any] | None = None,\n    source_note: str = '',\n    overwrite: bool = False,\n) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    src = pack if isinstance(pack, dict) else record\n    jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}\n    if isinstance(jc, dict) and jc:\n        if overwrite or not record.get('correct_score_jc_official'):\n            record['correct_score_jc_official'] = jc\n        if source_note:\n            record['correct_score_jc_source_note'] = source_note\n    return record\n\n\ndef parse_mobile_nav_ft_score(html: Any, match_id: Any = None) -> str:\n    text = str(html or '')\n    patterns = [r'(\\d+)\\s*[-:：]\\s*(\\d+)\\s*(?:完|全场|FT)?', r'全场[^0-9]*(\\d+)\\s*[-:：]\\s*(\\d+)']\n    for pat in patterns:\n        m = re.search(pat, text)\n        if m:\n            return f'{int(m.group(1))}-{int(m.group(2))}'\n    return ''\n\n\ndef mobile_vs_full_time_score(nav_score: Any, actual_score: Any) -> bool:\n    return str(nav_score or '').replace(':', '-').strip() == str(actual_score or '').replace(':', '-').replace(' (进行中)', '').strip()\n\n\ndef _looks_like_final_score(text: Any) -> bool:\n    match = re.fullmatch(r'\\s*(\\d{1,2})\\s*[-:：]\\s*(\\d{1,2})\\s*', str(text or ''))\n    if not match:\n        return False\n    left, right = int(match.group(1)), int(match.group(2))\n    return 0 <= left <= 15 and 0 <= right <= 15\n\n\ndef jingcai_board_row_finished(\n    row: Any = None,\n    today_md: str = '',\n    *,\n    day_closed: bool = False,\n    end: Any = None,\n    inside_end_hide: bool = False,\n) -> bool:\n    if day_closed or inside_end_hide:\n        return True\n    end_text = str(end or '').strip().lower()\n    if end_text in {'1', 'true', 'yes', 'y', 'end', 'ended', 'closed', 'finish', 'finished', 'done', '完', '已完', '全场'}:\n        return True\n    if end_text and _looks_like_final_score(end_text):\n        return True\n    try:\n        zvs = row.select_one('.zVS') if row is not None and hasattr(row, 'select_one') else None\n        zvs_text = zvs.get_text(strip=True) if zvs is not None else ''\n        if _looks_like_final_score(zvs_text):\n            return True\n    except (AttributeError, TypeError):\n        pass\n    text = ' '.join(str(x) for x in row) if isinstance(row, (list, tuple)) else str(row or '')\n    return any(k in text for k in ('完', '全场', '已完', 'FT')) or _looks_like_final_score(text)\n\n\ndef build_score_market_heat_ranking(\n    odds_map: Any = None,\n    correct_score_rows: Any = None,\n    pool_enriched: Any = None,\n    page_avg_odds: Any = None,\n    heat_source: str = 'okooo_mobile_cs_existing_odds',\n    channel: str = 'mobile',\n) -> dict[str, Any]:\n    rows = []\n    odds_sources: list[tuple[str, Any]] = []\n    if isinstance(odds_map, dict):\n        odds_sources.extend((str(score), raw) for score, raw in odds_map.items())\n    if isinstance(page_avg_odds, dict):\n        odds_sources.extend((str(score), raw) for score, raw in page_avg_odds.items())\n    if isinstance(correct_score_rows, dict):\n        odds_sources.extend((str(score), raw) for score, raw in correct_score_rows.items())\n    elif isinstance(correct_score_rows, (list, tuple)):\n        for item in correct_score_rows:\n            if isinstance(item, dict):\n                score = item.get('score') or item.get('name') or item.get('cs')\n                odds_sources.append((str(score or ''), item))\n            elif isinstance(item, (list, tuple)) and item:\n                odds_sources.append((str(item[0]), item[1] if len(item) > 1 else None))\n            else:\n                odds_sources.append((str(item), None))\n    enriched_by_score: dict[str, Any] = {}\n    if isinstance(pool_enriched, dict):\n        enriched_by_score = {str(k).replace(':', '-'): v for k, v in pool_enriched.items()}\n    elif isinstance(pool_enriched, (list, tuple)):\n        for item in pool_enriched:\n            if isinstance(item, dict):\n                score = str(item.get('score') or item.get('name') or item.get('cs') or '').replace(':', '-')\n                if score:\n                    enriched_by_score[score] = item\n    seen: set[str] = set()\n    for score, raw in odds_sources:\n        score_key = str(score or '').replace(':', '-').strip()\n        if not score_key or score_key.lower() == 'none' or score_key in seen:\n            continue\n        seen.add(score_key)\n        try:\n            odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw\n            if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):\n                odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')\n            odd_f = float(odd) if odd is not None else 0.0\n        except (TypeError, ValueError):\n            odd_f = 0.0\n        enriched = enriched_by_score.get(score_key)\n        row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}\n        if isinstance(enriched, dict):\n            row.update({k: v for k, v in enriched.items() if k not in row})\n        rows.append(row)\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': heat_source,\n        'heat_source': heat_source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef _unavailable(reason: str, **extra: Any) -> dict[str, Any]:\n    data = {'available': False, 'channel': 'mobile', 'reason': reason, 'block_reason': reason}\n    data.update(extra)\n    return data\n\n\ndef scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    html = kwargs.get('html') or kwargs.get('text')\n    cache = _cache_path('cs', match_id)\n    if not html and cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    if not html and match_id:\n        url = kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/cs/'\n        try:\n            html = _http_get(str(url), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_mobile_cs_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160])\n    odds = _parse_score_odds_from_text(str(html or ''))\n    heat = build_score_market_heat_ranking(odds)\n    heat.update({'correct_score_available': bool(odds), 'match_id': str(match_id or ''), 'raw_count': len(odds)})\n    if odds:\n        cache.write_text(json.dumps(heat, ensure_ascii=False, indent=2), encoding='utf-8')\n    return heat if odds else _unavailable('okooo_mobile_cs_no_score_odds_found', match_id=str(match_id or ''))\n\n\ndef scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    cache = _cache_path('six', match_id)\n    if cache.exists():\n        cached = _read_json_cache(cache)\n        if cached is not None:\n            return cached\n    html = kwargs.get('html') or kwargs.get('text')\n    if not html and match_id:\n        try:\n            html = _http_get(str(kwargs.get('url') or f'https://www.okooo.com/jingcai/{match_id}/'), proxies=proxies, session=session)\n        except RuntimeError as exc:\n            return _unavailable('external_okooo_six_market_fetch_failed', match_id=str(match_id or ''), error=str(exc)[:160], boards_hit={})\n    text = str(html or '')\n    ou_match = re.search(r'(?:大小|总进球|OU)[^0-9]{0,20}(\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    ah_match = re.search(r'(?:让球|亚盘|Handicap)[^+\\-0-9]{0,20}([+\\-]?\\d+(?:\\.\\d+)?)', text, re.IGNORECASE)\n    pack = {\n        'available': bool(ou_match or ah_match),\n        'channel': 'mobile',\n        'match_id': str(match_id or ''),\n        'ou_line': float(ou_match.group(1)) if ou_match else None,\n        'asian_handicap': float(ah_match.group(1)) if ah_match else None,\n        'boards_hit': {'大小球': bool(ou_match), '亚盘让球': bool(ah_match)},\n    }\n    if pack['available']:\n        cache.write_text(json.dumps(pack, ensure_ascii=False, indent=2), encoding='utf-8')\n        return pack\n    return _unavailable('okooo_six_market_no_lines_found', match_id=str(match_id or ''), boards_hit={})\n\n\ndef scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'ah_books': [], 'ou_books': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'reason': 'external_fetch_not_configured'}\n\n\ndef scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': False, 'match_id': str(match_id or ''), 'home': [], 'away': [], 'reason': 'external_fetch_not_configured'}\n\n\ndef seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record.setdefault('mobile_ah_ou_books', pack or {'available': False})\n        return record['mobile_ah_ou_books']\n    return {'available': False}\n\n\ndef apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:\n    if not isinstance(record, dict):\n        return {}\n    raw_books = record.get('mobile_ah_ou_books')\n    b = books if isinstance(books, dict) else raw_books if isinstance(raw_books, dict) else {}\n    if b.get('ou_line') is not None:\n        record['ou_line'] = b.get('ou_line')\n    if b.get('asian_handicap') is not None:\n        record['asian_handicap'] = b.get('asian_handicap')\n    return record\n\n\ndef detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, Any]]:\n    if not isinstance(record, dict):\n        return []\n    contradictions = []\n    if record.get('predicted_ou') and record.get('ou_line') is None:\n        contradictions.append({'type': 'missing_ou_line', 'severity': 'low'})\n    return contradictions\n\n\ndef missing_six_market_waters(record: dict[str, Any]) -> list[str]:\n    if not isinstance(record, dict):\n        return ['invalid_record']\n    missing = []\n    for key in ('asian_handicap', 'ou_line', 'odds_1x2'):\n        if not record.get(key):\n            missing.append(key)\n    return missing\n\n\ndef finish_match_water_scrape(record: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record['water_scrape_finished'] = True\n    return {'ok': True, 'missing': missing_six_market_waters(record)}\n\n\ndef six_market_fetch_blocked(record: dict[str, Any]) -> bool:\n    if not isinstance(record, dict):\n        return True\n    block = record.get('six_market_mobile')\n    return isinstance(block, dict) and bool(block.get('block_reason'))\n\n\ndef _contradiction_store(match_id: Any = None) -> Path:\n    if match_id in (None, ''):\n        return _STORE\n    return _STORE.with_name(f'six_market_contradictions_{_safe_id(match_id)}.json')\n\n\ndef save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:\n    match_id = None if items is None else match_id_or_items\n    payload = match_id_or_items if items is None else items\n    path = _contradiction_store(match_id)\n    try:\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(json.dumps(payload or [], ensure_ascii=False, indent=2), encoding='utf-8')\n        return True\n    except OSError as exc:\n        print(f\"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}\")\n        return False\n\n\ndef load_six_market_contradictions(match_id: Any = None) -> list[Any]:\n    \"\"\"读取某场的对账缺口文件。\n\n    文件不存在是正常空状态（本场还没写过缺口），不是错误：不打印告警，\n    直接返回空列表。只有真的读不动（权限/JSON 损坏）才留一行提示。\n    \"\"\"\n    path = _contradiction_store(match_id)\n    if not path.exists():\n        return []\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except FileNotFoundError:\n        # 探测与读取之间被删掉：同样是空状态，不吵。\n        return []\n    except json.JSONDecodeError as exc:\n        print(f\"   ℹ️ [澳客手机CS] 对账缺口文件损坏，按空处理: {path.name} ({exc.msg})\")\n        return []\n    except OSError as exc:\n        print(f\"   ℹ️ [澳客手机CS] 对账缺口文件不可读，按空处理: {path.name} ({type(exc).__name__})\")\n        return []\n    return data if isinstance(data, list) else []\n",
-  "odds_index_math": "\"\"\"Odds/index math helpers used by app_v84_hermes.\"\"\"\nfrom __future__ import annotations\n\nimport math\nfrom typing import Any\n\n\ndef _f(value: Any, default: float | None = None) -> float | None:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef normalize_return_rate(value: Any) -> float | None:\n    n = _f(value)\n    if n is None:\n        return None\n    return n / 100.0 if n > 1.5 else n\n\n\ndef return_rate_pct(value: Any) -> float | None:\n    n = normalize_return_rate(value)\n    return None if n is None else n * 100.0\n\n\ndef calc_return_rate(*odds: Any) -> float | None:\n    vals = []\n    for odd in odds:\n        value = _f(odd)\n        if value is not None and value > 1:\n            vals.append(value)\n    if not vals:\n        return None\n    inv = sum(1.0 / v for v in vals)\n    return (1.0 / inv) if inv > 0 else None\n\n\ndef calc_instant_probs(win: Any, draw: Any, lose: Any) -> dict[str, Any]:\n    win_f = _f(win)\n    draw_f = _f(draw)\n    lose_f = _f(lose)\n    if win_f is None or draw_f is None or lose_f is None or win_f <= 1 or draw_f <= 1 or lose_f <= 1:\n        return {'valid': False, 'home': None, 'draw': None, 'away': None, 'return_rate': None}\n    inv_sum = (1.0 / win_f) + (1.0 / draw_f) + (1.0 / lose_f)\n    rr = 1.0 / inv_sum if inv_sum > 0 else None\n    return {\n        'valid': rr is not None,\n        'home': (rr / win_f) if rr else None,\n        'draw': (rr / draw_f) if rr else None,\n        'away': (rr / lose_f) if rr else None,\n        'return_rate': rr,\n        'return_rate_pct': rr * 100.0 if rr else None,\n    }\n\n\ndef calc_kelly_index(prob: Any, odds: Any) -> float | None:\n    p = _f(prob)\n    o = _f(odds)\n    if p is None or o is None or o <= 1:\n        return None\n    return p * o\n\n\ndef apply_six_cs_settlement_v2_to_rec(rec: dict[str, Any]) -> dict[str, Any]:\n    if not isinstance(rec, dict):\n        return {'available': False, 'reason': 'invalid_rec'}\n    board = {\n        'available': True,\n        'ou_line': rec.get('ou_line'),\n        'asian_handicap': rec.get('asian_handicap') or rec.get('ah_line'),\n        'correct_score_available': bool(rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg') or rec.get('odds_correct_score')),\n    }\n    rec['six_cs_settlement_v2'] = board\n    return board\n",
-  "odds_fallback": "\"\"\"Fallback odds helpers.\n\nNetwork scrapers return structured unavailable results unless the caller supplies\nalready-fetched data. This avoids missing-module failures without pretending that\nexternal 500.com data exists.\n\"\"\"\nfrom __future__ import annotations\n\nimport os\nfrom typing import Any\n\n\ndef odds_fallback_enabled() -> bool:\n    return os.environ.get('ODDS_FALLBACK_DISABLED', '').lower() not in {'1','true','yes'}\n\n\ndef build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map', channel: str = 'fallback') -> dict[str, Any]:\n    rows=[]\n    if isinstance(odds, dict):\n        for score, odd in odds.items():\n            try:\n                raw_value = odd.get('odds') if isinstance(odd, dict) else odd\n                if raw_value is None:\n                    continue\n                value = float(raw_value)\n            except (TypeError, ValueError):\n                continue\n            if value > 1:\n                rows.append({'score': str(score).replace(':','-'), 'odds': value, 'heat': 1.0/value})\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': source,\n        'heat_source': source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef scrape_500_detail(fixture_id_500: Any, proxies: Any = None) -> dict[str, Any]:\n    return {'available': False, 'source': '500_detail', 'reason': 'external_fetch_not_configured', 'fixture_id_500': str(fixture_id_500 or '')}\n\n\ndef apply_fallback_cs_to_rec(rec: dict[str, Any], m_obj: Any = None, **kwargs: Any) -> dict[str, Any]:\n    odds = rec.get('odds_correct_score') if isinstance(rec, dict) else {}\n    heat = build_heat_from_odds_map(odds, source='fallback_existing_odds')\n    if isinstance(rec, dict):\n        rec['fallback_cs_heat'] = heat\n    return heat\n\n\ndef attach_500_shuju_to_rec(rec: dict[str, Any], force: bool = False) -> dict[str, Any]:\n    pack={'available': False, 'reason': 'external_500_shuju_not_configured'}\n    if isinstance(rec, dict): rec['fallback_500_shuju']=pack\n    return pack\n\n\ndef ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any = None) -> dict[str, Any]:\n    if not isinstance(rec, dict):\n        return {'available': False, 'judgment_ready': False}\n    facts = rec.setdefault('dual_source_facts', {})\n    if not isinstance(facts, dict):\n        facts = {}; rec['dual_source_facts']=facts\n    facts.setdefault('judgment_ready', bool(rec.get('prob_dict') or rec.get('odds_correct_score') or rec.get('correct_score_page_avg')))\n    facts.setdefault('correct_score', {'mobile_entered': bool(rec.get('correct_score_page_avg') or rec.get('odds_correct_score'))})\n    if isinstance(extra_sources, dict):\n        for key, value in extra_sources.items():\n            facts[key] = value\n    return facts\n",
+  "blade_deepseek_pipeline": "\"\"\"Lightweight DeepSeek analysis pipeline helpers for FLAnalyzer.\n\nThis module is intentionally dependency-light.  It provides deterministic\nformatting, payload-building and degraded-mode helpers used by app_v84_hermes.\nExternal DeepSeek calls remain in the main app where credentials/config live.\n\"\"\"\nfrom __future__ import annotations\n\nimport math\nimport re\nfrom html import escape\nfrom typing import Any, ClassVar\n\nJCZQ_MACRO_BAIT_SCORES = {\"1-0\", \"0-1\", \"1-1\", \"2-1\", \"1-2\"}\n_RUNTIME: dict[str, Any] = {}\n\n# 竞彩比分31个投注选项（主胜13 + 平局5 + 客胜13）。审计与全表补建共用这一份。\nJCZQ_HOME_WIN_SCORES = ['1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2']\nJCZQ_DRAW_SCORES = ['0-0', '1-1', '2-2', '3-3']\nJCZQ_AWAY_WIN_SCORES = ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5']\nJCZQ_ALL_OPTIONS = JCZQ_HOME_WIN_SCORES + JCZQ_DRAW_SCORES + JCZQ_AWAY_WIN_SCORES + ['胜其它', '平其它', '负其它']\n\n\ndef bind_hermes_runtime(**kwargs: Any) -> None:\n    _RUNTIME.update(kwargs)\n\n\ndef strip_tg_color_marks(text: Any) -> str:\n    return str(text or '').replace('🟨', '').replace('🟥', '').replace('🟩', '')\n\n\ndef split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:\n    \"\"\"按行切块，绝不把一行（表格行/比分行）切断。\n\n    原来的实现按固定字符数硬切，31 行表格会被从中间劈开。现在优先在换行处切。\n    \"\"\"\n    s = str(text or '')\n    limit = max(100, int(max_len or 3900))\n    if len(s) <= limit:\n        return [s] if s else ['']\n    chunks: list[str] = []\n    current: list[str] = []\n    current_len = 0\n    for line in s.splitlines(keepends=True):\n        if current_len + len(line) > limit and current:\n            chunks.append(''.join(current))\n            current, current_len = [], 0\n        if len(line) > limit:\n            # 单行超长（极端情况）：只能硬切，但不影响表格行场景。\n            for i in range(0, len(line), limit):\n                chunks.append(line[i:i + limit])\n            continue\n        current.append(line)\n        current_len += len(line)\n    if current:\n        chunks.append(''.join(current))\n    return chunks or ['']\n\n\ndef compute_score_occ(scores: Any) -> dict[str, int]:\n    out: dict[str, int] = {}\n    for item in scores or []:\n        key = str(item[0] if isinstance(item, (list, tuple)) and item else item or '').replace(':', '-').strip()\n        if key:\n            out[key] = out.get(key, 0) + 1\n    return out\n\n\ndef _norm_score(score: Any) -> str:\n    return str(score or '').replace('：', '-').replace(':', '-').strip()\n\n\ndef _score_wdl(score: Any) -> str:\n    s = _norm_score(score)\n    if '胜' in s and '其它' in s:\n        return '胜'\n    if '负' in s and '其它' in s:\n        return '负'\n    if '平' in s and '其它' in s:\n        return '平'\n    m = re.match(r'^\\s*(\\d+)\\s*-\\s*(\\d+)\\s*$', s)\n    if not m:\n        return ''\n    h, a = int(m.group(1)), int(m.group(2))\n    return '胜' if h > a else ('平' if h == a else '负')\n\n\ndef audit_mean_gap_ratio(match_context: Any, lock: Any = None) -> dict[str, Any]:\n    ctx = match_context if isinstance(match_context, dict) else {}\n    raw_payload = ctx.get('direction_lock_payload')\n    payload = raw_payload if isinstance(raw_payload, dict) else {}\n    ratio = payload.get('mean_gap_ratio') or ctx.get('mean_gap_ratio') or 0\n    try:\n        ratio_f = float(ratio or 0)\n    except (TypeError, ValueError):\n        ratio_f = 0.0\n    return {'available': ratio_f > 0, 'mean_gap_ratio': ratio_f, 'tier': 'high' if ratio_f >= 5 else ('mid' if ratio_f >= 1.35 else 'low')}\n\n\ndef check_rtm_collapse_guard(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'collapse': False, 'reason': 'deterministic_guard'}\n\n\ndef apply_game_surface_policy(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    data = dict(payload) if isinstance(payload, dict) else {}\n    data.setdefault('surface_policy_applied', True)\n    return data\n\n\ndef batch_ledger_integrity_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'ok': True, 'issues': []}\n\n\ndef build_v1631_clearing_view(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'rows': []}\n\n\ndef count_log_mismatches(*args: Any, **kwargs: Any) -> int:\n    return 0\n\n\ndef detect_sparse_game_signals(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'signals': []}\n\n\ndef per_match_review_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'gaps': []}\n\n\ndef review_direction_lock_recognition(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = source if isinstance(source, dict) else {}\n    return {'available': True, 'line': '方向锁复盘: 已按本地规则形成。', 'lock_side': info.get('lock_side')}\n\n\ndef settle_display_score_pair(first: Any, second: Any = None, *args: Any, **kwargs: Any) -> tuple[str, str]:\n    return _norm_score(first), _norm_score(second)\n\n\ndef split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    return {'available': True, 'both_wrong': False}\n\n\ndef strip_match_features_from_method(text: Any, identity_names: Any = None) -> str:\n    cleaned = str(text or '')\n    names = identity_names if isinstance(identity_names, (list, tuple, set)) else []\n    for name in names:\n        token = str(name or '').strip()\n        if token:\n            cleaned = cleaned.replace(token, '')\n    return cleaned\n\n\ndef compare_short_abs_hot(info: Any) -> dict[str, Any]:\n    return {'available': False, 'line': '市短市热对照: 本地轻量模块未形成外部热度差。'}\n\n\nclass V1631StandardUnifiedEngine:\n    _TEMPLATES: ClassVar[dict[str, str]] = {'胜': '主胜', '平': '平局', '负': '客胜'}\n    _TEMPLATE_FALLBACK = '未形成'\n\n\ndef _poisson_score_probs(lam_home: float, lam_away: float, max_goals: int = 10) -> dict[str, float]:\n    \"\"\"独立泊松比分矩阵，聚合成竞彩31项（含三个「其它」）。\n\n    返回 {option: 概率(0..1)}，31 项齐全。λ 来自已冻结的模型值，\n    因此这不是编造数据，而是把冻结参数摊开成 31 项。\n    \"\"\"\n    import math as _math\n\n    def _pmf(lam: float, k: int) -> float:\n        return _math.exp(-lam) * (lam ** k) / _math.factorial(k)\n\n    home_pmf = [_pmf(lam_home, k) for k in range(max_goals + 1)]\n    away_pmf = [_pmf(lam_away, k) for k in range(max_goals + 1)]\n    listed = {\n        'home': ['1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2'],\n        'draw': ['0-0', '1-1', '2-2', '3-3'],\n        'away': ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5'],\n    }\n    out: dict[str, float] = {}\n    dir_total = {'home': 0.0, 'draw': 0.0, 'away': 0.0}\n    for h in range(max_goals + 1):\n        for a in range(max_goals + 1):\n            p = home_pmf[h] * away_pmf[a]\n            if h > a:\n                dir_total['home'] += p\n            elif h == a:\n                dir_total['draw'] += p\n            else:\n                dir_total['away'] += p\n            key = f'{h}-{a}'\n            if h > a:\n                label = 'home'\n            elif h == a:\n                label = 'draw'\n            else:\n                label = 'away'\n            if key in listed[label]:\n                out[key] = p\n    listed_sum = {'home': 0.0, 'draw': 0.0, 'away': 0.0}\n    for label, options in listed.items():\n        for option in options:\n            listed_sum[label] += out.get(option, 0.0)\n    out['胜其它'] = max(0.0, dir_total['home'] - listed_sum['home'])\n    out['平其它'] = max(0.0, dir_total['draw'] - listed_sum['draw'])\n    out['负其它'] = max(0.0, dir_total['away'] - listed_sum['away'])\n    total = sum(out.values())\n    if total > 0:\n        out = {k: v / total for k, v in out.items()}\n    return out\n\n\ndef _line_or_none(primary: Any, secondary: Any) -> Any:\n    \"\"\"盘口线取值：primary 只要 is not None 就用（0.0 是平手盘），否则用 secondary。\n\n    不能用 `primary or secondary`：平手盘 ah=0.0 会被当成「没有」而落到另一个键，\n    甚至落到 None，行情分析就看不到真实的 0 线。\n    \"\"\"\n    if primary is not None:\n        return primary\n    return secondary\n\n\nclass DeepSeekAnalyzer:\n    \"\"\"Deterministic analyzer/formatter surface used by app_v84_hermes.\"\"\"\n\n    @staticmethod\n    def _classify_score_wdl(score: Any) -> str:\n        return _score_wdl(score)\n\n    @staticmethod\n    def _is_tg_match_title_line(line: Any) -> bool:\n        s = str(line or '')\n        return bool(s.startswith('📌') or ' vs ' in s or 'VS' in s)\n\n    @staticmethod\n    def _is_tg_section_suppressed(line: Any) -> bool:\n        return False\n\n    @staticmethod\n    def format_tg_match_header(match: Any, kickoff: Any = '', match_no: Any = '') -> str:\n        bits = ['📌']\n        if match_no:\n            bits.append(f'[{match_no}]')\n        bits.append(str(match or '未知比赛'))\n        if kickoff:\n            bits.append(str(kickoff))\n        return ' '.join(bits)\n\n    @staticmethod\n    def build_jc_cross_only_payload(data: Any, **kwargs: Any) -> dict[str, Any]:\n        payload = dict(data) if isinstance(data, dict) else {}\n        payload.update({k: v for k, v in kwargs.items() if v is not None})\n        rows = payload.get('jc_cross_rows') or payload.get('rows') or []\n        payload.setdefault('jc_cross_rows', rows if isinstance(rows, list) else [])\n        payload.setdefault('mkt_short_wdl_matrix', {'available': False, 'counts': {}})\n        payload.setdefault('allowed_scores', [])\n        payload.setdefault('judgment_universe', 'mkt_short_wdl_matrix')\n        return payload\n\n    @staticmethod\n    def attach_score_odds_cold_hedge(payload: dict[str, Any], arbitration: Any = None) -> dict[str, Any]:\n        payload['score_odds_cold_hedge'] = {'available': False, 'scores': [], 'writes_first_score': False, 'changes_direction': False}\n        return payload\n\n    @staticmethod\n    def build_cross_market_board(data: Any, first_score: Any = '', second_score: Any = '') -> dict[str, Any]:\n        d = data if isinstance(data, dict) else {}\n        return {\n            'available': True,\n            'first_score': _norm_score(first_score),\n            'second_score': _norm_score(second_score),\n            'asian_handicap': _line_or_none(d.get('asian_handicap'), d.get('ah_line')),\n            'ou_line': d.get('ou_line'),\n            'jc_handicap': d.get('jc_handicap'),\n            'odds_1x2': d.get('odds_1x2') or {},\n        }\n\n    @staticmethod\n    def analyze_cross_pairs(odds: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"异化侦测：用已给的赔率集合算方向概率与最热/最冷比分，缺输入就回报缺什么。\"\"\"\n        clean: dict[str, float] = {}\n        if isinstance(odds, dict):\n            for score, odd in odds.items():\n                raw_value = odd.get('odds') if isinstance(odd, dict) else odd\n                if raw_value is None:\n                    continue\n                try:\n                    value = float(raw_value)\n                except (TypeError, ValueError):\n                    continue\n                if value > 1:\n                    clean[_norm_score(score)] = value\n        if not clean:\n            return {'available': False, 'reason': 'empty_odds', 'wdl_share_pct': {}, 'hot_scores': []}\n        inverse = {score: 1.0 / odd for score, odd in clean.items()}\n        total = sum(inverse.values()) or 1.0\n        share = {score: value * 100.0 / total for score, value in inverse.items()}\n        wdl = {'胜': 0.0, '平': 0.0, '负': 0.0}\n        for score, pct in share.items():\n            label = _score_wdl(score)\n            if label in wdl:\n                wdl[label] += pct\n        hottest = sorted(share.items(), key=lambda kv: kv[1], reverse=True)[:5]\n        return {\n            'available': True,\n            'wdl_share_pct': {k: round(v, 2) for k, v in wdl.items()},\n            'hot_scores': [score for score, _ in hottest],\n            'hot_share_pct': {score: round(pct, 2) for score, pct in hottest},\n            'sample': len(clean),\n        }\n\n    @staticmethod\n    def format_mkt_short_wdl_matrix_tg_lines(matrix: Any, home: str = '', away: str = '') -> list[str]:\n        \"\"\"市短矩阵：市均隐含% > 竞彩隐含% 的选项逐项列出，再按胜平负汇总。\n\n        旧实现只回「状态: 可用 + 队名」，一行数据都没有。\n        \"\"\"\n        m = matrix if isinstance(matrix, dict) else {}\n        head = '📊【市短矩阵｜市均隐含 > 竞彩隐含】'\n        rows = [r for r in (m.get('rows') or m.get('qualifying') or []) if isinstance(r, dict)]\n        if not rows:\n            return [head, f\"  未形成（{m.get('reason') or '没有市均高于竞彩的选项'}）\"]\n        lines = [head, f\"  输入={m.get('source') or '市均×竞彩31比分'} 项数={len(rows)}\"]\n        for r in rows:\n            lines.append(\n                f\"  {str(r.get('score', '?'))!s:<5} 市均{float(r.get('market_pct') or 0):.2f}% \"\n                f\"竞彩{r.get('jc_pct', 0):.2f}% 差{r.get('gap_pct', 0):+.2f}pp\"\n            )\n        counts = m.get('counts')\n        counts = counts if isinstance(counts, dict) else {}\n        share = m.get('share_pct')\n        share = share if isinstance(share, dict) else {}\n        lines.append(\n            '  胜平负: ' + ' '.join(\n                f\"{k}={counts.get(k, 0)}({share.get(k, 0):.1f}%)\" for k in ('胜', '平', '负')\n            )\n        )\n        return lines\n\n    @staticmethod\n    def build_mkt_short_matrix_from_pack(pack: Any) -> dict[str, Any]:\n        \"\"\"从 31 全表算市短矩阵（市均隐含% > 竞彩隐含%）。\n\n        与 `build_theo_mkt_31_pack.pos_rows` 口径不同：那个比的是 市场 vs 理论，\n        这里比的是 市均 vs 竞彩官方，两者各自独立计算。\n        \"\"\"\n        p = pack if isinstance(pack, dict) else {}\n        rows = []\n        counts = {'胜': 0, '平': 0, '负': 0}\n        _jc_labels = {'jc_official', 'jc_score_odds', 'jc', '竞彩'}\n        for row in (p.get('rows') or []):\n            if not isinstance(row, dict):\n                continue\n            market = row.get('market')\n            jc_pct = row.get('jc_odds_pct')\n            try:\n                market_f = float(market) if market is not None else None\n                jc_f = float(jc_pct) if jc_pct is not None else None\n            except (TypeError, ValueError):\n                continue\n            if market_f is None or jc_f is None:\n                continue\n            # 市场本身就取自竞彩的行不能进市短：那是「竞彩 vs 竞彩」，\n            # 差值恒为 0，归一化的小数误差还会变成一条有正 gap 的假信号。\n            if row.get('delta_same_source') or str(row.get('market_source') or '') in _jc_labels:\n                continue\n            gap = market_f - jc_f\n            if gap <= 0:\n                continue\n            label = _score_wdl(row.get('score'))\n            if label in counts:\n                counts[label] += 1\n            rows.append({\n                'score': row.get('score'),\n                'market_pct': round(market_f, 4),\n                'jc_pct': round(jc_f, 4),\n                'gap_pct': round(gap, 4),\n                'source': row.get('market_source') or '',\n            })\n        total = sum(counts.values())\n        return {\n            'available': bool(rows),\n            'rows': rows,\n            'counts': counts,\n            'share_pct': {k: round(v * 100.0 / total, 2) if total else 0.0 for k, v in counts.items()},\n            'source': '市均×竞彩31比分',\n            'reason': '' if rows else '没有任何选项的市均隐含%高于竞彩隐含%',\n        }\n\n    @staticmethod\n    def format_mkt_hot_wdl_matrix_tg_lines(payload: Any) -> list[str]:\n        \"\"\"市热矩阵：Δ>0（市场超理论）的选项逐项列出 + 胜平负汇总。\n\n        口径声明：与 build_theo_mkt_31_pack.pos_rows 相同（market > theory），\n        不是「市均 vs 竞彩」——后者是市短矩阵。\n        \"\"\"\n        p = payload if isinstance(payload, dict) else {}\n        head = '🔥【市热矩阵｜Δ=市均%−理论%>0，与pos_rows同口径】'\n        pos = [r for r in (p.get('pos_rows') or []) if isinstance(r, dict)]\n        if not pos:\n            return [head, f\"  未形成（{p.get('reason') or '没有市场高于理论的选项'}）\"]\n        lines = [head, f\"  输入=31全表 项数={len(pos)}\"]\n        counts = {'胜': 0, '平': 0, '负': 0}\n        for r in pos:\n            score = r.get('score')\n            label = _score_wdl(score)\n            if label in counts:\n                counts[label] += 1\n            try:\n                market = float(r.get('market') or 0)\n                theory = float(r.get('theory') or 0)\n            except (TypeError, ValueError):\n                market = theory = 0.0\n            lines.append(\n                f\"  {str(score)!s:<5} 市均{market:.2f}% 理论{theory:.2f}% Δ{market - theory:+.2f}pp\"\n            )\n        total = sum(counts.values()) or 1\n        lines.append(\n            '  胜平负: ' + ' '.join(\n                f\"{k}={counts[k]}({counts[k] * 100.0 / total:.1f}%)\" for k in ('胜', '平', '负')\n            )\n        )\n        return lines\n\n    @staticmethod\n    def resolve_cs31_provenance(source: Any = None, payload: Any = None) -> dict[str, Any]:\n        \"\"\"31 池逐键出处：记录 → payload → 从 books_avg 反推 → 空。\n\n        返回 {'provenance': {option: desktop_cs|jc_official}, 'source': ...}，\n        source ∈ {'recorded', 'derived', None}。把来源一起交出去，是为了让表头\n        能写明「记录的」还是「反推的」——同一场比赛不该有两个说不清来历的答案。\n\n        老记录（`cs31_*` 还没进合并白名单时写的）里没有出处表，但它一定留着\n        `correct_score_books_avg` —— 原始 25 键市均页。那 25 键就是真正的市均\n        覆盖集，所以「在这 25 键里 = desktop_cs，其余 = jc_official」反推出来的表\n        与 merge_cs31 存的完全一致（四份真实抓包上逐键相等，不只是数目相等）。\n        不反推的话，老比赛上阶段2会把已合并的 31 键整表当成市均，市短又回到\n        22/19/21/19 那个错答案——同一场比赛两个答案。\n\n        显式出处永远优先；反推只在拿不到显式出处时兜底，且绝不静默。\n        \"\"\"\n        def _from(mapping: Any) -> dict[str, str]:\n            out: dict[str, str] = {}\n            if isinstance(mapping, dict):\n                for score, src in mapping.items():\n                    key = _norm_score(score)\n                    label = str(src or '').strip()\n                    if key and label and key in set(JCZQ_ALL_OPTIONS):\n                        out[key] = label\n            return out\n\n        src_obj = source if isinstance(source, dict) else {}\n        pay_obj = payload if isinstance(payload, dict) else {}\n        for holder in (src_obj, pay_obj):\n            found = _from(holder.get('cs31_provenance') if isinstance(holder, dict) else None)\n            if found:\n                return {'provenance': found, 'source': 'recorded'}\n        for holder in (src_obj, pay_obj):\n            books = holder.get('correct_score_books_avg') if isinstance(holder, dict) else None\n            if not isinstance(books, dict) or not books:\n                continue\n            page_keys: set[str] = set()\n            for score, odd in books.items():\n                key = _norm_score(score)\n                raw = odd.get('odds') if isinstance(odd, dict) else odd\n                try:\n                    value = float(raw) if raw is not None else None\n                except (TypeError, ValueError):\n                    value = None\n                if key and value is not None and value > 1:\n                    page_keys.add(key)\n            if not page_keys:\n                continue\n            return {\n                'provenance': {\n                    option: ('desktop_cs' if option in page_keys else 'jc_official')\n                    for option in JCZQ_ALL_OPTIONS\n                },\n                'source': 'derived',\n            }\n        return {'provenance': {}, 'source': None}\n\n    @staticmethod\n    def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:\n        \"\"\"收集合法比分赔率：市均优先，竞彩官方31比分补缺。\n\n        `correct_score_jc_official` 曾经不在这个元组里，于是 31全表里那 9 个\n        市均覆盖不到的选项（5-0/5-1/5-2/0-5/1-5/2-5 与三个「其它」）永远没有市场概率。\n        顺序即优先级：市均先写入，后面同名键不覆盖。\n        \"\"\"\n        src = source if isinstance(source, dict) else {}\n        odds: dict[str, float] = {}\n        for key in (\n            'correct_score_page_avg', 'correct_score_books_avg', 'correct_score_site_avg',\n            'odds_correct_score', 'correct_score_jc_official', 'jc_score_odds',\n        ):\n            val = src.get(key)\n            if isinstance(val, dict):\n                for score, odd in val.items():\n                    try:\n                        if isinstance(odd, dict):\n                            odd = odd.get('odds') or odd.get('avg') or odd.get('value')\n                        if odd is None:\n                            continue\n                        f = float(odd)\n                    except (TypeError, ValueError):\n                        continue\n                    if f > 1:\n                        odds.setdefault(_norm_score(score), f)\n        return odds\n\n    @staticmethod\n    def build_theo_mkt_31_pack(rows: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"把 direction_full_rows/jc_cross_rows 折成竞彩31项理论×市场全表。\n\n        `extra_market_odds` 是市均（page_avg/books_avg/site_avg）反推出的比分赔率，\n        用来补 rows 里 market 为空或为 0 的项——这正是「31全表未齐」要折入的东西。\n        行的 market 缺失时先看 extra_market_odds，再看 system_prejudge 的市热。\n        理论概率缺失则留 None（不编造），行本身仍然进表。\n        \"\"\"\n        clean = [dict(r) for r in (rows or []) if isinstance(r, dict)]\n        extra = kwargs.get('extra_market_odds')\n        extra_odds = extra if isinstance(extra, dict) else {}\n\n        def _f(value: Any) -> float | None:\n            try:\n                number = float(value)\n            except (TypeError, ValueError):\n                return None\n            return number if math.isfinite(number) else None\n\n        by_score: dict[str, dict[str, Any]] = {}\n        for row in clean:\n            score = _norm_score(row.get('score') or row.get('name') or row.get('cs') or '')\n            if not score:\n                continue\n            merged = by_score.setdefault(score, {'score': score})\n            for key in ('theory', 'theory_prob', 'market', 'mkt', 'ibi', 'delta', 'diff',\n                        'market_prob', 'implied_prob', 'jc_odds', 'mkt_minus_jc'):\n                if key in row and row.get(key) not in (None, ''):\n                    merged.setdefault(key, row.get(key))\n        # 市均与竞彩各自先归一，再按选项混合，最后整体再归一。\n        # 这一步必须和 app 端 build_pool31_option_rows 的 market_src 完全同序：\n        # 先混合原始 100/odds 再整体归一，与「各自归一后混合」得到的向量不同，\n        # 同一场比赛会给出两个 pos_count —— 一张表不能有两个答案。\n        jc_odds = kwargs.get('jc_score_odds')\n        jc_odds = jc_odds if isinstance(jc_odds, dict) else {}\n        _jc_set = set(JCZQ_ALL_OPTIONS)\n\n        def _odds_value(odd: Any) -> float | None:\n            if isinstance(odd, dict):\n                odd = odd.get('odds') if odd.get('odds') is not None else odd.get('avg')\n            return _f(odd)\n\n        def _implied_vec(odds_map: dict[str, Any]) -> dict[str, float]:\n            \"\"\"只认 31 项里显式给出的键，1/odds 后归一。\n\n            4-3/3-4/4-4 不算市均对「其它」的报价，绝不折进桶里——\n            否则 22+9 会串成 25+6。\n            \"\"\"\n            vec: dict[str, float] = {}\n            for score, odd in (odds_map or {}).items():\n                key = _norm_score(score)\n                value = _odds_value(odd)\n                if key in _jc_set and value is not None and value > 1:\n                    vec[key] = 1.0 / value\n            total = sum(vec.values())\n            return {k: v / total for k, v in vec.items()} if total > 0 else {}\n\n        _page_vec = _implied_vec(extra_odds)\n        _jc_vec = _implied_vec(jc_odds)\n        # 合并页把 31 键放在同一个向量里，直接按 31 归一就把 9 个竞彩项的水\n        # 摊到了市均头上（市均份额整体被压低约 三分之一，市短随之少掉几行）。\n        # 有出处时先把竞彩那一路从市均向量里摘出去，只按真正的市均键归一。\n        _prov_raw0 = kwargs.get('market_provenance')\n        if isinstance(_prov_raw0, dict) and _prov_raw0:\n            _jc_keys = {\n                _norm_score(k) for k, v in _prov_raw0.items()\n                if str(v or '').strip() in ('jc_official', 'jc_score_odds', 'jc', '竞彩')\n            }\n            _page_only = {k: v for k, v in (extra_odds or {}).items() if _norm_score(k) not in _jc_keys}\n            if _page_only:\n                _page_vec = _implied_vec(_page_only)\n        # 生产记录里 `correct_score_page_avg` 已经是 merge_cs31 的 31 键合并结果，\n        # 那 9 个市均没有的选项就在里面，光看数值分不出来自哪一边。出处必须由\n        # 合并方给出的 `market_provenance`（{option: desktop_cs|jc_official}）覆盖，\n        # 否则 31 行全标 desktop_cs、市短还会拿竞彩去比竞彩。\n        _prov_raw = kwargs.get('market_provenance')\n        _prov: dict[str, str] = {}\n        # 出处是记录的、还是从 books_avg 反推的？读者有权分清。\n        _prov_kind = str(kwargs.get('market_provenance_source') or 'recorded')\n        if isinstance(_prov_raw, dict):\n            for score, src in _prov_raw.items():\n                key = _norm_score(score)\n                label = str(src or '').strip()\n                if key in _jc_set and label:\n                    _prov[key] = label\n        _JC_LABELS = {'jc_official', 'jc_score_odds', 'jc', '竞彩'}\n\n        def _prov_label(option: str) -> str:\n            return _prov.get(option, '')\n\n        def _prov_is_jc(option: str) -> bool:\n            return _prov_label(option) in _JC_LABELS\n\n        _mix: dict[str, float] = {}\n        _mix_of: dict[str, str] = {}\n        for option in JCZQ_ALL_OPTIONS:\n            if _prov_is_jc(option):\n                # 出处说是竞彩，就用竞彩赔率那一路的值（两边同源时数值本来就相等，\n                # 但如果市均合并值与竞彩有微小出入，以出处为准）。\n                if option in _jc_vec:\n                    _mix[option] = _jc_vec[option]\n                elif option in _page_vec:\n                    _mix[option] = _page_vec[option]\n                else:\n                    continue\n                _mix_of[option] = 'jc_score_odds'\n                continue\n            if option in _page_vec:\n                _mix[option] = _page_vec[option]\n                _mix_of[option] = str(kwargs.get('extra_market_source') or 'market_avg_odds')\n            elif option in _jc_vec:\n                _mix[option] = _jc_vec[option]\n                _mix_of[option] = 'jc_score_odds'\n        _mix_total = sum(_mix.values())\n        if _mix_total > 0:\n            _mix = {k: v * 100.0 / _mix_total for k, v in _mix.items()}\n        for option, value in _mix.items():\n            row = by_score.setdefault(option, {'score': option})\n            if _f(row.get('market') or row.get('mkt')) in (None, 0.0):\n                row['market'] = round(value, 4)\n                row['market_source'] = _mix_of.get(option, '')\n        # 竞彩赔率本身始终要落盘（31 项的原生赔率），与 market 取不取自竞彩无关。\n        for score, odd in jc_odds.items():\n            key = _norm_score(score)\n            odd_f = _odds_value(odd)\n            if not key or odd_f is None or odd_f <= 1:\n                continue\n            row = by_score.setdefault(key, {'score': key})\n            if _f(row.get('jc_odds')) is None:\n                row['jc_odds'] = odd_f\n        # 4-3/3-4/4-4 属表尾附注，单列出去，不占 31 行。\n        _extras: dict[str, float] = {}\n        for score, odd in extra_odds.items():\n            key = _norm_score(score)\n            odd_f = _odds_value(odd)\n            if key and key not in _jc_set and odd_f is not None and odd_f > 1:\n                _extras[key] = odd_f\n        # 理论概率：用已冻结的 λ 泊松分布补齐（λ 冻结是既定事实，不是编造）。\n        lam_h = _f(kwargs.get('lam_home'))\n        lam_a = _f(kwargs.get('lam_away'))\n        if lam_h and lam_a and lam_h > 0 and lam_a > 0:\n            try:\n                probs = _poisson_score_probs(lam_h, lam_a)\n            except Exception:  # noqa: BLE001 - λ 不可用时保持 theory 为空\n                probs = {}\n            if probs:\n                for option in JCZQ_ALL_OPTIONS:\n                    row = by_score.setdefault(option, {'score': option})\n                    if _f(row.get('theory') or row.get('theory_prob')) is None:\n                        value = probs.get(option)\n                        if value is not None:\n                            row['theory'] = round(value * 100.0, 4)\n                            row['theory_source'] = 'frozen_lambda_poisson'\n        full_rows: list[dict[str, Any]] = []\n        for option in JCZQ_ALL_OPTIONS:\n            row = by_score.get(option) or {'score': option}\n            theory = _f(row.get('theory') if row.get('theory') is not None else row.get('theory_prob'))\n            market = _f(row.get('market') if row.get('market') is not None else row.get('mkt'))\n            row['score'] = option\n            row['theory'] = theory\n            row['market'] = market\n            row['in_31'] = True\n            row['formed'] = theory is not None and market is not None\n            # 市场取自竞彩时 Δ 恒为 0，是「同源」而不是「真的没偏差」。\n            # 出处缺失时退回原来的推断，保证老调用点行为不变。\n            if market is None:\n                # 没有市场值的行不带出处，也不参与汇总计数。\n                # 反推出的出处表把 31 项全部标了方向（按覆盖推导），而记录的出处表\n                # 只有真正从 merge_cs31 出来的项；不在这里收口，同一场比赛的两条路径\n                # 会打出 jc_official=9 与 jc_official=7 两个汇总——行本身都是对的，\n                # 只有计数在骗人。\n                row['market_source'] = ''\n                row['delta_same_source'] = False\n            elif _prov:\n                row['market_source'] = _prov_label(option) or row.get('market_source') or ''\n                row['delta_same_source'] = _prov_is_jc(option)\n            else:\n                row['delta_same_source'] = row.get('market_source') == 'jc_score_odds'\n            full_rows.append(row)\n\n        # market 必须落在 100% 基准上再和 theory/jc 比。\n        # `100/odds` 是单家含水利概率（31 项加起来 145.95%），拿它跟归一化到 100\n        # 的 theory 比，pos_rows 会虚报「26/31 市场高于理论」，Δ 列也没有可比性。\n        # 这里按 app 端 build_pool31_option_rows 的口径去水归一。\n        _m_total = sum(float(r['market']) for r in full_rows if _f(r.get('market')) is not None)\n        if _m_total > 0:\n            for row in full_rows:\n                if _f(row.get('market')) is not None:\n                    row['market'] = round(float(row['market']) * 100.0 / _m_total, 4)\n        # 竞彩官方同口径：单独归一，供市短矩阵逐项比较。\n        _jc_total = sum(\n            (100.0 / float(r['jc_odds']))\n            for r in full_rows\n            if _f(r.get('jc_odds')) and float(r['jc_odds']) > 1\n        )\n        for row in full_rows:\n            jc_odd = _f(row.get('jc_odds'))\n            if jc_odd and jc_odd > 1 and _jc_total > 0:\n                row['jc_odds_pct'] = round((100.0 / jc_odd) * 100.0 / _jc_total, 4)\n            else:\n                row['jc_odds_pct'] = None\n        # theory 也归一化，保证三方同基准。\n        _t_total = sum(float(r['theory']) for r in full_rows if _f(r.get('theory')) is not None)\n        if _t_total > 0:\n            for row in full_rows:\n                if _f(row.get('theory')) is not None:\n                    row['theory'] = round(float(row['theory']) * 100.0 / _t_total, 4)\n\n        pos = [\n            r for r in full_rows\n            if _f(r.get('market')) is not None and _f(r.get('theory')) is not None\n            and float(r['market']) > float(r['theory'])\n        ]\n        for row in full_rows:\n            theory, market = _f(row.get('theory')), _f(row.get('market'))\n            row['delta'] = round(market - theory, 4) if theory is not None and market is not None else None\n        market_sum = round(sum(float(r['market']) for r in full_rows if _f(r.get('market')) is not None), 4)\n        theory_sum = round(sum(float(r['theory']) for r in full_rows if _f(r.get('theory')) is not None), 4)\n        jc_pct_sum = round(sum(float(r['jc_odds_pct']) for r in full_rows if _f(r.get('jc_odds_pct')) is not None), 4)\n        # 逐键出处与计数一并带出：调用点要能把它写回记录，下一次重建才不会再\n        # 把 9 个竞彩项当成市均（同一场比赛，抓取时 22+9、重建时 31+0）。\n        _prov_out: dict[str, str] = {}\n        for row in full_rows:\n            label = str(row.get('market_source') or '')\n            if label:\n                _prov_out[str(row['score'])] = label\n        _counts_out: dict[str, int] = {}\n        for label in _prov_out.values():\n            _counts_out[label] = _counts_out.get(label, 0) + 1\n        return {\n            'available': bool(full_rows),\n            'rows': full_rows,\n            'row_count': len(full_rows),\n            'formed_count': sum(1 for r in full_rows if r.get('formed')),\n            'pos_rows': pos,\n            'pos_count': len(pos),\n            # 三方基准和，供审计断言各自 ≈100（曾经 market 是 145.95 的含水利值）。\n            'market_sum': market_sum,\n            'theory_sum': theory_sum,\n            'jc_pct_sum': jc_pct_sum,\n            'cs31_provenance': _prov_out,\n            'cs31_counts': _counts_out,\n            'cs31_provenance_source': _prov_kind if _prov_out else '',\n            'cs31_extras': _extras,\n            'cs31_complete': bool(full_rows) and all(r.get('formed') for r in full_rows),\n            'system_prejudge': {},\n            'home': str(kwargs.get('home') or ''),\n            'away': str(kwargs.get('away') or ''),\n            'match_name': str(kwargs.get('match_name') or ''),\n        }\n\n    @staticmethod\n    def audit_theo_mkt_31_rows(rows: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"审计竞彩31项理论×市场全表是否齐。\n\n        返回 {'complete': bool, 'missing': [str], 'rows': n, 'formed': n,\n              'missing_theory': [...], 'missing_market': [...]}。\n        `missing` 是给日志用的短名单（只写前若干项 + 计数），不含换行。\n        缺表/缺字段只回报不缺数据，绝不抛异常——阶段2靠它决定是折入补齐还是照常分析。\n        \"\"\"\n        clean = [r for r in (rows or []) if isinstance(r, dict)]\n        present = {_norm_score(r.get('score') or r.get('name') or r.get('cs') or '') for r in clean}\n        missing_rows = [option for option in JCZQ_ALL_OPTIONS if option not in present]\n\n        def _num(value: Any) -> float | None:\n            try:\n                number = float(value)\n            except (TypeError, ValueError):\n                return None\n            return number\n\n        missing_theory: list[str] = []\n        missing_market: list[str] = []\n        for row in clean:\n            score = _norm_score(row.get('score') or row.get('name') or row.get('cs') or '')\n            if not score:\n                continue\n            theory = _num(row.get('theory') if row.get('theory') is not None else row.get('theory_prob'))\n            market = _num(row.get('market') if row.get('market') is not None else row.get('mkt'))\n            if theory is None:\n                missing_theory.append(score)\n            if market is None or market <= 0:\n                missing_market.append(score)\n        missing: list[str] = []\n        if missing_rows:\n            missing.append('比分选项缺' + str(len(missing_rows)) + '项(' + '/'.join(missing_rows) + ')')\n        if missing_theory:\n            missing.append('理论概率缺' + str(len(missing_theory)) + '项(' + '/'.join(missing_theory) + ')')\n        if missing_market:\n            missing.append('市场概率缺' + str(len(missing_market)) + '项(' + '/'.join(missing_market) + ')')\n        complete = not missing\n        return {\n            'complete': complete,\n            'missing': missing,\n            'rows': len(clean),\n            'formed': len(clean) - len({*missing_theory} | {*missing_market}),\n            'missing_rows': missing_rows,\n            'missing_theory': missing_theory,\n            'missing_market': missing_market,\n        }\n\n    @staticmethod\n    def build_mkt_short_wdl_matrix(rows: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"把市短（市均低于竞彩）行按胜平负聚合成矩阵，供方向锁使用。\"\"\"\n        counts = {'胜': 0, '平': 0, '负': 0}\n        discrete: dict[str, float] = {}\n        for row in (rows or []):\n            if not isinstance(row, dict):\n                continue\n            score = _norm_score(row.get('score') or '')\n            label = _score_wdl(score)\n            if label not in counts:\n                continue\n            counts[label] += 1\n            try:\n                gap = float(row.get('mkt_minus_jc') or row.get('delta') or 0.0)\n            except (TypeError, ValueError):\n                gap = 0.0\n            discrete[score] = round(gap, 4)\n        total = sum(counts.values())\n        return {\n            'available': total > 0,\n            'counts': counts,\n            'total': total,\n            'share_pct': {k: round(v * 100.0 / total, 2) if total else 0.0 for k, v in counts.items()},\n            'discrete_vector': discrete,\n            'rows': [r for r in (rows or []) if isinstance(r, dict)],\n        }\n\n    @staticmethod\n    def extract_physical_anchor(source: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"从记录里取已落盘的物理锚点；没有就返回空表，不推断、不编造。\"\"\"\n        src = source if isinstance(source, dict) else {}\n        anchor = src.get('physical_anchor')\n        if isinstance(anchor, dict) and anchor:\n            return dict(anchor)\n        dual = src.get('dual_source_facts')\n        if isinstance(dual, dict):\n            inner = dual.get('physical_anchor')\n            if isinstance(inner, dict) and inner:\n                return dict(inner)\n        return {}\n\n    @staticmethod\n    def explain_match_ou_bounds(source: Any, actual: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"大小球区间说明：只用已落盘的 ou_line / 实际比分，缺一项就说缺哪一项。\"\"\"\n        src = source if isinstance(source, dict) else {}\n        line = src.get('ou_line')\n        goals: int | None = None\n        text = _norm_score(actual)\n        if text and re.fullmatch(r'\\d+-\\d+', text):\n            left, right = text.split('-', 1)\n            goals = int(left) + int(right)\n        if line is None:\n            return {'available': False, 'line': '大小球区间: 未形成（缺 ou_line）'}\n        try:\n            line_f = float(line)\n        except (TypeError, ValueError):\n            return {'available': False, 'line': f'大小球区间: 未形成（ou_line 非数值: {line!r}）'}\n        if goals is None:\n            return {\n                'available': False,\n                'line': f'大小球区间: 盘口{line_f:g}，无完场比分可对账',\n                'ou_line': line_f,\n            }\n        verdict = '大' if goals > line_f else ('小' if goals < line_f else '走')\n        return {\n            'available': True,\n            'line': f'大小球区间: 盘口{line_f:g} vs 实际{goals}球 → {verdict}',\n            'ou_line': line_f,\n            'actual_goals': goals,\n            'verdict': verdict,\n        }\n\n    @staticmethod\n    def build_theo_mkt_31_tg_lines(pack: Any = None, **kwargs: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(p)\n\n    @staticmethod\n    def format_theo_mkt_31_tg_lines(pack: Any) -> list[str]:\n        \"\"\"31 项「市均 × 竞彩」完整对比表（每个选项一行）。\n\n        用户明确要求的交付物：31 行齐全（含三个「其它」），列 =\n        序/比分/市均赔率/市均隐含%/竞彩赔率/竞彩隐含%/Δ/来源。\n        市均覆盖不到的 9 项来源标 jc_official；不在 31 项里的 4-3/3-4/4-4\n        单独放在表尾附注，绝不混进 31 行。\n        \"\"\"\n        p = pack if isinstance(pack, dict) else {}\n        rows = [r for r in (p.get('rows') or []) if isinstance(r, dict)]\n        head = '📈【31项市均×竞彩对比表】'\n        if not rows:\n            reason = p.get('block_reason') or '缺少31全表（无市均且无竞彩赔率）'\n            return [head, f'  未形成（{reason}）']\n\n        def _f(v):\n            try:\n                return float(v)\n            except (TypeError, ValueError):\n                return None\n\n        lines = [head]\n        _prov_raw = p.get('cs31_provenance')\n        provenance: dict[str, Any] = _prov_raw if isinstance(_prov_raw, dict) else {}\n        counts: dict[str, int] = {}\n        for idx, row in enumerate(rows, 1):\n            score = str(row.get('score') or '')\n            market = _f(row.get('market'))\n            theory = _f(row.get('theory'))\n            jc = _f(row.get('jc_odds'))\n            src = str(row.get('market_source') or provenance.get(score) or '-')\n            if src == 'market_avg_odds':\n                src = 'desktop_cs'\n            elif src == 'jc_score_odds':\n                src = 'jc_official'\n            counts[src] = counts.get(src, 0) + 1\n            market_txt = f'{market:.2f}' if market is not None else '-'\n            jc_txt = f'{jc:.2f}' if jc is not None else '-'\n            # 竞彩隐含% 必须用去水归一后的 jc_odds_pct，不能是单家 1/odds。\n            # 单家口径 31 项加起来是 145.95%，和已归一的市均% 不是一把尺子，\n            # 同表的 Δ 与「市均热过理论」都会被这列带偏。\n            jc_pct_val = _f(row.get('jc_odds_pct'))\n            market_pct = f'{market:.1f}%' if market is not None else '-'\n            jc_pct = f'{jc_pct_val:.1f}%' if jc_pct_val is not None else '-'\n            delta = f'{market - theory:+.1f}' if (market is not None and theory is not None) else '-'\n            lines.append(\n                f'  {idx:02d} {score:<5s} 市均{market_txt:>7s} {market_pct:>7s} '\n                f'竞彩{jc_txt:>7s} {jc_pct:>7s} Δ{delta:>7s} {src}'\n            )\n        lines.append(\n            '  汇总: ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items()) if k != '-')\n            + f' | 共{len(rows)}项'\n            # 出处是从 books_avg 反推的（老记录没有 cs31_provenance）时必须写明，\n            # 否则读者分不清「记录的」和「推断的」两种 22+9。\n            + (' | 出处:反推(老记录无cs31_provenance)'\n               if str(p.get('cs31_provenance_source') or '') == 'derived' else '')\n        )\n        extras = p.get('cs31_extras') if isinstance(p.get('cs31_extras'), dict) else {}\n        if extras:\n            lines.append(\n                '  附注(不属31项，未计入上表): '\n                + '、'.join(f'{k}={float(v):.2f}' for k, v in sorted(extras.items()) if _f(v))\n            )\n        return lines\n\n    @staticmethod\n    def format_mkt_over_theo_tg_lines(pack: Any) -> list[str]:\n        p = pack if isinstance(pack, dict) else {}\n        return ['📉【市热超理论专表】', f\"  条数: {int(p.get('pos_count') or 0)}\"]\n\n    @staticmethod\n    def format_matrix_learning_tg_lines(info: Any, score: Any) -> list[str]:\n        return ['📌【学习改进意见】', f'  完场比分 {score or \"未形成\"}，本地模块记录样本，不改首选/次选/方向锁。']\n\n    @staticmethod\n    def build_matrix_learning_report(info: Any, score: Any) -> dict[str, Any]:\n        return {'available': True, 'actual_score': _norm_score(score), 'changes_first_score': False, 'changes_direction': False}\n\n    @staticmethod\n    def learning_match_teams_line(info: Any) -> str:\n        d = info if isinstance(info, dict) else {}\n        return f\"开赛球队：{d.get('home_team') or ''} vs {d.get('away_team') or ''}\".strip()\n\n    @staticmethod\n    def build_system_ml_dual_matrix_pack(info: Any) -> dict[str, Any]:\n        return {\n            'top8_dominant': '未形成', 'top8_share_pct': {'胜': 0.0, '平': 0.0, '负': 0.0},\n            'top15_ou_dominant': '未形成', 'top15_ou_share_pct': {'少球': 0.0, '多球': 0.0},\n            'short_vs_hot': '未形成', 'abs_vs_short_hot': '未形成',\n        }\n\n    @staticmethod\n    def build_direction_lock_judgment_report(info: Any) -> dict[str, Any]:\n        return {'verdict': '', 'available': False}\n\n    @staticmethod\n    def classify_result_score_origin(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '比分出处: 本地轻量模块未形成外部出处。'}\n\n    @staticmethod\n    def explain_score_hot_short_reason(info: Any, actual: Any) -> dict[str, Any]:\n        return {'line': '冷热理由: 本地轻量模块未形成。'}\n\n    @staticmethod\n    def matrix_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_operator_direction_lock(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False, 'direction': ''}\n\n    @staticmethod\n    def build_direction_lock_score_close(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': False}\n\n    @staticmethod\n    def build_batch_anti_homogen_pack(*args: Any, **kwargs: Any) -> dict[str, Any]:\n        return {'available': True, 'homogenized': False, 'items': []}\n\n    @staticmethod\n    def build_deepseek_only_tg_sections(*args: Any, **kwargs: Any) -> list[str]:\n        \"\"\"按读取顺序组装 DeepSeek-only TG 报告。\n\n        顺序：31对比表 → 市短 → 市热 → 市热超理论 → heat → desc。\n\n        pack 的来源有三层，生产调用点只给 ds_payload（pack 藏在里面）：\n          1. 显式 theo_mkt_31_pack / pack kwarg\n          2. kwargs['ds_payload']['theo_mkt_31_pack'] / ['pack']\n          3. 都拿不到就用空表 -> 各段自己打印「未形成（原因）」\n\n        历史实现在这里只认第 1 层，生产传入的却是 ds_payload，于是三段全部塌成\n        「未形成」，即使包里明明有完整的 31 全表。\n        \"\"\"\n        payload = kwargs.get('ds_payload') if isinstance(kwargs.get('ds_payload'), dict) else {}\n        pack = kwargs.get('theo_mkt_31_pack')\n        if not isinstance(pack, dict):\n            pack = kwargs.get('pack')\n        if not isinstance(pack, dict) and payload:\n            pack = payload.get('theo_mkt_31_pack') or payload.get('pack')\n        if not isinstance(pack, dict):\n            pack = {}\n\n        def _as_lines(value: Any) -> list[str]:\n            if isinstance(value, str):\n                return [value]\n            if isinstance(value, (list, tuple)):\n                return [str(v) for v in value]\n            return list(value or [])\n\n        sections: list[str] = []\n        title = str(kwargs.get('title_line') or '').strip()\n        if title:\n            sections.append(title)\n\n        # 1) 31 项对比表：优先用调用方已渲染好的行，否则按 pack 现渲染。\n        _t31 = _as_lines(kwargs.get('theo_mkt_31_tg_lines'))\n        sections.append('\\n'.join(_t31 or DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)))\n\n        # 2) 市短矩阵：市均 vs 竞彩（需要 jc_odds_pct，用 pack 现算）\n        short_matrix = kwargs.get('mkt_short_matrix')\n        if not isinstance(short_matrix, dict):\n            short_matrix = DeepSeekAnalyzer.build_mkt_short_matrix_from_pack(pack)\n        sections.append('\\n'.join(DeepSeekAnalyzer.format_mkt_short_wdl_matrix_tg_lines(\n            short_matrix,\n            home=str(kwargs.get('home') or ''),\n            away=str(kwargs.get('away') or ''),\n        )))\n\n        # 3) 市热矩阵：市均 vs 理论（pos_rows 同口径）\n        sections.append('\\n'.join(DeepSeekAnalyzer.format_mkt_hot_wdl_matrix_tg_lines(pack)))\n\n        # 4) 市热超理论专表（生产传 mkt_over_theo_tg_lines；以前没读，整段消失）\n        _pos_lines = _as_lines(kwargs.get('mkt_over_theo_tg_lines'))\n        if not _pos_lines and isinstance(payload, dict):\n            _pos_lines = _as_lines(payload.get('mkt_over_theo_tg_lines'))\n        if _pos_lines:\n            sections.append('\\n'.join(_pos_lines))\n\n        # 5) heat 段与 6) desc 段，按读取顺序放在最后。\n        for extra_key in (\n            'heat_tg_lines', 'jc_vs_hot_tg_lines', 'wdl_matrix_tg_lines',\n            'mkt_desc_lines', 'desc_lines',\n            'deepseek_section_lines',\n        ):\n            extra = _as_lines(kwargs.get(extra_key))\n            if not extra and isinstance(payload, dict):\n                extra = _as_lines(payload.get(extra_key))\n            if extra:\n                sections.append('\\n'.join(extra))\n        return [s for s in sections if s.strip()]\n\n    @staticmethod\n    def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        return dict(payload) if isinstance(payload, dict) else {}\n\n    @staticmethod\n    def ensure_judgment_standard_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:\n        return {'available': False, 'in_hot8': False}\n\n    @staticmethod\n    def extract_dual_scores_from_judgment_text(text: Any) -> dict[str, Any]:\n        \"\"\"从研判正文抽①②两个比分。调用方按 dict 取值，所以这里固定返回 dict。\"\"\"\n        found = re.findall(r'\\d+\\s*[-:]\\s*\\d+', str(text or ''))\n        first = _norm_score(found[0]) if found else ''\n        second = _norm_score(found[1]) if len(found) > 1 else ''\n        return {\n            'available': bool(first),\n            'first': first,\n            'second': second,\n            'scores': [_norm_score(s) for s in found[:4]],\n        }\n\n    @staticmethod\n    def analyze_match_judgment(payload: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n        \"\"\"阶段2 研判入口：把已落盘事实整理成提示词并调用 DeepSeek。\n\n        没有 DEEPSEEK_API_KEY 时 deepseek_chat_completion 返回本地确定性摘要，\n        这里把它包装成统一结构，保证阶段2 永远有 available/content/model 三个键，\n        不再出现「type object ... has no attribute」这种整段降级。\n        \"\"\"\n        facts = payload if isinstance(payload, dict) else {}\n        timeout = kwargs.get('timeout')\n        model = str(kwargs.get('model') or kwargs.get('model_name') or '') or None\n        home = str(facts.get('home') or '')\n        away = str(facts.get('away') or '')\n        match_name = str(facts.get('match') or f'{home} vs {away}'.strip())\n        key_facts = {\n            'match': match_name,\n            'kickoff': facts.get('kickoff') or '',\n            'direction_lock': facts.get('direction_lock') or {},\n            'pool15_enriched': list(facts.get('pool15_enriched') or [])[:15],\n            'theo_mkt_31_pack': (facts.get('theo_mkt_31_pack') or {}).get('rows') or [],\n            'six_market_mobile': facts.get('six_market_mobile') or {},\n            'betfair_data': facts.get('betfair_data') or {},\n            'water_gaps': facts.get('water_gaps') or [],\n        }\n        messages = assemble_prompt(\n            facts=key_facts,\n            task='给出本场竞彩研判：方向锁依据、①②比分、数据缺口。不得编造外部数据。',\n        )\n        try:\n            text = deepseek_chat_completion(\n                messages, model=model, max_retries=1, timeout=timeout,\n            )\n        except Exception as exc:  # noqa: BLE001 - network/API failure must degrade to a reportable error\n            return {\n                'available': False,\n                'content': '',\n                'error': f'{type(exc).__name__}: {exc}',\n                'model': model or deepseek_config()['chat_model'],\n            }\n        body = str(text or '').strip()\n        return {\n            'available': bool(body),\n            'content': body,\n            'error': '' if body else 'empty_completion',\n            'model': model or deepseek_config()['chat_model'],\n            'provider': 'deepseek' if deepseek_config()['api_key'] else 'local',\n        }\n\n    @staticmethod\n    def format_judgment_tg_section(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_matrix_dual_prejudge_html(*args: Any, **kwargs: Any) -> str:\n        return ''\n\n    @staticmethod\n    def format_structural_model_tg(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def format_structural_review_lines(*args: Any, **kwargs: Any) -> list[str]:\n        return []\n\n    @staticmethod\n    def align_displayed_landings(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def apply_operator_direction(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def bold_tg_match_title_html(text: Any) -> str:\n        return f'<b>{escape(str(text or \"\"))}</b>'\n\n    @staticmethod\n    def collapse_repeated_judgment_blocks(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_locked_direction_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_prob_ou_wdl_red(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def mark_selected_scores_deep_yellow(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def match_identity_fields(\n        info: Any,\n        kickoff: Any = '',\n        match_no: Any = '',\n        *args: Any,\n        **kwargs: Any,\n    ) -> dict[str, str]:\n        \"\"\"Parse 赛号 / 星期 / 开赛时间 / 对阵 from whatever the caller has.\n\n        Callers in app_v84_hermes pass either a dict record or a raw match name\n        plus `kickoff=` / `match_no=` keywords, so both shapes must work here.\n        \"\"\"\n        if isinstance(info, dict):\n            d = info\n        else:\n            d = {}\n        name = str(d.get('match') or d.get('cn_name') or ('' if d else (info or '')))\n        kickoff_text = str(kickoff or d.get('kickoff') or d.get('match_time') or d.get('time') or '')\n        number_text = str(match_no or d.get('no') or d.get('local_id') or d.get('match_no') or '')\n        code = ''\n        weekday = ''\n        found = re.search(r'周[一二三四五六日]\\s*\\d{1,3}', f'{number_text} {name}')\n        if found:\n            code = found.group(0).replace(' ', '')\n            weekday = code[:2]\n        if not number_text and code:\n            number_text = code\n        return {\n            'match': name,\n            'teams': name,\n            'time': kickoff_text,\n            'kickoff': kickoff_text,\n            'code': code or number_text,\n            'weekday': weekday,\n            'match_no': number_text,\n        }\n\n    @staticmethod\n    def pin_match_title_first(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def restrict_tg_text_to_direction_lock(text: Any, *args: Any, **kwargs: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def sanitize_bot_output(text: Any) -> str:\n        return str(text or '').strip()\n\n    @staticmethod\n    def sanitize_six_market_tg_text(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def snap_score_pair(first: Any, second: Any = None) -> tuple[str, str]:\n        return _norm_score(first), _norm_score(second)\n\n    @staticmethod\n    def strip_judgment_tg_suppressed_sections(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def strip_tg_english(text: Any) -> str:\n        return str(text or '')\n\n    @staticmethod\n    def summarize_hot_top8_hit_rate(items: Any) -> dict[str, Any]:\n        rows = list(items or []) if not isinstance(items, dict) else list(items.values())\n        total = len(rows)\n        hits = sum(1 for r in rows if isinstance(r, dict) and r.get('in_hot8'))\n        return {'total': total, 'hits': hits, 'hit_rate': (hits / total if total else 0.0)}\n\n\n\n# ---- Real DeepSeek/OpenAI-compatible client helpers ----\ndef _env(name: str, default: str = '') -> str:\n    import os\n    return os.environ.get(name, default).strip()\n\n\ndef deepseek_config() -> dict[str, Any]:\n    return {\n        'api_key': _env('DEEPSEEK_API_KEY') or _env('DEEPSEEK_KEY'),\n        'base_url': (_env('DEEPSEEK_BASE_URL') or _env('OPENAI_BASE_URL') or 'https://api.deepseek.com').rstrip('/'),\n        'chat_model': _env('DEEPSEEK_CHAT_MODEL', 'deepseek-chat'),\n        'reasoner_model': _env('DEEPSEEK_REASONER_MODEL', 'deepseek-reasoner'),\n        'timeout': float(_env('DEEPSEEK_TIMEOUT', '60') or 60),\n    }\n\n\ndef assemble_prompt(system: Any = None, user: Any = None, facts: Any = None, task: str = '') -> list[dict[str, str]]:\n    \"\"\"Build OpenAI-compatible messages for review/learning style calls.\"\"\"\n    messages: list[dict[str, str]] = []\n    sys_text = str(system or '你是足球量化分析助手，输出必须简洁、可审计、不得编造外部数据。')\n    messages.append({'role': 'system', 'content': sys_text})\n    body_parts = []\n    if task:\n        body_parts.append(f'任务: {task}')\n    if facts is not None:\n        import json\n        body_parts.append('事实数据:\\n' + json.dumps(facts, ensure_ascii=False, default=str))\n    if user:\n        body_parts.append(str(user))\n    messages.append({'role': 'user', 'content': '\\n\\n'.join(body_parts) or '请基于已有事实给出本地分析。'})\n    return messages\n\n\ndef _local_analysis(messages: Any, json_mode: bool = False) -> Any:\n    joined = '\\n'.join(str(m.get('content', '')) for m in (messages or []) if isinstance(m, dict))\n    if json_mode:\n        return {'available': False, 'provider': 'local', 'summary': '未配置 DEEPSEEK_API_KEY，已使用本地确定性分析。', 'input_chars': len(joined)}\n    return f'本地确定性分析：未配置 DEEPSEEK_API_KEY，已基于现有事实生成降级摘要（输入{len(joined)}字）。'\n\n\ndef deepseek_chat_completion(messages: Any, model: str | None = None, stream: bool = False,\n                             json_mode: bool = False, max_retries: int = 3,\n                             temperature: float = 0.2, timeout: float | None = None) -> Any:\n    \"\"\"Call DeepSeek/OpenAI-compatible chat completions when a key is configured.\n\n    Without DEEPSEEK_API_KEY this returns deterministic local analysis, so import\n    and tests never require paid credentials.\n    \"\"\"\n    cfg = deepseek_config()\n    if not cfg['api_key']:\n        return _local_analysis(messages, json_mode=json_mode)\n    import json\n    import time\n\n    import requests\n    url = f\"{cfg['base_url']}/v1/chat/completions\"\n    payload: dict[str, Any] = {\n        'model': model or cfg['chat_model'],\n        'messages': list(messages or []),\n        'temperature': temperature,\n        'stream': bool(stream),\n    }\n    if json_mode:\n        payload['response_format'] = {'type': 'json_object'}\n    headers = {'Authorization': f\"Bearer {cfg['api_key']}\", 'Content-Type': 'application/json'}\n    last_err: Exception | None = None\n    request_timeout = float(timeout or cfg['timeout'] or 60)\n    for attempt in range(max(1, int(max_retries or 1))):\n        try:\n            resp = requests.post(\n                url,\n                headers=headers,\n                json=payload,\n                timeout=request_timeout,\n                stream=stream,\n            )\n            if resp.status_code == 429 and attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt)); continue\n            resp.raise_for_status()\n            if stream:\n                chunks=[]\n                for raw in resp.iter_lines(decode_unicode=True):\n                    if not raw or not str(raw).startswith('data:'):\n                        continue\n                    data=str(raw)[5:].strip()\n                    if data == '[DONE]':\n                        break\n                    try:\n                        obj=json.loads(data)\n                        chunks.append(obj.get('choices', [{}])[0].get('delta', {}).get('content', ''))\n                    except json.JSONDecodeError:\n                        continue\n                text=''.join(chunks)\n            else:\n                obj=resp.json()\n                text=obj.get('choices', [{}])[0].get('message', {}).get('content', '')\n            if json_mode:\n                try:\n                    return json.loads(text)\n                except json.JSONDecodeError:\n                    return {'available': True, 'provider': 'deepseek', 'raw': text}\n            return text\n        except Exception as exc:  # noqa: BLE001 - network/API retry wrapper\n            last_err = exc\n            if attempt < max_retries - 1:\n                time.sleep(min(30, 2 ** attempt))\n    if json_mode:\n        return {'available': False, 'provider': 'deepseek', 'error': str(last_err or '')[:200]}\n    return f'DeepSeek调用失败，已降级：{str(last_err or \"unknown\")[:160]}'\n\n\ndef deepseek_json(messages: Any, **kwargs: Any) -> dict[str, Any]:\n    result = deepseek_chat_completion(messages, json_mode=True, **kwargs)\n    return result if isinstance(result, dict) else {'available': False, 'raw': str(result)}\n\n\ndef run_learning_report(facts: Any, task: str = '赛后复盘学习') -> str:\n    return str(deepseek_chat_completion(assemble_prompt(facts=facts, task=task)))\n\n\ndef get_deepseek_analyzer(*args: Any, **kwargs: Any) -> DeepSeekAnalyzer:\n    return DeepSeekAnalyzer()\n",
+  "blade_ml_engine": "\"\"\"Local deterministic ML helpers for FLAnalyzer.\n\nThe real app can use sklearn when present, but this module is importable without\noptional ML dependencies and provides stable Poisson-based fallbacks.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport math\nimport os\n\n# Trusted local model-cache compatibility; load paths are constrained before use.\nimport pickle  # nosec B403\nfrom pathlib import Path\nfrom typing import Any\n\ntry:\n    import sklearn  # type: ignore  # noqa: F401\n\n    SKLEARN_OK = True\nexcept ImportError:\n    SKLEARN_OK = False\n\nML_SKLEARN_OK = SKLEARN_OK\n\n\ndef ml_predict_enabled() -> bool:\n    return True\n\n\ndef _safe_float(value: Any, default: float = 0.0) -> float:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef _line_or_none(primary: Any, secondary: Any) -> Any:\n    \"\"\"盘口线取值：primary 只要 is not None 就用（0.0 = 平手盘是真实值）。\n\n    `primary or secondary` 会把平手盘 0.0 当成缺失，于是特征退化成默认 0.0，\n    和真实的平手盘再也分不开。\n    \"\"\"\n    if primary is not None:\n        return primary\n    return secondary\n\n\ndef calc_bivariate_poisson_matrix(\n    lam_h: Any,\n    lam_a: Any,\n    lambda_shared: Any = 0.0,\n    max_goals: int = 10,\n) -> dict[str, float]:\n    lh = max(0.01, _safe_float(lam_h, 1.2))\n    la = max(0.01, _safe_float(lam_a, 0.9))\n    limit = max(1, int(max_goals or 10))\n    out: dict[str, float] = {}\n    total = 0.0\n    for h in range(limit + 1):\n        ph = math.exp(-lh) * (lh**h) / math.factorial(h)\n        for a in range(limit + 1):\n            pa = math.exp(-la) * (la**a) / math.factorial(a)\n            p = ph * pa\n            out[f'{h}-{a}'] = p\n            total += p\n    if total > 0:\n        out = {k: v / total for k, v in out.items()}\n    return out\n\n\n# ---- Persistent training bundle ----\ndef _models_dir() -> str:\n    return os.environ.get('MODELS_DIR') or os.environ.get('FLANALYZER_MODELS_DIR') or 'models'\n\n\ndef _models_root() -> Path:\n    return Path(_models_dir()).expanduser().resolve()\n\n\ndef _bundle_path() -> str:\n    return str(_models_root() / 'blade_ml_bundle.pkl')\n\n\ndef _constrained_bundle_path() -> Path:\n    root = _models_root()\n    path = Path(_bundle_path()).expanduser().resolve()\n    if root not in path.parents and path != root:\n        raise ValueError(f'model bundle path escapes MODELS_DIR: {path}')\n    return path\n\n\ndef _extract_training_rows(history: Any) -> list[dict[str, Any]]:\n    rows = []\n    source = history.values() if isinstance(history, dict) else (history or [])\n    for rec in source:\n        if not isinstance(rec, dict):\n            continue\n        score = str(rec.get('actual_score') or '').replace(' (进行中)', '').replace(':', '-')\n        if '-' not in score:\n            continue\n        left, right = [part.strip() for part in score.split('-', 1)]\n        if not (left.isdigit() and right.isdigit()):\n            continue\n        h, a = int(left), int(right)\n        rows.append({\n            'lam_h': _safe_float(rec.get('lam_h') or rec.get('lambda_home'), 1.2),\n            'lam_a': _safe_float(rec.get('lam_a') or rec.get('lambda_away'), 0.9),\n            'ou_line': _safe_float(rec.get('ou_line'), 2.5),\n            'ah_line': _safe_float(_line_or_none(rec.get('asian_handicap'), rec.get('ah_line')), 0.0),\n            'home_goals': h,\n            'away_goals': a,\n        })\n    return rows\n\n\ndef train_from_history(history: Any, save: bool = True) -> dict[str, Any]:\n    rows = _extract_training_rows(history)\n    bundle = {\n        'trained': False,\n        'rows': len(rows),\n        'sklearn_ok': SKLEARN_OK,\n        'model_type': 'poisson_mean',\n        'created_from': 'history',\n    }\n    if not rows:\n        bundle.update({'home_mean': 1.2, 'away_mean': 0.9, 'reason': 'no_completed_scores'})\n    else:\n        bundle['home_mean'] = sum(r['home_goals'] for r in rows) / len(rows)\n        bundle['away_mean'] = sum(r['away_goals'] for r in rows) / len(rows)\n        bundle['trained'] = True\n        if SKLEARN_OK and len(rows) >= 5:\n            try:\n                from sklearn.ensemble import GradientBoostingRegressor  # type: ignore\n\n                x_rows = [[r['lam_h'], r['lam_a'], r['ou_line'], r['ah_line']] for r in rows]\n                yh = [r['home_goals'] for r in rows]\n                ya = [r['away_goals'] for r in rows]\n                mh = GradientBoostingRegressor(random_state=42).fit(x_rows, yh)\n                ma = GradientBoostingRegressor(random_state=43).fit(x_rows, ya)\n                bundle.update({'model_type': 'gradient_boosting', 'home_model': mh, 'away_model': ma})\n            except (ImportError, AttributeError, TypeError, ValueError) as exc:\n                bundle['train_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    if save:\n        save_bundle(bundle)\n    return bundle\n\n\ndef save_bundle(bundle: dict[str, Any]) -> bool:\n    path = _constrained_bundle_path()\n    path.parent.mkdir(parents=True, exist_ok=True)\n    with path.open('wb') as fh:\n        pickle.dump(bundle, fh)\n    return True\n\n\ndef load_bundle() -> dict[str, Any] | None:\n    path = _constrained_bundle_path()\n    if not path.exists():\n        return None\n    # Trusted local model cache constrained to MODELS_DIR.\n    with path.open('rb') as fh:\n        bundle = pickle.load(fh)  # nosec B301\n    return bundle if isinstance(bundle, dict) else None\n\n\ndef _predict_lambdas_from_bundle(bundle: dict[str, Any], info: dict[str, Any]) -> tuple[float, float]:\n    base = [\n        _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2)),\n        _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9)),\n        _safe_float(info.get('ou_line'), 2.5),\n        _safe_float(_line_or_none(info.get('asian_handicap'), info.get('ah_line')), 0.0),\n    ]\n    if bundle.get('model_type') == 'gradient_boosting' and bundle.get('home_model') and bundle.get('away_model'):\n        try:\n            return (\n                max(0.05, float(bundle['home_model'].predict([base])[0])),\n                max(0.05, float(bundle['away_model'].predict([base])[0])),\n            )\n        except (AttributeError, TypeError, ValueError) as exc:\n            bundle['predict_warning'] = f'{type(exc).__name__}: {str(exc)[:120]}'\n    return (\n        max(0.05, _safe_float(info.get('lam_h') or info.get('lambda_home'), bundle.get('home_mean', 1.2))),\n        max(0.05, _safe_float(info.get('lam_a') or info.get('lambda_away'), bundle.get('away_mean', 0.9))),\n    )\n\n\ndef ensure_ml_bundle(force_train: bool = False) -> dict[str, Any]:\n    bundle = None if force_train else load_bundle()\n    if bundle is None:\n        return {\n            'enabled': True,\n            'reason': 'no_trained_bundle',\n            'poisson': None,\n            'sample_count': 0,\n            'sklearn_ok': SKLEARN_OK,\n            'bundle_path': _bundle_path(),\n        }\n    return {\n        'enabled': True,\n        'reason': 'trained_bundle_loaded',\n        'poisson': bundle,\n        'sample_count': int(bundle.get('rows') or 0),\n        'sklearn_ok': SKLEARN_OK,\n        'bundle_path': _bundle_path(),\n    }\n\n\ndef predict_match_ml(match_info: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    info = match_info if isinstance(match_info, dict) else {}\n    bundle = load_bundle()\n    if bundle:\n        lam_h, lam_a = _predict_lambdas_from_bundle(bundle, info)\n    else:\n        lam_h = _safe_float(info.get('lam_h') or info.get('lambda_home'), 1.2)\n        lam_a = _safe_float(info.get('lam_a') or info.get('lambda_away'), 0.9)\n    matrix = calc_bivariate_poisson_matrix(lam_h, lam_a, max_goals=7)\n    preferred = max(matrix, key=lambda score: matrix[score]) if matrix else ''\n    sorted_scores = sorted(matrix.items(), key=lambda kv: kv[1], reverse=True)[:8]\n    return {\n        'enabled': True,\n        'used': True,\n        'reason': 'trained_bundle' if bundle else 'local_poisson_fallback',\n        'preferred_score': preferred,\n        'top_scores': sorted_scores,\n        'poisson_lambda': {'home': lam_h, 'away': lam_a},\n        'expected_total_goals': round(lam_h + lam_a, 4),\n    }\n\n\ndef learn_match_after_result(info: Any) -> dict[str, Any]:\n    return {\n        'ok': True,\n        'sample_count': 1 if isinstance(info, dict) else 0,\n        'feature_count': 0,\n        'actual_score': (info or {}).get('actual_score') if isinstance(info, dict) else None,\n    }\n\n\ndef train_daily_poisson(force: bool = True) -> tuple[bool, str, int, int]:\n    hist_path = os.environ.get('HISTORY_FILE', 'match_history.json')\n    history = {}\n    if os.path.exists(hist_path):\n        try:\n            with open(hist_path, encoding='utf-8') as fh:\n                history = json.load(fh)\n        except (OSError, json.JSONDecodeError) as exc:\n            print(f\"   ⚠️ [ML引擎] 历史样本读取失败，使用空样本: {type(exc).__name__}\")\n            history = {}\n    bundle = train_from_history(history, save=True)\n    return bool(bundle.get('trained')), str(bundle.get('model_type') or 'poisson_mean'), int(bundle.get('rows') or 0), 4\n\n\ndef deepseek_flash_ml_brief(*args: Any, **kwargs: Any) -> str:\n    return 'deepseek-flash ML 摘要需用户配置 DeepSeek 服务；本地泊松兜底已可用。'\n",
+  "okooo_mobile_cs": "\"\"\"Mobile Okooo correct-score/market helpers.\n\nThe functions here are real deterministic parsers/normalizers. Network scraping\nreturns structured unavailable payloads when caller has not provided a session or\nreachable service data, so app_v84_hermes can run without optional private code.\n\"\"\"\nfrom __future__ import annotations\n\nimport json\nimport os\nimport re\nimport time\nfrom pathlib import Path\nfrom typing import Any\n\nimport requests\n\n_STORE = Path('reports/six_market_contradictions.json')\n\n\n# ---- HTTP/cache helpers ----\ndef _cache_dir() -> Path:\n    d = Path(os.environ.get('OKOOO_CACHE_DIR', 'reports/okooo_cache'))\n    d.mkdir(parents=True, exist_ok=True)\n    return d\n\n\ndef _safe_id(value: Any) -> str:\n    return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value or 'unknown'))\n\n\ndef _cache_path(kind: str, match_id: Any) -> Path:\n    return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'\n\n\ndef _proxy_dict(proxies: Any = None) -> dict[str, str] | None:\n    if isinstance(proxies, dict):\n        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}\n    proxy = str(\n        proxies\n        or os.environ.get('OKOOO_PROXY')\n        or os.environ.get('HTTPS_PROXY')\n        or os.environ.get('HTTP_PROXY')\n        or ''\n    ).strip()\n    return {'http': proxy, 'https': proxy} if proxy else None\n\n\ndef _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:\n    headers = {\n        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',\n        'Accept-Language': 'zh-CN,zh;q=0.9',\n        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',\n    }\n    last = ''\n    for attempt in range(max(1, retries)):\n        try:\n            sess = session or requests\n            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)\n            if resp.status_code == 200 and resp.text:\n                resp.encoding = getattr(resp, 'apparent_encoding', None) or 'utf-8'\n                return resp.text\n            last = f'HTTP {resp.status_code}'\n            # 4xx 不是网络抖动，重试只会更快被封，直接返回让上层如实报告。\n            if 400 <= resp.status_code < 500:\n                raise RuntimeError(last)\n        except requests.RequestException as exc:\n            last = f'{type(exc).__name__}: {str(exc)[:120]}'\n        time.sleep(min(4, 2**attempt))\n    raise RuntimeError(last or 'empty response')\n\n\n_WARMUP_URL = 'https://www.okooo.com/'\n_MOBILE_WARMUP_URL = 'https://m.okooo.com/jczq/'\n\n_DESKTOP_UA = (\n    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '\n    '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'\n)\n# 手机页只认手机 UA：同一个 URL 用桌面 UA 会被 WAF 挡成 403/405。\n_MOBILE_UA = (\n    'Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 '\n    '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'\n)\n\n\ndef decode_okooo_html(raw: Any, headers: Any = None) -> str:\n    \"\"\"把澳客页面字节解成文本。中文选择器全靠这一步，解错就什么都匹配不到。\n\n    真实情况（2026-11-25 现场核对）：\n      * 桌面页与多数手机页：`<meta charset=\"GBK\">`，body 是 GBK。\n      * 手机大小球页 `ah.php?type=daxiao`：**UTF-8**，而且整页是\n        `\\\\uXXXX` 转义，没有任何 charset 声明。\n    所以顺序是：meta charset → 严格 UTF-8 → gb18030 → 宽松 UTF-8，\n    并且把 `\\\\uXXXX` 反转义。绝不用「先 gb18030 不行再换」这种猜测顺序，\n    因为 GBK 字节流常常也能被 UTF-8 之外的编码解出半对半错的乱码。\n    \"\"\"\n    if isinstance(raw, str):\n        text = raw\n    else:\n        data = bytes(raw or b'')\n        if not data:\n            return ''\n        head = data[:4096].lower()\n        meta = re.search(rb'charset\\s*=\\s*[\"\\']?\\s*([a-z0-9_\\-]+)', head)\n        candidates: list[str] = []\n        if meta:\n            declared = meta.group(1).decode('ascii', 'ignore').strip().lower()\n            if declared in {'gbk', 'gb2312', 'gb18030'}:\n                candidates = ['gb18030']\n            elif declared:\n                candidates = [declared]\n        candidates += ['utf-8', 'gb18030']\n        text = ''\n        for encoding in candidates:\n            try:\n                text = data.decode(encoding)\n                break\n            except (UnicodeDecodeError, LookupError):\n                continue\n        if not text:\n            text = data.decode('utf-8', 'replace')\n    if '\\\\u' in text:\n        # 有的页面把整段 HTML 写成 JS 的 \\uXXXX 转义。只替换转义序列本身，\n        # 不能用 unicode_escape 整体往返——那会把真实的非 ASCII 文本弄坏，\n        # 而且对 \"\\/\" 之类的 HTML 转义会告警。\n        def _unescape(match: re.Match[str]) -> str:\n            try:\n                return chr(int(match.group(1), 16))\n            except ValueError:\n                return match.group(0)\n\n        text = re.sub(r'\\\\u([0-9a-fA-F]{4})', _unescape, text)\n    return text\n\n\ndef _tag_text(html: Any, attr: Any, names: Any) -> dict[str, str]:\n    \"\"\"从一段 HTML 里取「标记落在 names 里」的标签文本。\n\n    澳客两种写法都有，必须都认：\n      * 手机亚指/欧指页：`<span type=\"xinzhu\">2.17</span>`（属性）\n      * 手机大小球页：`<span class=\"sort-xin-daqiu fontblue\">1.93</span>`（class 片段）\n    标签和属性还会跨行（`<em\\\\n class=\"...\" type=\"xin\">`），所以先压平空白再匹配。\n    \"\"\"\n    wanted = {str(n) for n in (names or []) if n}\n    out: dict[str, str] = {}\n    for match in re.finditer(r'<(\\w+)([^>]*)>([^<]*)', str(html or '')):\n        attrs = re.sub(r'\\s+', ' ', match.group(2))\n        marks: set[str] = set()\n        found = re.search(r'type\\s*=\\s*[\"\\']([^\"\\']+)[\"\\']', attrs)\n        if found:\n            marks.add(found.group(1))\n        classes = re.search(r'class\\s*=\\s*[\"\\']([^\"\\']+)[\"\\']', attrs)\n        if classes:\n            marks.update(classes.group(1).split())\n        hit = wanted & marks\n        if not hit:\n            continue\n        value = re.sub(r'\\s+', ' ', match.group(3)).strip()\n        # 同一标签可能同时命中多个别名，按优先级全部写入，先到先得。\n        for name in hit:\n            out.setdefault(name, value)\n    return out\n\n\ndef _num_of(raw: Any) -> float | None:\n    token = str(raw or '').replace(',', '').replace('%', '').strip()\n    if not token:\n        return None\n    try:\n        return float(token)\n    except ValueError:\n        return None\n\n\ndef _referers_for(url: str) -> list[str]:\n    \"\"\"给一个页面挑 Referer 候选。\n\n    现场核对（2026-11-25）：桌面波胆页\n      * `Referer: https://www.okooo.com/`            → 405\n      * `Referer: .../soccer/match/<id>/` 或 `/odds/` → 200\n    所以对 /soccer/match/<id>/xxx/ 这类页面，先用「同场次页」当来源，\n    首页只作最后兜底。手机页用手机赛程页。\n    \"\"\"\n    if 'm.okooo.com' in url:\n        return [_MOBILE_WARMUP_URL]\n    found = re.search(r'https?://[^/]+(/soccer/match/\\d+/)', url)\n    if found:\n        base = url.split('/soccer/match/')[0]\n        return [f'{base}{found.group(1)}', _WARMUP_URL]\n    return [_WARMUP_URL]\n\n\ndef _warm_session(proxies: Any = None, mobile: bool = False, referer: str | None = None) -> Any:\n    \"\"\"建一个带站点 cookie 的会话。\n\n    澳客对没有 cookie 的直连请求直接回 405/403（阿里云 WAF 拦截页），\n    先用会话访问一个正常页拿到 cookie，再抓详情页就正常。\n    \"\"\"\n    try:\n        sess = requests.Session()\n        sess.get(\n            referer or (_MOBILE_WARMUP_URL if mobile else _WARMUP_URL),\n            headers={\n                'User-Agent': _MOBILE_UA if mobile else _DESKTOP_UA,\n                'Accept-Language': 'zh-CN,zh;q=0.9',\n            },\n            proxies=_proxy_dict(proxies),\n            timeout=15,\n        )\n        return sess\n    except requests.RequestException:\n        return requests.Session()\n\n\ndef _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: int = 1, timeout: int = 15) -> dict[str, Any]:\n    \"\"\"抓一个页面并把「实际发生了什么」原样带回来，供不可用原因使用。\n\n    返回 {ok, url, status, bytes, title, blocked, error, html, encoding, referer}。\n    手机页自动用手机 UA 并带手机赛程页来源；桌面页按 _referers_for 逐个试——\n    波胆页对 Referer 敏感，来源页不对就是 405，这不是站点不可用。\n    \"\"\"\n    info: dict[str, Any] = {\n        'ok': False, 'url': url, 'status': 0, 'bytes': 0,\n        'title': '', 'blocked': False, 'error': '', 'html': '', 'encoding': '', 'referer': '',\n    }\n    is_mobile = 'm.okooo.com' in url\n    referers = _referers_for(url)\n    last_error = ''\n    attempts = max(1, retries) * (len(referers) + 1)\n    active_session = session\n    referer = referers[0] if referers else _WARMUP_URL\n    for attempt in range(attempts):\n        headers = {\n            'User-Agent': _MOBILE_UA if is_mobile else _DESKTOP_UA,\n            'Accept-Language': 'zh-CN,zh;q=0.9',\n            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',\n            'Referer': referer,\n        }\n        try:\n            sess = active_session or requests\n            resp = sess.get(url, headers=headers, proxies=_proxy_dict(proxies), timeout=timeout)\n            info['status'] = int(resp.status_code)\n            info['bytes'] = len(resp.content or b'')\n            info['referer'] = referer\n            info['encoding'] = str(resp.encoding or '').lower()\n            html = decode_okooo_html(resp.content or b'', resp.headers)\n            info['html'] = html\n            title = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL | re.IGNORECASE)\n            info['title'] = re.sub(r'\\s+', ' ', title.group(1)).strip()[:80] if title else ''\n            info['blocked'] = bool(\n                resp.status_code in (403, 405)\n                or 'your request has been blocked' in html.lower()\n                or '滑动验证' in html\n                or 'aliyuncaptcha' in html.lower()\n            )\n            info['ok'] = bool(resp.status_code == 200 and html)\n            if info['ok']:\n                info['error'] = ''\n                return info\n            last_error = f'HTTP {resp.status_code}'\n            if info['blocked']:\n                # 被拦：换一个 Referer 再试；还有候选就继续，别在同一组合上死等。\n                nxt = _next_referer(referers, referer)\n                if nxt:\n                    referer = nxt\n                    active_session = _warm_session(proxies, mobile=is_mobile, referer=referer)\n                    continue\n                if active_session is None:\n                    active_session = _warm_session(proxies, mobile=is_mobile, referer=referer)\n                    continue\n                break\n            if 400 <= resp.status_code < 500:\n                break\n        except requests.RequestException as exc:\n            last_error = f'{type(exc).__name__}: {str(exc)[:100]}'\n        except Exception as exc:  # noqa: BLE001 - 详情抓取的任何失败都只回报原因\n            last_error = f'{type(exc).__name__}: {str(exc)[:100]}'\n            break\n        if attempt + 1 < attempts:\n            time.sleep(min(3, 2**attempt))\n    info['error'] = last_error or 'empty response'\n    return info\n\n\ndef _next_referer(referers: list[str], current: str) -> str | None:\n    \"\"\"取当前 Referer 之后的下一个候选；没有就返回 None。\"\"\"\n    try:\n        index = referers.index(current)\n    except ValueError:\n        return referers[0] if referers else None\n    return referers[index + 1] if index + 1 < len(referers) else None\n\n\n# 缓存版本：打包格式一变就 +1，旧包一律拒绝并重抓。\n# 没有版本的缓存会让「任何跑过旧版本的机器」永久看不到之后的修复——\n# 用户的 channel=desktop_cs / books=25 / jc=0 正是旧包被当成新数据。\nCACHE_SCHEMA = 2\n_ACCEPTED_CS_CHANNELS = {'mobile', 'okooo_cs'}\n\n\ndef _cache_stamp(pack: dict[str, Any]) -> dict[str, Any]:\n    \"\"\"给要落盘的包盖上版本和时间戳。\"\"\"\n    if isinstance(pack, dict):\n        pack['cache_schema'] = CACHE_SCHEMA\n        pack['built_at'] = time.strftime('%Y-%m-%d %H:%M:%S')\n    return pack\n\n\ndef _cache_reject_reason(cache: Path, data: Any, *, require_31: bool = False) -> str:\n    \"\"\"判断一个缓存包还能不能用。返回拒绝原因，'' 表示可用。\n\n    三条硬规则：\n      * cache_schema 必须是当前版本（旧包 = 旧解析逻辑的产物）；\n      * correct_score_channel 必须是现在真正会写出的通道\n        （desktop_cs 是旧标签，出现即说明是旧包）；\n      * 若要求 31 全表，包里必须有合并后的 31 项（cs31_complete / 31 个键）。\n    \"\"\"\n    if not isinstance(data, dict) or not data:\n        return 'cache_empty'\n    if int(data.get('cache_schema') or 0) != CACHE_SCHEMA:\n        return 'cache_schema_old'\n    if 'correct_score_channel' in data:\n        ch = str(data.get('correct_score_channel') or '')\n        if ch and ch not in _ACCEPTED_CS_CHANNELS:\n            return 'cache_channel_stale'\n    if require_31:\n        page = data.get('correct_score_page_avg')\n        n = len(page) if isinstance(page, dict) else 0\n        if not data.get('cs31_complete') or n < 31:\n            return 'cache_missing_jc31'\n    return ''\n\n\ndef _read_json_cache(\n    path: Path, *, require_31: bool = False, label: str = '澳客手机CS',\n) -> dict[str, Any] | None:\n    \"\"\"读缓存；旧版本/旧通道/缺31 一律拒绝，并打印一行原因后重抓。\"\"\"\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except (OSError, json.JSONDecodeError) as exc:\n        print(f\"   ⚠️ [{label}] 缓存读取跳过 {path.name}: {type(exc).__name__}\")\n        return None\n    if not isinstance(data, dict):\n        return None\n    reason = _cache_reject_reason(path, data, require_31=require_31)\n    if reason:\n        # 明确说出来，不要静默重抓——否则用户无从知道为什么之前的修复「没生效」。\n        print(\n            f\"   ♻️ [{label}] 缓存已作废 {path.name}: reason={reason} \"\n            f\"(schema={data.get('cache_schema') or 0}→{CACHE_SCHEMA}, \"\n            f\"channel={data.get('correct_score_channel') or '-'})，重新抓取\"\n        )\n        try:\n            path.unlink()\n        except OSError:\n            pass\n        return None\n    return data\n\n\ndef _parse_score_odds_from_text(text: str) -> dict[str, float]:\n    odds = {}\n    # Handles compact HTML/text containing score followed by decimal odds.\n    for score, odd in re.findall(r'(?:>|\\b)(\\d+\\s*[-:：]\\s*\\d+)(?:<|\\b)[^\\d]{0,80}([1-9]\\d?(?:\\.\\d+)?)', text):\n        try:\n            odds[score.replace('：', '-').replace(':', '-').replace(' ', '')] = float(odd)\n        except ValueError:\n            continue\n    return odds\n\n\ndef _okooo_only_data_mode(*args: Any, **kwargs: Any) -> bool:\n    return bool(kwargs.get('data_only', False))\n\n\ndef _okooo_cs_odds_plausible(od: Any, floor: float = 2.01) -> bool:\n    try:\n        return float(od) >= float(floor)\n    except (TypeError, ValueError):\n        return False\n\n\ndef _looks_like_score_map(value: Any) -> bool:\n    \"\"\"一个 dict 是不是「比分→赔率」裸映射（而不是带键的 pack）。\n\n    判据：没有任何已知的容器键，且过半的键看起来像比分（1-0 / 1:0 / 胜其它）。\n    \"\"\"\n    if not isinstance(value, dict) or not value:\n        return False\n    known = {\n        'correct_score_jc_official', 'jc_score_odds', 'correct_score_page_avg',\n        'correct_score_books_avg', 'correct_score_site_avg', 'available', 'channel',\n        'match_id', 'boards_hit', 'missing', 'source_report',\n    }\n    if known & set(value):\n        return False\n    score_like = 0\n    for key, odd in value.items():\n        text = str(key or '').strip()\n        if re.fullmatch(r'\\d{1,2}\\s*[-:：]\\s*\\d{1,2}', text) or '其它' in text:\n            try:\n                if float(odd) > 1:\n                    score_like += 1\n            except (TypeError, ValueError):\n                continue\n    return score_like > 0 and score_like * 2 >= len(value)\n\n\ndef _okooo_apply_jc_score_fill(\n    record: dict[str, Any],\n    pack: dict[str, Any] | None = None,\n    source_note: str = '',\n    overwrite: bool = False,\n) -> dict[str, Any]:\n    \"\"\"把竞彩比分赔率写进 record['correct_score_jc_official']。\n\n    `pack` 既可以是带键的容器（jc_score_odds / correct_score_jc_official），\n    也可以直接是裸的 {score: odd} 映射。历史上只认前者，于是调用方把裸映射\n    传进来时什么都写不进去，日志里 `jc=0` 永远消不掉。\n    \"\"\"\n    if not isinstance(record, dict):\n        return {}\n    src = pack if isinstance(pack, dict) else record\n    jc = src.get('correct_score_jc_official') or src.get('jc_score_odds') or {}\n    if not (isinstance(jc, dict) and jc) and _looks_like_score_map(src):\n        jc = src\n    if not (isinstance(jc, dict) and jc) and _looks_like_score_map(record):\n        jc = record\n    if isinstance(jc, dict) and jc:\n        if overwrite or not record.get('correct_score_jc_official'):\n            record['correct_score_jc_official'] = dict(jc)\n        if source_note:\n            record['correct_score_jc_source_note'] = source_note\n    return record\n\n\ndef parse_mobile_nav_ft_score(html: Any, match_id: Any = None) -> str:\n    text = str(html or '')\n    patterns = [r'(\\d+)\\s*[-:：]\\s*(\\d+)\\s*(?:完|全场|FT)?', r'全场[^0-9]*(\\d+)\\s*[-:：]\\s*(\\d+)']\n    for pat in patterns:\n        m = re.search(pat, text)\n        if m:\n            return f'{int(m.group(1))}-{int(m.group(2))}'\n    return ''\n\n\ndef mobile_vs_full_time_score(nav_score: Any, actual_score: Any) -> bool:\n    return str(nav_score or '').replace(':', '-').strip() == str(actual_score or '').replace(':', '-').replace(' (进行中)', '').strip()\n\n\ndef _looks_like_final_score(text: Any) -> bool:\n    match = re.fullmatch(r'\\s*(\\d{1,2})\\s*[-:：]\\s*(\\d{1,2})\\s*', str(text or ''))\n    if not match:\n        return False\n    left, right = int(match.group(1)), int(match.group(2))\n    return 0 <= left <= 15 and 0 <= right <= 15\n\n\ndef jingcai_board_row_finished(\n    row: Any = None,\n    today_md: str = '',\n    *,\n    day_closed: bool = False,\n    end: Any = None,\n    inside_end_hide: bool = False,\n) -> bool:\n    if day_closed or inside_end_hide:\n        return True\n    end_text = str(end or '').strip().lower()\n    if end_text in {'1', 'true', 'yes', 'y', 'end', 'ended', 'closed', 'finish', 'finished', 'done', '完', '已完', '全场'}:\n        return True\n    if end_text and _looks_like_final_score(end_text):\n        return True\n    try:\n        zvs = row.select_one('.zVS') if row is not None and hasattr(row, 'select_one') else None\n        zvs_text = zvs.get_text(strip=True) if zvs is not None else ''\n        if _looks_like_final_score(zvs_text):\n            return True\n    except (AttributeError, TypeError):\n        pass\n    text = ' '.join(str(x) for x in row) if isinstance(row, (list, tuple)) else str(row or '')\n    return any(k in text for k in ('完', '全场', '已完', 'FT')) or _looks_like_final_score(text)\n\n\ndef build_score_market_heat_ranking(\n    odds_map: Any = None,\n    correct_score_rows: Any = None,\n    pool_enriched: Any = None,\n    page_avg_odds: Any = None,\n    heat_source: str = 'okooo_mobile_cs_existing_odds',\n    channel: str = 'mobile',\n    **kwargs: Any,\n) -> dict[str, Any]:\n    \"\"\"按比分赔率排热度。\n\n    `channel` 是正式参数名，但历史调用方（以及已发布的单文件内嵌副本）\n    发的是 `heat_channel`。这里接受它作为别名，避免一个关键字名把整块\n    score_market_heat 打挂——那会连带方向锁重建失败。\n    \"\"\"\n    alias_channel = kwargs.get('heat_channel')\n    if alias_channel and (not channel or channel == 'mobile'):\n        # 显式传了别名就以它为准（默认值 'mobile' 不算显式）。\n        channel = str(alias_channel)\n    if not channel:\n        channel = 'unknown'\n    # 法律通道标签归一：桌面波胆页抓到的市均是合法的 27 家公司均值，\n    # 不是被禁的「桌面分析页/pool31」。历史标签 desktop_cs 归一成 okooo_cs，\n    # 让 _is_legal_mobile_cs_heat 的 okooo_cs_books_avg 分支能认它。\n    # 标签归一前先强制成字符串：heat_source/channel 可能被传 None 或数字，\n    # `'desktop' in None` 会直接 TypeError，把整块 heat 打挂。\n    channel = str(channel or '')\n    heat_source = str(heat_source or '')\n    if channel in {'desktop_cs', 'okooo_desktop_cs', 'okooo_cs_desktop'}:\n        channel = 'okooo_cs'\n    if 'desktop' in heat_source:\n        heat_source = 'okooo_cs_books_avg'\n    rows = []\n    odds_sources: list[tuple[str, Any]] = []\n    if isinstance(odds_map, dict):\n        odds_sources.extend((str(score), raw) for score, raw in odds_map.items())\n    if isinstance(page_avg_odds, dict):\n        odds_sources.extend((str(score), raw) for score, raw in page_avg_odds.items())\n    if isinstance(correct_score_rows, dict):\n        odds_sources.extend((str(score), raw) for score, raw in correct_score_rows.items())\n    elif isinstance(correct_score_rows, (list, tuple)):\n        for item in correct_score_rows:\n            if isinstance(item, dict):\n                score = item.get('score') or item.get('name') or item.get('cs')\n                odds_sources.append((str(score or ''), item))\n            elif isinstance(item, (list, tuple)) and item:\n                odds_sources.append((str(item[0]), item[1] if len(item) > 1 else None))\n            else:\n                odds_sources.append((str(item), None))\n    enriched_by_score: dict[str, Any] = {}\n    if isinstance(pool_enriched, dict):\n        enriched_by_score = {str(k).replace(':', '-'): v for k, v in pool_enriched.items()}\n    elif isinstance(pool_enriched, (list, tuple)):\n        for item in pool_enriched:\n            if isinstance(item, dict):\n                score = str(item.get('score') or item.get('name') or item.get('cs') or '').replace(':', '-')\n                if score:\n                    enriched_by_score[score] = item\n    seen: set[str] = set()\n    for score, raw in odds_sources:\n        score_key = str(score or '').replace(':', '-').strip()\n        if not score_key or score_key.lower() == 'none' or score_key in seen:\n            continue\n        seen.add(score_key)\n        try:\n            odd = raw.get('odds') or raw.get('avg') or raw.get('value') if isinstance(raw, dict) else raw\n            if odd is None and score_key in enriched_by_score and isinstance(enriched_by_score[score_key], dict):\n                odd = enriched_by_score[score_key].get('odds') or enriched_by_score[score_key].get('avg')\n            odd_f = float(odd) if odd is not None else 0.0\n        except (TypeError, ValueError):\n            odd_f = 0.0\n        enriched = enriched_by_score.get(score_key)\n        row = {'score': score_key, 'odds': odd_f, 'heat': (1.0 / odd_f if odd_f > 1 else 0.0)}\n        # avg_odds 是赔率的同义词：合法市均闸门按 avg_odds 数「可用的行」，\n        # 只发 odds 会让真市均被判非法。\n        row['avg_odds'] = odd_f\n        if isinstance(enriched, dict):\n            row.update({k: v for k, v in enriched.items() if k not in row})\n            if row.get('avg_odds') in (None, 0, 0.0) and odd_f:\n                row['avg_odds'] = odd_f\n        rows.append(row)\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': heat_source,\n        'heat_source': heat_source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef _unavailable(reason: str, **extra: Any) -> dict[str, Any]:\n    \"\"\"统一的不可用载板。\n\n    即使不可用也带空的 ranking / top_scores / source / channel，\n    调方不必对「有没有这个键」做分支（自检与下游都按同一形状读取）。\n    \"\"\"\n    data = {\n        'available': False,\n        'channel': 'mobile',\n        'reason': reason,\n        'block_reason': reason,\n        'source': '',\n        'heat_source': '',\n        'ranking': [],\n        'top_scores': [],\n    }\n    data.update(extra)\n    return data\n\n\n_CS_SCORE_HEADERS = ['1:0', '2:0', '2:1', '3:0', '3:1', '3:2', '4:0', '4:1', '4:2', '4:3',\n                     '0:0', '1:1', '2:2', '3:3', '4:4']\n# 客胜行没有表头，格子与表头前 10 列一一对应，但比分要反过来读：\n# 表头第 1 列「1:0」在客胜行表示客队 1:0 取胜 → '0:1'。第 11 列起是 rowspan 的平局列，客胜行没有。\n_CS_AWAY_FROM_HOME = ['0:1', '0:2', '1:2', '0:3', '1:3', '2:3', '0:4', '1:4', '2:4', '3:4']\n\n\ndef _parse_cs_datatable(html: Any) -> dict[str, Any]:\n    \"\"\"解析澳客波胆页 table#datatable。\n\n    真实结构（2026-11 现场确认）：一行表头 `<b>1:0</b>…<b>4:4</b>` 共15列，\n    后面每个公司占两行（主胜行 / 客胜行），客胜行少一列（最后一列 rowspan 合并）。\n    第16列开始是「1:1 … 4:4」的 rowspan=2 单元格，因此客胜行的格子数更少。\n\n    返回 {page_avg, books_avg, books_n, row_count, header_count, stage}。\n    解析不到就是 stage 指向具体卡在哪一步，不给假数据。\n    \"\"\"\n    out: dict[str, Any] = {\n        'page_avg': {}, 'books_avg': {}, 'books_n': 0,\n        'row_count': 0, 'header_count': 0, 'stage': 'ok',\n    }\n    table = re.search(r'<table[^>]*id=\"datatable\"[^>]*>([\\s\\S]*?)</table>', str(html or ''), re.IGNORECASE)\n    if not table:\n        out['stage'] = 'datatable_missing'\n        return out\n    body = table.group(1)\n    header = re.search(r'<tr[^>]*class=\"titlebg\"[^>]*>([\\s\\S]*?)</tr>', body, re.IGNORECASE)\n    if not header:\n        out['stage'] = 'header_row_missing'\n        return out\n    cols = re.findall(r'<b>\\s*(\\d+)\\s*:\\s*(\\d+)\\s*</b>', header.group(1))\n    if not cols:\n        out['stage'] = 'header_scores_missing'\n        return out\n    out['header_count'] = len(cols)\n    headers = [f'{home}:{away}' for home, away in cols]\n\n    def _num(text: Any) -> float | None:\n        token = str(text or '').replace(',', '').replace('%', '').strip()\n        if not token or token in {'-', '—', '--'}:\n            return None\n        try:\n            value = float(token)\n        except ValueError:\n            return None\n        return value if value > 1 else None\n\n    avg: dict[str, list[float]] = {}\n    books: dict[str, list[float]] = {}\n    books_n = 0\n    home_scores: dict[str, float | None] = {}\n    pending_home_for = ''  # 'avg' | 'books' | ''\n    # 客胜行没有自己的表头：它的格子按固定顺序对应客胜比分，与主页表头无关。\n    away_order = list(_CS_AWAY_FROM_HOME)\n    for raw_row in re.finditer(r'<tr([^>]*)>([\\s\\S]*?)</tr>', body, re.IGNORECASE):\n        cells = re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', raw_row.group(2), re.IGNORECASE)\n        if not cells:\n            continue\n        plain = [\n            re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', cell)).strip()\n            for cell in cells\n        ]\n        if any('公司名' in text for text in plain):\n            continue\n        joined = ' '.join(plain)\n        is_avg_row = '平均值' in joined\n        is_border_row = ('最大值' in joined or '最小值' in joined)\n        # 找这一行里「主胜 / 客胜」标记的位置\n        side = ''\n        side_at = -1\n        for idx, text in enumerate(plain):\n            if text in ('主胜', '客胜'):\n                side, side_at = text, idx\n                break\n        # 位置必须保留：'-' 是一个「没有赔率」的占位，删掉会让整行错位。\n        if side:\n            slots = [_num(t) for t in plain[side_at + 1:]]\n        else:\n            slots = [_num(t) for t in plain[1:]]\n            if not any(value is not None for value in slots):\n                continue\n        if is_border_row:\n            continue\n        if side == '主胜':\n            # 主胜行决定这一对行写进哪张表；客胜行随后沿用 pending_home_for。\n            home_target = avg if is_avg_row else books\n            home_scores = {}\n            for header, value in zip(headers, slots):\n                home_scores[header] = value\n                if value is not None:\n                    home_target.setdefault(header, []).append(value)\n            pending_home_for = 'avg' if is_avg_row else 'books'\n            if not is_avg_row:\n                books_n += 1\n            continue\n        if side == '客胜' and pending_home_for:\n            # 客胜行自己不含「平均值」字样，目标表必须沿用主胜行的判定，\n            # 否则客胜那一半的平均值会被当成公司数据混进 books。\n            away_target = avg if pending_home_for == 'avg' else books\n            merged = dict(home_scores)\n            for header, value in zip(away_order, slots):\n                merged[header] = value\n            for header, value in merged.items():\n                if value is None:\n                    continue\n                away_target.setdefault(header, []).append(value)\n            if pending_home_for != 'avg':\n                out['row_count'] += 1\n            pending_home_for = ''\n            continue\n    if not books and not avg:\n        out['stage'] = 'no_odds_rows'\n        return out\n    out['books_avg'] = {\n        header: round(sum(values) / len(values), 4)\n        for header, values in books.items() if values\n    }\n    out['page_avg'] = {\n        header: round(sum(values) / len(values), 4)\n        for header, values in avg.items() if values\n    }\n    if not out['page_avg']:\n        # 没有「平均值」汇总行时，用已抓公司均值代替，并标明来源。\n        out['page_avg'] = dict(out['books_avg'])\n        out['stage'] = 'page_avg_from_books'\n    out['books_n'] = books_n\n    return out\n\n\ndef fetch_jczq31(match_id: Any, proxies: Any = None, session: Any = None) -> dict[str, Any]:\n    \"\"\"抓竞彩官方 31 比分赔率（唯一来源：竞足赛程页 var oddsData）。\n\n    这是「补齐 9 个市均覆盖不到的选项」的唯一入口，供 CS 抓取、补抓、以及\n    enrich 的 force_rescrape 复用（后者以前只调 scrape_okooo_mobile_cs_zuizhi，\n    那条路根本不碰 jczq，所以「重新抓全」永远补不上那 9 项）。\n\n    返回 {'available', 'odds', 'orderid', 'raw_count', 'stage', 'report'}。\n    \"\"\"\n    mid = str(match_id or '').strip()\n    out: dict[str, Any] = {'available': False, 'odds': {}, 'orderid': '', 'raw_count': 0, 'stage': ''}\n    if not mid:\n        out['stage'] = 'no_match_id'\n        return out\n    url = 'https://m.okooo.com/jczq/'\n    page, cached, fetched_at = _jczq_page_cached(url, proxies=proxies, session=session)\n    report = {\n        'url': url, 'channel': 'mobile',\n        'status': int(page.get('status') or 0),\n        'bytes': int(page.get('bytes') or 0),\n        'title': str(page.get('title') or ''),\n        'blocked': bool(page.get('blocked')),\n        'cached': bool(cached),\n        'fetched_at': fetched_at,\n        'stage': '',\n        'orderid': '',\n    }\n    if not page.get('ok'):\n        report['stage'] = 'fetch_failed'\n        return {**out, 'stage': 'fetch_failed', 'report': report}\n    parsed = parse_jczq_score_odds(page.get('html'), mid)\n    report['stage'] = parsed.get('stage') or ''\n    report['orderid'] = parsed.get('orderid') or ''\n    if not parsed.get('available') and cached:\n        # 缓存页里没有本场（抓缓存时还没上架）：真抓一次再解析。\n        page = _fetch_detail(url, proxies=proxies, session=session, retries=1)\n        if page.get('ok'):\n            _remember_jczq_page(url, page)\n            parsed = parse_jczq_score_odds(page.get('html'), mid)\n            report.update({\n                'status': int(page.get('status') or 0),\n                'bytes': int(page.get('bytes') or 0),\n                'cached': False,\n                'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S'),\n                'stage': parsed.get('stage') or '',\n                'orderid': parsed.get('orderid') or '',\n            })\n    return {\n        'available': bool(parsed.get('available')),\n        'odds': dict(parsed.get('odds') or {}),\n        'orderid': parsed.get('orderid') or '',\n        'raw_count': int(parsed.get('raw_count') or 0),\n        'stage': parsed.get('stage') or '',\n        'report': report,\n    }\n\n\ndef scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    \"\"\"抓澳客波胆（比分）市均。\n\n    只用真实存在且结构可解析的页面：桌面 `/soccer/match/<id>/cs/`。\n    手机 `/jingcai/<id>/cs/` 在 2026-11 起返回 404，不再作为主入口。\n    不可用时 reason 必须带 URL + 状态码/异常类 + 卡在哪个解析阶段。\n    \"\"\"\n    html = kwargs.get('html') or kwargs.get('text')\n    cache = _cache_path('cs', match_id)\n    force_refresh = bool(kwargs.get('force_refresh'))\n    if force_refresh and not html and cache.exists():\n        # 补抓路径必须能推翻旧包，否则第二次尝试只是再读同一个陈旧文件。\n        print(f\"   ♻️ [澳客手机CS] force_refresh 丢弃缓存 {cache.name}，重新抓取\")\n        try:\n            cache.unlink()\n        except OSError:\n            pass\n    if not html and not force_refresh and cache.exists():\n        cached = _read_json_cache(cache, require_31=True, label='澳客手机CS')\n        if cached is not None:\n            return cached\n    urls = []\n    if kwargs.get('url'):\n        urls = [str(kwargs.get('url'))]\n    elif match_id:\n        urls = [\n            f'https://www.okooo.com/soccer/match/{match_id}/cs/',\n            f'https://m.okooo.com/match/cs.php?MatchID={match_id}',\n        ]\n    fetch: dict[str, Any] = {}\n    tried: list[str] = []\n    # 波胆页的 405 是间歇的：现场核对过「同 Referer 等 35s 再要就 200」。\n    # 所以对第一候选做有界耐心重试（默认 2 轮、每轮间隔 35s），\n    # 仍然拿不到才如实报失败。绝不在这里编数据。\n    patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_CS_PATIENCE') or 2) or 0)\n    gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_CS_PATIENCE_GAP') or 35) or 35)\n    for url in urls:\n        fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)\n        for _attempt in range(patience if url == urls[0] else 0):\n            if fetch.get('ok'):\n                break\n            if not fetch.get('blocked'):\n                # 不是被 WAF 拦（例如 404）就没必要等，直接换下一条来源。\n                break\n            time.sleep(gap)\n            fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)\n        tried.append(\n            f'{url} → '\n            + (f'HTTP {fetch.get(\"status\")}' if fetch.get('status') else str(fetch.get('error') or 'no-response'))\n            + (f', title={fetch.get(\"title\")}' if fetch.get('title') else '')\n            + (', blocked' if fetch.get('blocked') else '')\n            + ', stage=fetch_failed'\n        )\n        if fetch.get('ok'):\n            html = fetch.get('html')\n            break\n    if not html:\n        return _unavailable(\n            'external_okooo_mobile_cs_fetch_failed',\n            match_id=str(match_id or ''),\n            error='; '.join(tried)[:300],\n            fetch_urls=list(urls),\n            parse_stage='fetch_failed',\n            attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],\n        )\n    parsed = _parse_cs_datatable(html)\n    stage = str(parsed.get('stage') or 'ok')\n    if not parsed.get('books_avg'):\n        return _unavailable(\n            'okooo_mobile_cs_parse_empty',\n            match_id=str(match_id or ''),\n            error=(\n                f'url={fetch.get(\"url\") or (urls[0] if urls else \"\")} '\n                f'status={fetch.get(\"status\")} bytes={fetch.get(\"bytes\")} '\n                f'stage={stage} headers={parsed.get(\"header_count\")} rows={parsed.get(\"row_count\")} '\n                f'title={fetch.get(\"title\") or \"-\"}'\n            ),\n            fetch_urls=list(urls),\n            parse_stage=stage,\n        )\n    # 桌面 /cs/ 波胆页是 27 家公司的合法市均，不是被禁的「桌面分析页/pool31」。\n    # 通道标签用 okooo_cs（法律闸门已有 okooo_cs_books_avg 分支），\n    # 不再自标 desktop_cs——那个名字会被 'desktop' 规则整体判非法。\n    # 31 池唯一合并入口：市均先占，竞彩官方31补缺，逐键记出处。\n    # 之前这里只交出 25 个市均键（冒号形式、还带 4-3/3-4/4-4），\n    # 下游同时报「市均 25 项」和「31全表缺 9 项」——两个都对，却是两张表。\n    _jc = kwargs.get('jc_score_odds')\n    _jc_report: dict[str, Any] = {}\n    if not isinstance(_jc, dict) or len(_jc) < 31:\n        # 拿不到 31 就直接去竞彩官方抓：补抓/重抓都靠这一步，\n        # 否则「重新抓全」永远补不上那 9 个市均没有的选项。\n        _jc_res = fetch_jczq31(match_id, proxies=proxies, session=session)\n        _jc_report = _jc_res.get('report') or {}\n        if _jc_res.get('available'):\n            _jc = _jc_res['odds']\n    merged31 = merge_cs31(parsed['page_avg'], parsed['books_avg'], _jc)\n    heat = build_score_market_heat_ranking(\n        merged31['scores'],\n        page_avg_odds=merged31['scores'],\n        heat_source='okooo_cs_books_avg',\n        channel='okooo_cs',\n    )\n    heat.update({\n        'available': True,\n        'correct_score_available': True,\n        'match_id': str(match_id or ''),\n        'raw_count': len(merged31['scores']),\n        'correct_score_page_avg': merged31['scores'],\n        'correct_score_books_avg': parsed['books_avg'],\n        'correct_score_books_n': parsed['books_n'],\n        'correct_score_site_avg': merged31['scores'],\n        'correct_score_channel': 'okooo_cs',\n        'cs31_provenance': merged31['provenance'],\n        'cs31_counts': merged31['counts'],\n        'cs31_extras': merged31['extras'],\n        'cs31_complete': merged31['complete'],\n        'cs_fetch_url': str(fetch.get('url') or (urls[0] if urls else '')),\n        'cs_fetch_status': int(fetch.get('status') or 0),\n        'cs_fetch_bytes': int(fetch.get('bytes') or 0),\n        'cs_parse_stage': stage,\n        'pool31_forbidden': True,\n    })\n    try:\n        cache.write_text(\n            json.dumps(_cache_stamp(heat), ensure_ascii=False, indent=2), encoding='utf-8',\n        )\n    except OSError as exc:\n        print(f\"   ⚠️ [澳客手机CS] 缓存写入跳过 {cache.name}: {type(exc).__name__}: {exc}\")\n    return heat\n\n\n_AH_TEXT_TO_LINE = {\n    '平手': 0.0, '平/半': 0.25, '平手/半球': 0.25, '半球': 0.5, '半/一': 0.75, '半球/一球': 0.75,\n    '一球': 1.0, '一/球半': 1.25, '一球/球半': 1.25, '球半': 1.5, '球半/两球': 1.75,\n    '两球': 2.0, '两球/两球半': 2.25, '两球半': 2.5, '两球半/三球': 2.75, '三球': 3.0,\n}\n\n\ndef ah_text_to_line(text: Any) -> float | None:\n    \"\"\"把亚盘中文盘口（含「受」前缀）换成以主队为基准的有符号盘口。\n\n    「受半/一」= 主队受让 0.75 → -0.75；「半/一」= 主队让 0.75 → +0.75。\n    认不出的写法返回 None，绝不用猜测值凑数。\n    \"\"\"\n    raw = str(text or '').strip()\n    if not raw:\n        return None\n    receive = raw.startswith('受')\n    body = raw[1:] if receive else raw\n    line = _AH_TEXT_TO_LINE.get(body)\n    if line is None:\n        for key, value in _AH_TEXT_TO_LINE.items():\n            if key and key in body:\n                line = value\n                break\n    if line is None:\n        return None\n    return -line if receive else line\n\n\ndef _first_avg_index_row(html: Any) -> dict[str, Any]:\n    \"\"\"桌面亚指页的「平均指数」行：初盘/最新各三段（主水 盘口 客水）。\"\"\"\n    out: dict[str, Any] = {'start_line_text': '', 'start_line': None,\n                           'latest_line_text': '', 'latest_line': None,\n                           'start_home': None, 'start_away': None,\n                           'latest_home': None, 'latest_away': None}\n    row = re.search(r'<tr[^>]*>\\s*<td[^>]*>\\s*<span>\\s*平均指数\\s*</span>\\s*</td>([\\s\\S]{0,1500}?)</tr>', str(html or ''), re.IGNORECASE)\n    if not row:\n        return out\n    cells = re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', row.group(1), re.IGNORECASE)\n    if len(cells) < 2:\n        return out\n    start_cell, latest_cell = cells[0], cells[1]\n\n    def _read(cell: str) -> tuple[float | None, str, float | None]:\n        home = re.search(r'type=\"(?:xinzhu|zhu)\"[^>]*>\\s*([\\d.]+)', cell)\n        away = re.search(r'type=\"(?:xinke|ke)\"[^>]*>\\s*([\\d.]+)', cell)\n        line_text = re.search(r'<em[^>]*>\\s*([^<]+?)\\s*</em>', cell)\n        def _f(m):\n            try:\n                return float(m.group(1)) if m else None\n            except (TypeError, ValueError):\n                return None\n        return _f(home), (line_text.group(1).strip() if line_text else ''), _f(away)\n\n    out['start_home'], out['start_line_text'], out['start_away'] = _read(start_cell)\n    out['latest_home'], out['latest_line_text'], out['latest_away'] = _read(latest_cell)\n    out['start_line'] = ah_text_to_line(out['start_line_text'])\n    out['latest_line'] = ah_text_to_line(out['latest_line_text'])\n    return out\n\n\ndef _first_1x2_row(html: Any) -> dict[str, Any]:\n    \"\"\"桌面欧指页：竞**方那一行的最新三赔（主/平/客）。\"\"\"\n    out: dict[str, Any] = {'odds_1x2': {}, 'company': '', 'stage': 'ok'}\n    book = re.search(\n        r'<tr[^>]*>\\s*<td class=\"width16\">\\s*<a>\\s*竞[^<]*</a>\\s*</td>([\\s\\S]{0,1200}?)</tr>',\n        str(html or ''), re.IGNORECASE,\n    )\n    if not book:\n        out['stage'] = 'company_row_missing'\n        return out\n    latest = re.findall(r'type=\"xin(sheng|ping|fu)\"[^>]*>\\s*([\\d.]+)', book.group(1))\n    mapping = {'sheng': 'home', 'ping': 'draw', 'fu': 'away'}\n    odds = {mapping[key]: float(value) for key, value in latest if key in mapping}\n    if len(odds) < 3:\n        out['stage'] = 'latest_odds_incomplete'\n        return out\n    out['company'] = '竞彩官方'\n    out['odds_1x2'] = {\n        'home': odds['home'], 'draw': odds['draw'], 'away': odds['away'],\n        'Home': odds['home'], 'Draw': odds['draw'], 'Away': odds['away'],\n    }\n    return out\n\n\ndef _first_ou_line(html: Any) -> dict[str, Any]:\n    \"\"\"桌面大小球页：均值行的盘口与大小水位。\n\n    注意：真实页面的 `#avgObj` 平均值行是按权限遮的（全 `-`），\n    所以这里几乎永远回 `avg_row_has_no_line`。大小球以手机页 `_mobile_ou_line` 为准。\n    \"\"\"\n    out: dict[str, Any] = {'ou_line': None, 'line_text': '', 'stage': 'ok'}\n    text = str(html or '')\n    if '数据加载中' in text and text.count('数据加载中') >= 1 and '均值' not in text:\n        out['stage'] = 'page_shell_only_data_loaded_by_js'\n        return out\n    row = re.search(r'<tr[^>]*id=\"avgObj\"[^>]*>([\\s\\S]{0,2500}?)</tr>', text, re.IGNORECASE)\n    if not row:\n        out['stage'] = 'avg_row_missing'\n        return out\n    cells = [\n        re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', ' ', cell)).strip()\n        for cell in re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', row.group(1), re.IGNORECASE)\n    ]\n    for cell in cells:\n        found = re.search(r'(\\d+(?:\\.\\d+)?)\\s*(?:/|、)\\s*(\\d+(?:\\.\\d+)?)', cell)\n        if found:\n            out['ou_line'] = round((float(found.group(1)) + float(found.group(2))) / 2, 3)\n            out['line_text'] = found.group(0)\n            return out\n        found = re.search(r'\\b([1-5]\\.\\d{1,2})\\b', cell)\n        if found:\n            out['ou_line'] = float(found.group(1))\n            out['line_text'] = found.group(1)\n            return out\n    out['stage'] = 'avg_row_has_no_line'\n    return out\n\n\n# ---------------------------------------------------------------------------\n# 手机页解析（m.okooo.com/match/*.php）\n#\n# 用户实盘日志里的三块水位只有手机页真的给了数：\n#   亚指   handicap.php?MatchID=<id>      25 家公司，span[type=zhu|xinzhu] + em[type=chu|xin]\n#   大小球 ah.php?type=daxiao&matchId=<id> 21 家，span.sort-{chu,xin}-{daqiu,xiaoqiu} + span.filter-*\n#   胜平负 odds.php?MatchID=<id>          竞**方 行 span[type=xinsheng|xinping|xinfu]\n# 桌面页 /ah/ 间歇 405、/overunder/ 均价行被权限遮、/odds/ 公司行由 JS 渲染，\n# 三者都取不到数，因此这些函数是主路径，桌面只留波胆。\n# ---------------------------------------------------------------------------\n\ndef _mobile_ah_line(html: Any) -> dict[str, Any]:\n    \"\"\"手机亚指页：取「平均指数」行的最新盘口；没有就退回众数。\"\"\"\n    out: dict[str, Any] = {\n        'asian_handicap': None, 'line_text': '', 'stage': 'ok',\n        'start_line': None, 'start_text': '', 'home_water': None, 'away_water': None,\n        'company_rows': 0, 'line_source': '',\n    }\n    text = str(html or '')\n    rows = re.findall(r'<tr[^>]*>([\\s\\S]*?)</tr>', text, re.IGNORECASE)\n    if not rows:\n        out['stage'] = 'no_rows'\n        return out\n    per_row: list[dict[str, Any]] = []\n    for row in rows:\n        cells = re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', row, re.IGNORECASE)\n        if len(cells) < 3:\n            continue\n        name = re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', cells[0])).strip()\n        start = _tag_text(cells[1], None, ['zhu', 'chu', 'ke'])\n        latest = _tag_text(cells[2], None, ['xinzhu', 'xin', 'xinke'])\n        if not latest:\n            continue\n        per_row.append({'name': name, 'start': start, 'latest': latest})\n    if not per_row:\n        out['stage'] = 'no_odds_rows'\n        return out\n    out['company_rows'] = len(per_row)\n    pick = next((r for r in per_row if '平均' in r['name']), per_row[0])\n    if '平均' in pick['name']:\n        out['line_source'] = 'avg_row'\n    else:\n        # 没有平均行：用最新盘口的众数，并标明来源，绝不写死一条盘口。\n        counted: dict[str, int] = {}\n        for row in per_row:\n            label = str(row['latest'].get('xin') or '')\n            if label:\n                counted[label] = counted.get(label, 0) + 1\n        if counted:\n            best = max(counted.items(), key=lambda kv: kv[1])[0]\n            pick = next(r for r in per_row if str(r['latest'].get('xin')) == best)\n            out['line_source'] = f'mode({counted[best]}/{len(per_row)})'\n        else:\n            out['stage'] = 'no_line_text'\n            return out\n    out['line_text'] = str(pick['latest'].get('xin') or '')\n    out['start_text'] = str(pick['start'].get('chu') or '')\n    out['asian_handicap'] = ah_text_to_line(out['line_text'])\n    out['start_line'] = ah_text_to_line(out['start_text'])\n    out['home_water'] = _num_of(pick['latest'].get('xinzhu'))\n    out['away_water'] = _num_of(pick['latest'].get('xinke'))\n    if out['asian_handicap'] is None:\n        out['stage'] = f'unmapped_line_text:{out[\"line_text\"][:12]}'\n    return out\n\n\ndef _mobile_ou_line(html: Any) -> dict[str, Any]:\n    \"\"\"手机大小球页：盘口线取最新 `filter-xin` 的众数，水位取同一条线的公司。\"\"\"\n    out: dict[str, Any] = {\n        'ou_line': None, 'line_text': '', 'stage': 'ok',\n        'start_line': None, 'over_water': None, 'under_water': None,\n        'company_rows': 0, 'line_source': '',\n    }\n    text = str(html or '')\n    rows = re.findall(r'<tr[^>]*class=\"[^\"]*jsContentItem[^\"]*\"[^>]*>([\\s\\S]*?)</tr>', text, re.IGNORECASE)\n    if not rows:\n        rows = re.findall(r'<tbody class=\"[^\"]*jsContent[^\"]*\"[^>]*>([\\s\\S]*?)</tbody>', text, re.IGNORECASE)\n    if not rows:\n        out['stage'] = 'no_rows'\n        return out\n    lines: list[float] = []\n    first: dict[str, Any] = {}\n    for row in rows:\n        latest = _tag_text(row, None, ['sort-xin-daqiu', 'filter-xin', 'sort-xin-xiaoqiu'])\n        if not latest:\n            continue\n        line_value = _num_of(latest.get('filter-xin'))\n        if line_value is None:\n            continue\n        out['company_rows'] += 1\n        lines.append(line_value)\n        if not first:\n            start = _tag_text(row, None, ['sort-chu-daqiu', 'filter-chu', 'sort-chu-xiaoqiu'])\n            first = {\n                'line': line_value,\n                'over': _num_of(latest.get('sort-xin-daqiu')),\n                'under': _num_of(latest.get('sort-xin-xiaoqiu')),\n                'start_line': _num_of(start.get('filter-chu')),\n            }\n    if not lines:\n        out['stage'] = 'no_line'\n        return out\n    counted: dict[float, int] = {}\n    for value in lines:\n        counted[value] = counted.get(value, 0) + 1\n    mode_line, mode_hits = max(counted.items(), key=lambda kv: kv[1])\n    # 取与盘口众数一致的第一个公司作为水位样本，保证水位与盘口同源。\n    for row in rows:\n        latest = _tag_text(row, None, ['sort-xin-daqiu', 'filter-xin', 'sort-xin-xiaoqiu'])\n        if _num_of(latest.get('filter-xin')) == mode_line:\n            out['over_water'] = _num_of(latest.get('sort-xin-daqiu'))\n            out['under_water'] = _num_of(latest.get('sort-xin-xiaoqiu'))\n            start = _tag_text(row, None, ['sort-chu-daqiu', 'filter-chu', 'sort-chu-xiaoqiu'])\n            out['start_line'] = _num_of(start.get('filter-chu'))\n            break\n    out['ou_line'] = mode_line\n    out['line_text'] = f'{mode_line:g}'\n    out['line_source'] = f'mode({mode_hits}/{len(lines)})'\n    return out\n\n\ndef _mobile_1x2(html: Any) -> dict[str, Any]:\n    \"\"\"手机欧指页：竞**方 行的最新胜/平/负（手机页有服务端渲染的公司行）。\"\"\"\n    out: dict[str, Any] = {'odds_1x2': {}, 'company': '', 'stage': 'ok', 'company_rows': 0}\n    text = str(html or '')\n    rows = re.findall(r'<tr[^>]*>([\\s\\S]*?)</tr>', text, re.IGNORECASE)\n    out['company_rows'] = sum(1 for row in rows if 'xin' in row)\n    for row in rows:\n        cells = re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', row, re.IGNORECASE)\n        if len(cells) < 3:\n            continue\n        name = re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', cells[0])).strip()\n        if name == '竞**方':\n            latest = _tag_text(cells[2], None, ['xinsheng', 'xinping', 'xinfu'])\n            home = _num_of(latest.get('xinsheng'))\n            draw = _num_of(latest.get('xinping'))\n            away = _num_of(latest.get('xinfu'))\n            if None in (home, draw, away):\n                # 有些场次竞彩官方水位缺失，退回该行的初盘，并说明来源。\n                start = _tag_text(cells[1], None, ['sheng', 'ping', 'fu'])\n                home = home if home is not None else _num_of(start.get('sheng'))\n                draw = draw if draw is not None else _num_of(start.get('ping'))\n                away = away if away is not None else _num_of(start.get('fu'))\n                out['stage'] = 'latest_missing_used_start' if None not in (home, draw, away) else 'odds_incomplete'\n            if None in (home, draw, away):\n                return out\n            out['company'] = '竞彩官方'\n            out['odds_1x2'] = {\n                'home': home, 'draw': draw, 'away': away,\n                'Home': home, 'Draw': draw, 'Away': away,\n            }\n            return out\n    out['stage'] = 'company_row_missing'\n    return out\n\n\ndef _mobile_exchange_pnl(html: Any) -> dict[str, Any]:\n    \"\"\"手机交易盈亏页：竞足保存盈亏 / 竞足人气盈亏 / 必发交易盈亏 三段。\"\"\"\n    out: dict[str, Any] = {\n        'available': False, 'stage': 'ok', 'betfair_available': False,\n        'jc_saved': {}, 'jc_popularity': {}, 'betfair_trade': {},\n        'betfair_note': '', 'saved_total': None,\n    }\n    text = str(html or '')\n    sections = re.split(r'<section class=\"exchange-box\"', text)\n    if len(sections) <= 1:\n        out['stage'] = 'no_exchange_sections'\n        return out\n\n    def _table_rows(chunk: str) -> dict[str, dict[str, float | None]]:\n        rows: dict[str, dict[str, float | None]] = {}\n        for row in re.findall(r'<tr[^>]*>([\\s\\S]*?)</tr>', chunk, re.IGNORECASE):\n            cells = [\n                re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', cell)).strip()\n                for cell in re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', row, re.IGNORECASE)\n            ]\n            if not cells or cells[0] not in ('胜', '平', '负'):\n                continue\n            numbers = [_num_of(value) for value in cells[1:]]\n            rows[cells[0]] = {\n                'odds': numbers[0] if len(numbers) > 0 else None,\n                'volume': numbers[1] if len(numbers) > 1 else None,\n                'pnl': numbers[2] if len(numbers) > 2 else None,\n            }\n        return rows\n\n    for chunk in sections[1:]:\n        title = re.search(r'<div class=\"exchange-title\">\\s*([^<]+)', chunk)\n        name = re.sub(r'\\s+', ' ', title.group(1)).strip() if title else ''\n        rows = _table_rows(chunk)\n        total = re.search(r'<div class=\"num\">([\\d,]+)</div>', chunk)\n        if name.startswith('竞足保存盈亏'):\n            out['jc_saved'] = rows\n            out['saved_total'] = _num_of(total.group(1)) if total else None\n        elif name.startswith('竞足人气盈亏'):\n            out['jc_popularity'] = rows\n        elif name.startswith('必发交易盈亏'):\n            out['betfair_trade'] = rows\n            has_value = any(\n                (item.get('volume') or 0) or (item.get('pnl') or 0)\n                for item in rows.values()\n            ) if rows else False\n            out['betfair_available'] = bool(has_value)\n            if not has_value:\n                # 页面自己写着「暂无数据」：如实说必发这段没有数，而不是伪造。\n                out['betfair_note'] = '必发交易盈亏: 页面显示暂无数据（该公司/交易所未对该场挂盘）'\n    out['available'] = bool(out['jc_saved'] or out['jc_popularity'])\n    if not out['available'] and not out['betfair_note']:\n        out['stage'] = 'no_pnl_rows'\n    return out\n\n\n_JCZQ_PAGE_CACHE: dict[str, dict[str, Any]] = {}\n\n\ndef _jczq_cache_ttl() -> float:\n    try:\n        return float(os.environ.get('OKOOO_JCZQ_CACHE_TTL') or 90)\n    except (TypeError, ValueError):\n        return 90.0\n\n\ndef _remember_jczq_page(url: str, page: dict[str, Any]) -> None:\n    _JCZQ_PAGE_CACHE[url] = {\n        'page': dict(page),\n        'at': time.time(),\n        'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S'),\n    }\n\n\ndef _jczq_page_cached(url: str, proxies: Any = None, session: Any = None) -> tuple[dict[str, Any], bool, str]:\n    \"\"\"取竞足赛程页的原始 HTML，带短 TTL 进程内缓存。\n\n    一轮 20 场共用同一份 183KB 文档；不缓存就要下载 20 次、等 20 次 WAF。\n    只缓存**原始页面**，每场仍现场解析（parse_jczq_score_odds 按 matchid 取行）。\n    返回 (page, cached, fetched_at)：命中缓存时 cached=True 且带原始抓取时间，\n    调用方把它写进 source_report，日志仍然说清数据是哪来的。\n    \"\"\"\n    ttl = _jczq_cache_ttl()\n    entry = _JCZQ_PAGE_CACHE.get(url)\n    if entry and (time.time() - float(entry.get('at') or 0)) <= ttl:\n        page = dict(entry.get('page') or {})\n        if page.get('ok'):\n            return page, True, str(entry.get('fetched_at') or '')\n    page = _fetch_detail(url, proxies=proxies, session=session, retries=1)\n    # 与波胆/阵容页同受间歇 WAF 影响：被拦时有界重试，别让 31 项比分静默变空。\n    for _jc_try in range(int(os.environ.get('OKOOO_JCZQ_PATIENCE') or 2)):\n        if page.get('ok') or not page.get('blocked'):\n            break\n        time.sleep(float(os.environ.get('OKOOO_JCZQ_PATIENCE_GAP') or 30))\n        page = _fetch_detail(url, proxies=proxies, session=session, retries=1)\n    if page.get('ok'):\n        _remember_jczq_page(url, page)\n    return page, False, time.strftime('%Y-%m-%d %H:%M:%S')\n\n\ndef scrape_okooo_mobile_six_markets(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:\n    \"\"\"六盘口水位：亚指 / 大小球 / 胜平负，只认能解析的真实页面。\n\n    三块各自独立抓、独立记 `source_report`（URL、状态码、字节数、页面标题、解析阶段）。\n    任何一块没抓到就进 `missing` 并带上原因；绝不回填盘口线、不写待定数字。\n    \"\"\"\n    cache = _cache_path('six', match_id)\n    _force6 = bool(kwargs.get('force_refresh'))\n    if _force6 and not kwargs.get('html') and not kwargs.get('text') and cache.exists():\n        try:\n            cache.unlink()\n        except OSError:\n            pass\n    if not kwargs.get('html') and not kwargs.get('text') and not _force6 and cache.exists():\n        cached = _read_json_cache(cache, label='澳客六盘口')\n        if cached is not None:\n            return cached\n    mid = str(match_id or '')\n    pack: dict[str, Any] = {\n        'available': False,\n        'channel': 'mobile',\n        'match_id': mid,\n        'ou_line': None,\n        'asian_handicap': None,\n        'odds_1x2': {},\n        'boards_hit': {},\n        'missing': [],\n        'source_report': {},\n        'fetch_urls': [],\n    }\n    if not mid:\n        pack['block_reason'] = 'no_match_id'\n        pack['missing'] = ['asian_handicap', 'ou_line', 'odds_1x2']\n        return pack\n\n    # 每块盘口按「手机页优先 → 桌面页兜底」依次尝试，直到拿到数为止。\n    # 理由（2026-11-25 现场核对）：桌面 /ah/ 间歇 405、/overunder/ 均价行被权限\n    # 遮成 `-`、/odds/ 公司行由 JS 渲染；手机三页都是服务端渲染，真给数。\n    plan: tuple[tuple[str, str, tuple[tuple[str, str, Any], ...]], ...] = (\n        (\n            'ah', 'asian_handicap', (\n                (f'https://m.okooo.com/match/handicap.php?MatchID={mid}', 'mobile', _mobile_ah_line),\n                (f'https://www.okooo.com/soccer/match/{mid}/ah/', 'desktop', _first_avg_index_row),\n            ),\n        ),\n        (\n            'ou', 'ou_line', (\n                (f'https://m.okooo.com/match/ah.php?type=daxiao&matchId={mid}', 'mobile', _mobile_ou_line),\n                (f'https://www.okooo.com/soccer/match/{mid}/overunder/', 'desktop', _first_ou_line),\n            ),\n        ),\n        (\n            '1x2', 'odds_1x2', (\n                (f'https://m.okooo.com/match/odds.php?MatchID={mid}', 'mobile', _mobile_1x2),\n                (f'https://www.okooo.com/soccer/match/{mid}/odds/', 'desktop', _first_1x2_row),\n            ),\n        ),\n    )\n    for kind, field, sources in plan:\n        board = {'ah': '亚盘让球', 'ou': '大小球', '1x2': '胜平负'}[kind]\n        _attempts: list[dict[str, Any]] = []\n        for url, channel, parser in sources:\n            page = _fetch_detail(url, proxies=proxies, session=session, retries=1)\n            pack['fetch_urls'].append(url)\n            report = {\n                'url': url,\n                'channel': channel,\n                'status': int(page.get('status') or 0),\n                'bytes': int(page.get('bytes') or 0),\n                'title': str(page.get('title') or ''),\n                'blocked': bool(page.get('blocked')),\n                'error': str(page.get('error') or ''),\n                'stage': '',\n            }\n            if not page.get('ok'):\n                report['stage'] = 'fetch_failed'\n                _attempts.append(report)\n                # 被 WAF 拦或网络失败：换下一条来源，别在同一页死等。\n                continue\n            parsed = parser(page.get('html'))\n            if kind == 'ah':\n                value = parsed.get('asian_handicap')\n                report['stage'] = parsed.get('stage') or ('ok' if value is not None else 'no_line')\n                report['line_text'] = parsed.get('line_text') or ''\n                if value is not None:\n                    pack['asian_handicap'] = value\n                    pack['asian_handicap_text'] = parsed.get('line_text') or ''\n                    pack['ah_start_line'] = parsed.get('start_line')\n                    pack['ah_start_text'] = parsed.get('start_text') or ''\n                    pack['ah_home_water'] = parsed.get('home_water')\n                    pack['ah_away_water'] = parsed.get('away_water')\n                    pack['ah_line_source'] = parsed.get('line_source') or ''\n                    pack['boards_hit'][board] = True\n            elif kind == 'ou':\n                value = parsed.get('ou_line')\n                report['stage'] = parsed.get('stage') or ('ok' if value is not None else 'no_line')\n                report['line_text'] = parsed.get('line_text') or ''\n                if value is not None:\n                    pack['ou_line'] = value\n                    pack['ou_line_text'] = parsed.get('line_text') or ''\n                    pack['ou_start_line'] = parsed.get('start_line')\n                    pack['ou_over_water'] = parsed.get('over_water')\n                    pack['ou_under_water'] = parsed.get('under_water')\n                    pack['ou_line_source'] = parsed.get('line_source') or ''\n                    pack['boards_hit'][board] = True\n            else:\n                odds = parsed.get('odds_1x2') or {}\n                report['stage'] = parsed.get('stage') or ('ok' if odds else 'no_odds')\n                if odds:\n                    pack['odds_1x2'] = odds\n                    pack['odds_1x2_company'] = parsed.get('company') or ''\n                    pack['boards_hit'][board] = True\n            _attempts.append(report)\n            if pack['boards_hit'].get(board):\n                break\n        if len(_attempts) == 1:\n            pack['source_report'][kind] = _attempts[0]\n        else:\n            last = _attempts[-1] if _attempts else {}\n            pack['source_report'][kind] = {\n                'url': _attempts[0]['url'] if _attempts else '',\n                'channel': _attempts[0]['channel'] if _attempts else '',\n                'status': _attempts[0]['status'] if _attempts else 0,\n                'bytes': _attempts[0]['bytes'] if _attempts else 0,\n                'title': _attempts[0]['title'] if _attempts else '',\n                'blocked': any(a.get('blocked') for a in _attempts),\n                'error': last.get('error', ''),\n                'stage': last.get('stage', ''),\n                'attempts': _attempts,\n            }\n        if not pack['boards_hit'].get(board):\n            pack['missing'].append(field)\n\n    pack['available'] = bool(pack['boards_hit'])\n    # 竞彩比分 31 项：唯一真实来源是竞足赛程页的 oddsData.SportteryScore。\n    # 该页 183KB 且一轮 20 场都是同一份文档，所以走短 TTL 页缓存（只缓存原始页面，\n    # 每场仍现场解析）。命中缓存必须如实标注，不能伪装成刚抓的。\n    try:\n        _jc_url = 'https://m.okooo.com/jczq/'\n        _jc_page, _jc_cached, _jc_fetched_at = _jczq_page_cached(\n            _jc_url, proxies=proxies, session=session,\n        )\n        _jc_fetch = _jc_page\n        _jc_report = {\n            'url': _jc_url,\n            'channel': 'mobile',\n            'status': int(_jc_fetch.get('status') or 0),\n            'bytes': int(_jc_fetch.get('bytes') or 0),\n            'title': str(_jc_fetch.get('title') or ''),\n            'blocked': bool(_jc_fetch.get('blocked')),\n            'error': str(_jc_fetch.get('error') or ''),\n            'cached': bool(_jc_cached),\n            'fetched_at': _jc_fetched_at,\n            'stage': '',\n        }\n        if _jc_fetch.get('ok'):\n            _jc = parse_jczq_score_odds(_jc_fetch.get('html'), mid)\n            _jc_report['stage'] = _jc.get('stage') or ''\n            _jc_report['orderid'] = _jc.get('orderid') or ''\n            if not _jc.get('available') and _jc_cached:\n                # 缓存页里没有本场（抓缓存时这场还没上架）：允许真抓一次再解析。\n                _jc_page = _fetch_detail(_jc_url, proxies=proxies, session=session, retries=1)\n                _jc_fetch = _jc_page\n                _jc_report.update({\n                    'status': int(_jc_fetch.get('status') or 0),\n                    'bytes': int(_jc_fetch.get('bytes') or 0),\n                    'title': str(_jc_fetch.get('title') or ''),\n                    'blocked': bool(_jc_fetch.get('blocked')),\n                    'error': str(_jc_fetch.get('error') or ''),\n                    'cached': False,\n                    'fetched_at': time.strftime('%Y-%m-%d %H:%M:%S'),\n                })\n                if _jc_fetch.get('ok'):\n                    _remember_jczq_page(_jc_url, _jc_fetch)\n                    _jc = parse_jczq_score_odds(_jc_fetch.get('html'), mid)\n                    _jc_report['stage'] = _jc.get('stage') or ''\n                    _jc_report['orderid'] = _jc.get('orderid') or ''\n            if _jc.get('available'):\n                pack['jc_score_odds'] = dict(_jc['odds'])\n                pack['jc_score_source'] = '手机竞足→更多玩法→胜平负比分'\n                pack['jc_score_orderid'] = _jc.get('orderid') or ''\n                pack['jc_score_page_cached'] = bool(_jc_cached)\n                pack['boards_hit']['胜平负比分'] = True\n            else:\n                pack['jc_score_block_reason'] = (\n                    f\"oddsData 未取到本场31项 stage={_jc.get('stage')} \"\n                    f\"orderid={_jc.get('orderid') or '-'}\"\n                )\n        else:\n            _jc_report['stage'] = 'fetch_failed'\n            pack['jc_score_block_reason'] = (\n                f\"HTTP {_jc_report['status'] or _jc_fetch.get('error')}\"\n            )\n        pack['source_report']['jczq_scores'] = _jc_report\n    except Exception as _jc_err:  # noqa: BLE001 - 比分赔率抓取失败不影响三块水位\n        pack['jc_score_block_reason'] = f'{type(_jc_err).__name__}: {_jc_err}'\n    _hit_n = len(pack['boards_hit'])\n    if _hit_n == 3:\n        try:\n            cache.write_text(\n                json.dumps(_cache_stamp(pack), ensure_ascii=False, indent=2), encoding='utf-8',\n            )\n        except OSError as exc:\n            print(f\"   ⚠️ [澳客手机CS] 六盘口缓存写入跳过 {cache.name}: {type(exc).__name__}: {exc}\")\n        return pack\n    pack['block_reason'] = (\n        'okooo_six_market_incomplete'\n        if _hit_n else 'external_okooo_six_market_fetch_failed'\n    )\n    return pack\n\n\n_AH_CHANGE_LINK_RE = r'change\\.php\\?mid=(\\d+)&(?:amp;)?pid=(\\d+)&(?:amp;)?Type=Handicap'\n\n\ndef _parse_ah_change_list(html: Any) -> list[dict[str, Any]]:\n    \"\"\"解析单个公司的盘口变化表 `table.changeTable`。\n\n    真实结构（m.okooo.com/match/change.php?mid=<id>&pid=<pid>&Type=Handicap&c=1）：\n      <td><span class=\"fontblue\">2.17</span><span>受半球</span><span class=\"fontred2\">1.61</span></td>\n      <td class=\"timetd jsChangeContent\" time=\"11-25 21:01\">赛前28小时43分</td>\n    颜色 class 表示涨跌，不参与语义；取三个 span 的文本即可。\n    \"\"\"\n    text = str(html or '')\n    table = re.search(r'<table[^>]*class=\"changeTable\"[^>]*>([\\s\\S]*?)</table>', text, re.IGNORECASE)\n    if not table:\n        return []\n    changes: list[dict[str, Any]] = []\n    for row in re.findall(r'<tr[^>]*>([\\s\\S]*?)</tr>', table.group(1), re.IGNORECASE):\n        spans = [\n            re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', s)).strip()\n            for s in re.findall(r'<span[^>]*>([\\s\\S]*?)</span>', row)\n        ]\n        stamp = re.search(r'class=\"timetd[^\"]*\"[^>]*time=\"([^\"]*)\"[^>]*>\\s*([^<]*?)\\s*<', row)\n        if len(spans) >= 3:\n            home_water, line_text, away_water = spans[0], spans[1], spans[2]\n        else:\n            continue\n        changes.append({\n            'home_water': _num_of(home_water),\n            'line_text': line_text,\n            'line': ah_text_to_line(line_text),\n            'away_water': _num_of(away_water),\n            'time': stamp.group(1).strip() if stamp else '',\n            'note': (stamp.group(2).strip() if stamp else ''),\n        })\n    return changes\n\n\ndef scrape_okooo_mobile_ah_ou_books(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    \"\"\"每家公司亚指/大小球明细。\n\n    亚指：手机 `handicap.php` 每行都带 `change.php?mid=&pid=&Type=Handicap`，\n    跟着抓该公司的时间线（首次/最新盘口随时间变化）。\n    大小球：`ah.php?type=daxiao` **没有** change.php 链接，所以只给最新/初盘两列，\n    `changes` 留空并写明 detail_block_reason——绝不编造时间线。\n    \"\"\"\n    mid = str(match_id or '').strip()\n    if not mid:\n        return {'available': False, 'match_id': '', 'reason': 'no_match_id',\n                'block_reason': 'no_match_id', 'ah_books': [], 'ou_books': []}\n    cap = int(kwargs.get('book_cap') or os.environ.get('OKOOO_AH_BOOK_CAP') or 8)\n    detail_cap = int(kwargs.get('detail_cap') or os.environ.get('OKOOO_AH_DETAIL_CAP') or 5)\n\n    ah_url = f'https://m.okooo.com/match/handicap.php?MatchID={mid}'\n    ah_page = _fetch_detail(ah_url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)\n    ah_books: list[dict[str, Any]] = []\n    detail_fetched = 0\n    _ah_html = ah_page.get('html')\n    if ah_page.get('ok') and isinstance(_ah_html, str):\n        text = _ah_html\n        # 注意：change.php 链接在 <tr onclick=\"...window.location='...'\"> 的属性里，\n        # 不在行内文本中。必须连 <tr ...> 标签一起抓，否则拿不到任何 pid。\n        for row in re.findall(r'<tr([^>]*)>([\\s\\S]*?)</tr>', text, re.IGNORECASE):\n            tr_attrs, inner = row\n            cells = re.findall(r'<td[^>]*>([\\s\\S]*?)</td>', inner, re.IGNORECASE)\n            if len(cells) < 3:\n                continue\n            pids = re.findall(_AH_CHANGE_LINK_RE, tr_attrs) or re.findall(_AH_CHANGE_LINK_RE, inner)\n            name = re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', cells[0])).strip()\n            start = _tag_text(cells[1], None, ['zhu', 'chu', 'ke'])\n            latest = _tag_text(cells[2], None, ['xinzhu', 'xin', 'xinke'])\n            if not latest and not pids:\n                continue\n            book = {\n                'name': name,\n                'pid': pids[0][1] if pids else '',\n                'start': {'home_water': _num_of(start.get('zhu')),\n                          'line_text': start.get('chu') or '',\n                          'line': ah_text_to_line(start.get('chu')),\n                          'away_water': _num_of(start.get('ke'))},\n                'latest': {'home_water': _num_of(latest.get('xinzhu')),\n                           'line_text': latest.get('xin') or '',\n                           'line': ah_text_to_line(latest.get('xin')),\n                           'away_water': _num_of(latest.get('xinke'))},\n                'changes': [],\n                'detail_url': (f'https://m.okooo.com/match/change.php?mid={pids[0][0]}&pid={pids[0][1]}&Type=Handicap&c=1'\n                               if pids else ''),\n                'detail_block_reason': '',\n            }\n            if not book['pid']:\n                book['detail_block_reason'] = '该行没有 change.php 链接，无法取时间线'\n            elif name and '平均' not in name and detail_fetched < detail_cap:\n                detail = _fetch_detail(book['detail_url'], proxies=kwargs.get('proxies'),\n                                       session=kwargs.get('session'), retries=1)\n                if detail.get('ok'):\n                    book['changes'] = _parse_ah_change_list(detail.get('html'))\n                    detail_fetched += 1\n                    if not book['changes']:\n                        book['detail_block_reason'] = '变化页无可解析行(changeTable 为空)'\n                else:\n                    book['detail_block_reason'] = (\n                        f\"变化页 HTTP {detail.get('status') or detail.get('error')}\"\n                    )\n            elif '平均' not in name:\n                book['detail_block_reason'] = f'达到明细抓取上限({detail_cap}家)，只保留最新/初盘'\n            ah_books.append(book)\n            if len([b for b in ah_books if '平均' not in b['name']]) >= cap:\n                break\n\n    ou_url = f'https://m.okooo.com/match/ah.php?type=daxiao&matchId={mid}'\n    ou_page = _fetch_detail(ou_url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)\n    ou_books: list[dict[str, Any]] = []\n    ou_reason = ''\n    _ou_html = ou_page.get('html')\n    if ou_page.get('ok') and isinstance(_ou_html, str):\n        text = _ou_html\n        rows = re.findall(r'<tr[^>]*class=\"[^\"]*jsContentItem[^\"]*\"[^>]*>([\\s\\S]*?)</tr>', text, re.IGNORECASE)\n        for row in rows:\n            name_m = re.search(r'<td class=\"width16\"><a>([^<]*)</a>', row)\n            start = _tag_text(row, None, ['sort-chu-daqiu', 'filter-chu', 'sort-chu-xiaoqiu'])\n            latest = _tag_text(row, None, ['sort-xin-daqiu', 'filter-xin', 'sort-xin-xiaoqiu'])\n            if not latest:\n                continue\n            ou_books.append({\n                'name': (name_m.group(1).strip() if name_m else ''),\n                'start': {'over_water': _num_of(start.get('sort-chu-daqiu')),\n                          'line': _num_of(start.get('filter-chu')),\n                          'under_water': _num_of(start.get('sort-chu-xiaoqiu'))},\n                'latest': {'over_water': _num_of(latest.get('sort-xin-daqiu')),\n                           'line': _num_of(latest.get('filter-xin')),\n                           'under_water': _num_of(latest.get('sort-xin-xiaoqiu'))},\n                'changes': [],\n            })\n            if len(ou_books) >= cap:\n                break\n        ou_reason = '大小球页没有 change.php 链接，只给最新/初盘两列，无法生成时间线'\n    else:\n        ou_reason = f\"大小球页 HTTP {ou_page.get('status') or ou_page.get('error')}\"\n\n    ah_report = {\n        'url': ah_url, 'status': int(ah_page.get('status') or 0),\n        'bytes': int(ah_page.get('bytes') or 0), 'title': str(ah_page.get('title') or ''),\n    }\n    ou_report = {\n        'url': ou_url, 'status': int(ou_page.get('status') or 0),\n        'bytes': int(ou_page.get('bytes') or 0), 'title': str(ou_page.get('title') or ''),\n    }\n    out = {\n        'available': bool(ah_books or ou_books),\n        'channel': 'mobile',\n        'match_id': mid,\n        'source_path': '手机析→亚指→盘口→公司；析→大小球→最值→公司',\n        'asian_handicap': {'rows': [b for b in ah_books if '平均' in b['name']],\n                           'companies': [b for b in ah_books if '平均' not in b['name']]},\n        'over_under': {'rows': [], 'companies': ou_books,\n                       'detail_block_reason': ou_reason},\n        'ah_detail_fetched': detail_fetched,\n        'source_report': {'ah': ah_report, 'ou': ou_report},\n        'writes_first_score': False,\n        'changes_direction': False,\n    }\n    if not out['available']:\n        out['reason'] = 'okooo_ah_ou_books_fetch_failed'\n        out['block_reason'] = 'okooo_ah_ou_books_fetch_failed'\n        out['error'] = (\n            f\"ah HTTP {ah_report['status']} {ah_report['bytes']}B; \"\n            f\"ou HTTP {ou_report['status']} {ou_report['bytes']}B\"\n        )\n    return out\n\n\ndef scrape_okooo_mobile_exchange_pnl(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    \"\"\"手机交易盈亏页：竞足保存盈亏 / 竞足人气盈亏 / 必发交易盈亏。\n\n    真实来源是 `m.okooo.com/match/exchanges.php`（桌面必发页已 405/失效）。\n    必发那一段在很多场次是页面自己写着「暂无数据」，这种情况如实回报，\n    不把竞足保存盈亏冒充成必发。\n    \"\"\"\n    mid = str(match_id or '').strip()\n    if not mid:\n        return {'available': False, 'match_id': '', 'reason': 'no_match_id', 'writes_first_score': False}\n    url = f'https://m.okooo.com/match/exchanges.php?MatchID={mid}'\n    page = _fetch_detail(url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)\n    report = {\n        'url': url,\n        'status': int(page.get('status') or 0),\n        'bytes': int(page.get('bytes') or 0),\n        'title': str(page.get('title') or ''),\n        'blocked': bool(page.get('blocked')),\n    }\n    if not page.get('ok'):\n        return {\n            'available': False,\n            'channel': 'mobile',\n            'source_path': '手机竞足→析→盈亏',\n            'match_id': mid,\n            'reason': 'external_okooo_exchange_fetch_failed',\n            'block_reason': 'external_okooo_exchange_fetch_failed',\n            'error': f\"{url} → HTTP {report['status'] or page.get('error')}\",\n            'source_report': report,\n            'writes_first_score': False,\n        }\n    parsed = _mobile_exchange_pnl(page.get('html'))\n\n    def _as_rows(block: Any) -> list[dict[str, Any]]:\n        rows = []\n        for side in ('胜', '平', '负'):\n            item = (block or {}).get(side) if isinstance(block, dict) else None\n            if isinstance(item, dict):\n                rows.append({'wdl': side, **item})\n        return rows\n\n    out = {\n        'available': bool(parsed.get('available')),\n        'channel': 'mobile',\n        'source_path': '手机竞足→析→盈亏',\n        'match_id': mid,\n        'jc_saved': {'rows': _as_rows(parsed.get('jc_saved'))},\n        'jc_popularity': {'rows': _as_rows(parsed.get('jc_popularity'))},\n        'betfair_trade': {'rows': _as_rows(parsed.get('betfair_trade'))},\n        'betfair_available': bool(parsed.get('betfair_available')),\n        'betfair_note': parsed.get('betfair_note') or '',\n        'saved_total': parsed.get('saved_total'),\n        'parse_stage': parsed.get('stage'),\n        'source_report': report,\n        'writes_first_score': False,\n    }\n    if not out['available']:\n        out['reason'] = 'okooo_exchange_no_pnl_rows'\n        out['block_reason'] = 'okooo_exchange_no_pnl_rows'\n        out['error'] = (\n            f\"{url} 200 {report['bytes']}B title={report['title'] or '-'} \"\n            f\"stage={parsed.get('stage')}\"\n        )\n    return out\n\n\n_ABSENCE_STATE = {'伤': '伤', '停': '停', '疑': '疑'}\n\n\ndef _parse_lineup_page(html: Any) -> dict[str, Any]:\n    \"\"\"解析桌面 /soccer/match/<id>/formation/ 阵容页。\n\n    真实结构（2026-11-25 现场核对，1347776 191,730B / 1347778 199,508B，gb18030）：\n      * `div.match-battle-field`：左半 =.field-flex-col（主队），\n        右半 = `div.field-right`（客队），共 22 个 `div.field-player-box`，\n        每个含 `.qius`(球衣号) / `.player-name` / `.player-price`。\n      * `div.match-battle-substitution`：`主队替补` / `客队替补` 两块，\n        每块若干 `a.name.playersObj` + `.price`。\n      * `div.match-battle-shangting.item-home` / `.item-away`：伤停，\n        每个 `div.shangting-list-item` 含 `.item-state`(伤/停) /\n        `.item-text`(位置) / `.item-detail a.name` + `.price` + `.text`。\n    页面上「右半」用 class field-right 标出，主客以位置区分，不靠队名猜。\n    \"\"\"\n    text = str(html or '')\n    out: dict[str, Any] = {\n        'available': False, 'stage': 'ok',\n        'home': {}, 'away': {},\n        'starters': [], 'substitutes': [], 'absences': [],\n    }\n    if 'match-battle-field' not in text:\n        out['stage'] = 'no_battle_field'\n        return out\n\n    def _txt(raw: str) -> str:\n        return re.sub(r'\\s+', ' ', re.sub(r'<[^>]+>', '', raw)).strip()\n\n    def _players(chunk: str, side: str) -> list[dict[str, Any]]:\n        \"\"\"切出所有 field-player-box。\n\n        不能靠 `</div></a>` 收尾：页面最后一个球员的闭合标签写法不同，\n        会漏掉一人（客队只剩 10）。这里按 box 起点切片。\n        \"\"\"\n        # class 有两种写法：'field-player-box' 与 'field-player-box left-price'\n        # （客队/左价球员用后者）。只匹配前者会静默漏掉整半支球队。\n        starts = [m.start() for m in re.finditer(r'<div class=\"field-player-box\\b', chunk)]\n        players = []\n        for idx, start in enumerate(starts):\n            end = starts[idx + 1] if idx + 1 < len(starts) else len(chunk)\n            box = chunk[start:end]\n            number = re.search(r'<div class=\"qius\"[^>]*>\\s*([^<]*?)\\s*</div>', box)\n            name = re.search(r'<div class=\"player-name\">\\s*([^<]*?)\\s*</div>', box)\n            price = re.search(r'<div class=\"player-price\">\\s*([^<]*?)\\s*</div>', box)\n            if not name:\n                continue\n            players.append({\n                'side': side,\n                'number': (number.group(1).strip() if number else ''),\n                'name': name.group(1).strip(),\n                'price': price.group(1).strip() if price else '',\n            })\n        return players\n\n    field = re.search(r'<div class=\"match-battle-field\">([\\s\\S]*?)\\Z', text)\n    field_body = field.group(1) if field else text\n    right_at = field_body.find('field-right')\n    left_part = field_body[:right_at] if right_at > 0 else field_body\n    right_part = field_body[right_at:] if right_at > 0 else ''\n    home_starters = _players(left_part, 'home')\n    away_starters = _players(right_part, 'away')\n    if not away_starters and right_at > 0:\n        # 右半没有 field-player-box 时，按 11 人切分（页面顺序：主队 11 后客队 11）。\n        all_players = _players(field_body, 'home')\n        home_starters, away_starters = all_players[:11], [\n            {**p, 'side': 'away'} for p in all_players[11:]\n        ]\n\n    subs = {'home': [], 'away': []}\n    sub_at = text.find('match-battle-substitution')\n    if sub_at > 0:\n        sub_block = text[sub_at:]\n        blocks = re.split(r'<div class=\"item-title\">\\s*(主队替补|客队替补)\\s*</div>', sub_block)\n        for idx in range(1, len(blocks) - 1, 2):\n            label = blocks[idx]\n            side = 'home' if '主队' in label else 'away'\n            # 价格 div 里还嵌着 <em> 标记，所以按 item-item 起点切片而不是用收尾正则；\n            # 价格取 <div class=\"price\"> 到下一个 <em 之前的纯文本。\n            body = blocks[idx + 1]\n            starts = [m.start() for m in re.finditer(r'<div class=\"item-item clearfix\">', body)]\n            for j, start in enumerate(starts):\n                end = starts[j + 1] if j + 1 < len(starts) else len(body)\n                item = body[start:end]\n                name = re.search(r'class=\"name playersObj\"[^>]*>([^<]*?)</a>', item)\n                if not name:\n                    continue\n                price = re.search(r'<div class=\"price\">([\\s\\S]*?)(?:<em|</div>)', item)\n                subs[side].append({\n                    'side': side,\n                    'name': name.group(1).strip(),\n                    'price': re.sub(r'\\s+', ' ', price.group(1)).strip() if price else '',\n                })\n\n    absences = []\n    for side, cls in (('home', 'item-home'), ('away', 'item-away')):\n        block = re.search(\n            rf'<div class=\"match-battle-shangting {cls}\">([\\s\\S]*?)(?=<div class=\"match-battle-shangting|'\n            rf'<div class=\"match-battle-item|</section>)', text)\n        if not block:\n            continue\n        for item in re.findall(r'<div class=\"shangting-list-item clearfix\">([\\s\\S]*?)</div>\\s*</div>\\s*</div>', block.group(1)):\n            state = re.search(r'<div class=\"item-state[^\"]*\">\\s*([^<]*?)\\s*</div>', item)\n            position = re.search(r'<div class=\"item-text\">\\s*([^<]*?)\\s*</div>', item)\n            name = re.search(r'class=\"name playersObj\"[^>]*>([^<]*?)</a>', item)\n            price = re.search(r'<div class=\"price\">\\s*([^<]*?)\\s*</div>', item)\n            note = re.search(r'<div class=\"text\">\\s*([^<]*?)\\s*</div>', item)\n            if not name:\n                continue\n            absences.append({\n                'side': side,\n                'state': (state.group(1).strip() if state else ''),\n                'position': (position.group(1).strip() if position else ''),\n                'name': name.group(1).strip(),\n                'price': (price.group(1).strip() if price else ''),\n                'note': (note.group(1).strip() if note else ''),\n            })\n\n    out['home'] = {'starters': home_starters, 'substitutes': subs['home'],\n                   'absences': [a for a in absences if a['side'] == 'home']}\n    out['away'] = {'starters': away_starters, 'substitutes': subs['away'],\n                   'absences': [a for a in absences if a['side'] == 'away']}\n    out['starters'] = home_starters + away_starters\n    out['substitutes'] = subs['home'] + subs['away']\n    out['absences'] = absences\n    out['home_count'] = len(home_starters)\n    out['away_count'] = len(away_starters)\n    out['available'] = bool(out['starters'] or out['substitutes'] or out['absences'])\n    if not out['available']:\n        out['stage'] = 'no_players_parsed'\n    return out\n\n\ndef scrape_okooo_mobile_lineup(match_id: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    \"\"\"每场阵容：桌面 `/soccer/match/<id>/formation/`（手机端没有阵容页）。\n\n    已探明的死路（不要再试）：桌面 lineup/ players/ shuju/ → 405/404；\n    手机 lineup.php formation.php analysis.php team.php → 404；\n    手机 players.php 是「每场球员数据」，不是首发名单。\n    \"\"\"\n    mid = str(match_id or '').strip()\n    if not mid:\n        return {\n            'available': False, 'match_id': '', 'channel': 'desktop_formation',\n            'home': {}, 'away': {}, 'starters': [], 'substitutes': [], 'absences': [],\n            'reason': 'no_match_id', 'block_reason': 'no_match_id',\n        }\n    url = f'https://www.okooo.com/soccer/match/{mid}/formation/'\n    page = _fetch_detail(url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)\n    # 阵容页与波胆页同受间歇 WAF 405 影响（现场见过同一 URL 隔几十秒转 200）。\n    # 有界耐心重试，仍然失败就如实回报，不编名单。\n    patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_LINEUP_PATIENCE') or 2) or 0)\n    gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_LINEUP_PATIENCE_GAP') or 35) or 35)\n    for _attempt in range(patience):\n        if page.get('ok') or not page.get('blocked'):\n            break\n        time.sleep(gap)\n        page = _fetch_detail(url, proxies=kwargs.get('proxies'), session=kwargs.get('session'), retries=1)\n    report = {\n        'url': url, 'status': int(page.get('status') or 0),\n        'bytes': int(page.get('bytes') or 0), 'title': str(page.get('title') or ''),\n        'blocked': bool(page.get('blocked')),\n    }\n    base = {\n        'match_id': mid, 'channel': 'desktop_formation', 'source_path': '桌面 析→阵容',\n        'source_report': report,\n    }\n    if not page.get('ok'):\n        return {\n            **base, 'available': False, 'home': {}, 'away': {}, 'starters': [],\n            'substitutes': [], 'absences': [],\n            'reason': 'external_okooo_formation_fetch_failed',\n            'block_reason': 'external_okooo_formation_fetch_failed',\n            'error': f\"{url} → HTTP {report['status'] or page.get('error')}\",\n        }\n    parsed = _parse_lineup_page(page.get('html'))\n    out = {**base, **parsed}\n    if not out.get('available'):\n        out['reason'] = 'okooo_formation_parse_empty'\n        out['block_reason'] = 'okooo_formation_parse_empty'\n        out['error'] = (\n            f\"{url} 200 {report['bytes']}B title={report['title'] or '-'} \"\n            f\"stage={parsed.get('stage')}\"\n        )\n    return out\n\n\n# 竞彩比分 31 个选项的官方代码顺序：30..42 主胜、43..47 平、48..60 客胜。\n# 与 oddsData.OddsList.SportteryScore 的键一一对应。\n_JCZQ_SCORE_CODES: tuple[tuple[str, str], ...] = (\n    *((str(30 + i), s) for i, s in enumerate(\n        ['1-0', '2-0', '2-1', '3-0', '3-1', '3-2', '4-0', '4-1', '4-2', '5-0', '5-1', '5-2', '胜其它']\n    )),\n    *((str(43 + i), s) for i, s in enumerate(['0-0', '1-1', '2-2', '3-3', '平其它'])),\n    *((str(48 + i), s) for i, s in enumerate(\n        ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5', '负其它']\n    )),\n)\n_JCZQ_CODE_TO_SCORE = dict(_JCZQ_SCORE_CODES)\nJCZQ_SCORE_OPTIONS = tuple(score for _code, score in _JCZQ_SCORE_CODES)\n\n\ndef _decode_js_object(text: str, marker: str = 'var oddsData') -> dict[str, Any] | None:\n    \"\"\"从页面里切出 `var oddsData = {...}` 并 json.loads。\n\n    不能直接对切片 json.loads：切片边界要按花括号配对算（还要跳过字符串里的括号）。\n    \"\"\"\n    start = text.find(marker)\n    if start < 0:\n        return None\n    brace = text.find('{', start)\n    if brace < 0:\n        return None\n    depth = 0\n    in_string = False\n    escaped = False\n    end = -1\n    for idx in range(brace, len(text)):\n        ch = text[idx]\n        if in_string:\n            if escaped:\n                escaped = False\n            elif ch == '\\\\':\n                escaped = True\n            elif ch == '\"':\n                in_string = False\n            continue\n        if ch == '\"':\n            in_string = True\n        elif ch == '{':\n            depth += 1\n        elif ch == '}':\n            depth -= 1\n            if depth == 0:\n                end = idx + 1\n                break\n    if end < 0:\n        return None\n    try:\n        data = json.loads(text[brace:end])\n    except (ValueError, TypeError):\n        return None\n    return data if isinstance(data, dict) else None\n\n\ndef _jc_orderid_for_match(html: str, match_id: Any) -> str:\n    \"\"\"在竞足赛程页里把 matchid 映射到 orderid（oddsData 是按 orderid 键的）。\n\n    同一行里有 `matchid=\"<id>\"` 和 `id=\"match_<orderid>\" orderid=\"<orderid>\"`，\n    但两者先后不定，所以按 jsMatchItem 分块后在同一块内取。\n    \"\"\"\n    wanted = str(match_id or '').strip()\n    if not wanted:\n        return ''\n    for block in re.split(r'<div[^>]*class=\"[^\"]*jsMatchItem[^\"]*\"', str(html or '')):\n        if f'matchid=\"{wanted}\"' not in block:\n            continue\n        found = re.search(r'orderid=\"(\\d+)\"', block)\n        if found:\n            return found.group(1)\n    return ''\n\n\ndef parse_jczq_score_odds(html: Any, match_id: Any) -> dict[str, Any]:\n    \"\"\"从 m.okooo.com/jczq/ 取本场 31 个竞彩比分赔率。\n\n    返回 {'available', 'odds': {score: odd}, 'orderid', 'raw_count', 'stage'}。\n    这是 `jc_score_odds` 的唯一真实来源（此前只有读者没有写者，31池比分永远空）。\n    \"\"\"\n    text = str(html or '')\n    out: dict[str, Any] = {'available': False, 'odds': {}, 'orderid': '', 'raw_count': 0, 'stage': 'ok'}\n    data = _decode_js_object(text)\n    if not data:\n        out['stage'] = 'odds_data_missing'\n        return out\n    orderid = _jc_orderid_for_match(text, match_id)\n    if not orderid:\n        out['stage'] = 'orderid_not_found'\n        return out\n    out['orderid'] = orderid\n    _slot_raw = data.get(orderid)\n    slot: dict[str, Any] = _slot_raw if isinstance(_slot_raw, dict) else {}\n    score_block = ((slot.get('OddsList') or {}).get('SportteryScore') or {})\n    if not isinstance(score_block, dict) or not score_block:\n        out['stage'] = 'sporttery_score_missing'\n        return out\n    odds: dict[str, float] = {}\n    for code, score in _JCZQ_SCORE_CODES:\n        value = _num_of(score_block.get(code))\n        if value is not None and value > 1:\n            odds[score] = value\n    out['raw_count'] = len(score_block)\n    out['odds'] = odds\n    out['available'] = len(odds) >= 31\n    if not out['available']:\n        out['stage'] = f'incomplete_{len(odds)}_of_31'\n    return out\n\n\n# apply_mobile_books_lines 要搬的字段：三块水位 + 它们的来源与水位值。\n# odds_1x2 漏搬过一次，导致「抓到了但记录还是空的」，进而触发重复抓取。\n_MOBILE_BOOKS_FIELDS = (\n    'ou_line', 'ou_line_text', 'ou_start_line', 'ou_over_water', 'ou_under_water', 'ou_line_source',\n    'asian_handicap', 'asian_handicap_text', 'ah_start_line', 'ah_start_text',\n    'ah_home_water', 'ah_away_water', 'ah_line_source',\n    'odds_1x2', 'odds_1x2_company',\n)\n_MOBILE_BOOKS_PROVENANCE = ('boards_hit', 'missing', 'source_report', 'fetch_urls', 'channel', 'match_id')\n\n\ndef _is_filled(value: Any) -> bool:\n    \"\"\"一个值算不算「有内容」。空串/空容器/None 都算没有。\"\"\"\n    if value is None:\n        return False\n    if isinstance(value, str):\n        return bool(value.strip())\n    if isinstance(value, (list, tuple, dict, set)):\n        return bool(value)\n    return True\n\n\ndef normalize_cs_key(score: Any) -> str:\n    \"\"\"比分键归一：`1:0` / `1：0` / 空格 → `1-0`。\n\n    桌面 /cs/ 页给的是冒号形式，竞彩31项给的是横杠形式；不归一时两边永远对不上，\n    日志里就会同时出现「市均 25 项」和「31全表缺 9 项」两个都对的说法。\n    \"\"\"\n    return str(score or '').replace('：', '-').replace(':', '-').replace(' ', '').strip()\n\n\ndef merge_cs31(\n    page_avg: Any = None,\n    books_avg: Any = None,\n    jc_odds: Any = None,\n) -> dict[str, Any]:\n    \"\"\"把桌面波胆市均与竞彩官方31比分合并成竞彩31项全表，带逐键出处。\n\n    这是 31 池唯一的合并入口：抓取、补抓、闸门、三视图都调它，避免各算各的。\n\n    规则：\n      * 市均（page_avg 优先，books_avg 兜底）先归一键，占它覆盖得到的项；\n      * 竞彩官方 31 补市均缺的项（5-0/5-1/5-2/0-5/1-5/2-5 与三个「其它」）；\n      * 市均里不属于竞彩31项的键（4-3/3-4/4-4）单独留在 extras，绝不删除，\n        但也不计入 31；\n      * 每一项记 provenance：desktop_cs / jc_official。\n\n    返回 {'scores': {option: odd}, 'provenance': {option: src},\n          'extras': {k: odd}, 'counts': {...}, 'complete': bool}。\n    \"\"\"\n    from_page: dict[str, float] = {}\n    for source in (page_avg, books_avg):\n        if not isinstance(source, dict):\n            continue\n        for key, odd in source.items():\n            norm = normalize_cs_key(key)\n            raw = odd.get('odds') if isinstance(odd, dict) else odd\n            if raw is None:\n                continue\n            try:\n                value = float(raw)\n            except (TypeError, ValueError):\n                continue\n            if norm and value > 1 and norm not in from_page:\n                from_page[norm] = value\n    from_jc: dict[str, float] = {}\n    if isinstance(jc_odds, dict):\n        for key, odd in jc_odds.items():\n            norm = normalize_cs_key(key)\n            raw = odd.get('odds') if isinstance(odd, dict) else odd\n            if raw is None:\n                continue\n            try:\n                value = float(raw)\n            except (TypeError, ValueError):\n                continue\n            if norm and value > 1:\n                from_jc[norm] = value\n\n    jc_set = set(JCZQ_SCORE_OPTIONS)\n    scores: dict[str, float] = {}\n    provenance: dict[str, str] = {}\n    extras: dict[str, float] = {}\n    for option in JCZQ_SCORE_OPTIONS:\n        if option in from_page:\n            scores[option] = from_page[option]\n            provenance[option] = 'desktop_cs'\n        elif option in from_jc:\n            scores[option] = from_jc[option]\n            provenance[option] = 'jc_official'\n    for key, value in from_page.items():\n        if key not in jc_set:\n            extras[key] = value\n    counts = {'desktop_cs': 0, 'jc_official': 0}\n    for src in provenance.values():\n        counts[src] = counts.get(src, 0) + 1\n    return {\n        'scores': scores,\n        'provenance': provenance,\n        'extras': extras,\n        'counts': counts,\n        'missing': [o for o in JCZQ_SCORE_OPTIONS if o not in scores],\n        'complete': len(scores) == 31,\n        'row_count': len(scores),\n    }\n    if value is None:\n        return False\n    if isinstance(value, str):\n        return bool(value.strip())\n    if isinstance(value, (list, tuple, dict, set)):\n        return bool(value)\n    return True\n\n\ndef seed_mobile_ah_ou_books(record: dict[str, Any], pack: dict[str, Any] | None = None) -> dict[str, Any]:\n    \"\"\"把盘口包放进 record['mobile_ah_ou_books']，供 apply_mobile_books_lines 读取。\n\n    两个包在同一个键上形状不同，必须都留住：\n      * books 包（scrape_okooo_mobile_ah_ou_books）：asian_handicap 是\n        {'rows': [...], 'companies': [{name, pid, start, latest, changes, ...}]}\n      * six 包（scrape_okooo_mobile_six_markets）：asian_handicap 是标量 -0.5\n    以前直接 dict.update，标量把公司明细整块覆盖掉，刚抓到的 change.php 时间线就没了。\n    现在撞到「一边 dict、一边标量」时：明细留在原键，标量另存为\n    asian_handicap_line（apply_mobile_books_lines 需要这个数）。\n    历史用 setdefault，先挂上的空壳会把真数据挡在外面，这里也一并按字段合并。\n    \"\"\"\n    if not isinstance(record, dict):\n        return {'available': False}\n    incoming = pack if isinstance(pack, dict) else {}\n    existing = record.get('mobile_ah_ou_books')\n    if not isinstance(existing, dict):\n        merged = dict(incoming) if incoming else {'available': False}\n        _lift_scalar_ah(merged)\n        record['mobile_ah_ou_books'] = merged\n        return merged\n    merged = dict(existing)\n    for key, value in incoming.items():\n        if key == 'asian_handicap':\n            _merge_ah_slot(merged, value)\n            continue\n        if _is_filled(value) or key not in merged:\n            merged[key] = value\n    _lift_scalar_ah(merged)\n    record['mobile_ah_ou_books'] = merged\n    return merged\n\n\ndef _merge_ah_slot(target: dict[str, Any], value: Any) -> None:\n    \"\"\"asian_handicap 这个键可能是明细 dict（books 包）或标量（six 包）。\n\n    明细 dict 留在 asian_handicap；标量写 asian_handicap_line。\n    两者同时到达时都保留，谁也不覆盖谁。\n    \"\"\"\n    if isinstance(value, dict):\n        current = target.get('asian_handicap')\n        if isinstance(current, dict):\n            merged = dict(current)\n            for k, v in value.items():\n                if _is_filled(v) or k not in merged:\n                    merged[k] = v\n            target['asian_handicap'] = merged\n        else:\n            # 已存的标量先搬去 asian_handicap_line，再把明细放回主键。\n            if current is not None:\n                target.setdefault('asian_handicap_line', current)\n            target['asian_handicap'] = dict(value)\n        return\n    if value is None:\n        return\n    if isinstance(target.get('asian_handicap'), dict):\n        target['asian_handicap_line'] = value\n    else:\n        target['asian_handicap'] = value\n\n\ndef _lift_scalar_ah(target: dict[str, Any]) -> None:\n    \"\"\"把 asian_handicap_line 里的标量同步到记录可直接读的位置。\n\n    只补 asian_handicap_line，不动 asian_handicap（那是明细 dict）。\n    \"\"\"\n    if isinstance(target.get('asian_handicap'), dict) and target.get('asian_handicap_line') is None:\n        row = (target['asian_handicap'].get('rows') or [{}])\n        first = row[0] if row and isinstance(row[0], dict) else {}\n        _latest_raw = first.get('latest')\n        latest: dict[str, Any] = _latest_raw if isinstance(_latest_raw, dict) else {}\n        if latest.get('line') is not None:\n            target['asian_handicap_line'] = latest.get('line')\n\n\ndef apply_mobile_books_lines(record: dict[str, Any], books: dict[str, Any] | None = None) -> dict[str, Any]:\n    \"\"\"把盘口包里的水位写回记录。\n\n    三块水位都必须搬（odds_1x2 曾漏搬），并且带上来源字段，下游才能看到出处。\n    规则：包里有值才写，绝不拿空值覆盖记录里已有的非空值。\n    取值顺序：显式传入的包 → 已挂上的 mobile_ah_ou_books → six_market_mobile，\n    逐字段取第一个有值的，这样空壳挡不住真数据。\n    \"\"\"\n    if not isinstance(record, dict):\n        return {}\n    sources = [\n        books,\n        record.get('mobile_ah_ou_books'),\n        record.get('six_market_mobile'),\n    ]\n    picked: dict[str, Any] = {}\n    for key in _MOBILE_BOOKS_FIELDS:\n        for source in sources:\n            if not isinstance(source, dict):\n                continue\n            value = source.get(key)\n            if key == 'asian_handicap' and isinstance(value, dict):\n                # 同一个键在 books 包里是公司明细 dict。水位本身要写标量，\n                # 明细另存 ah_detail —— 覆盖成一个 dict 会让下游算术直接崩。\n                row = (value.get('rows') or [{}])\n                first = row[0] if row and isinstance(row[0], dict) else {}\n                _latest_raw2 = first.get('latest')\n                latest2: dict[str, Any] = _latest_raw2 if isinstance(_latest_raw2, dict) else {}\n                scalar = value.get('asian_handicap')\n                if scalar is None:\n                    scalar = latest2.get('line')\n                picked.setdefault('ah_detail', value)\n                if scalar is not None and 'asian_handicap' not in picked:\n                    picked['asian_handicap'] = scalar\n                continue\n            if _is_filled(value):\n                picked[key] = value\n                break\n    for key, value in picked.items():\n        record[key] = value\n    provenance: dict[str, Any] = {}\n    for key in _MOBILE_BOOKS_PROVENANCE:\n        for source in sources:\n            if not isinstance(source, dict):\n                continue\n            value = source.get(key)\n            if _is_filled(value):\n                provenance[key] = value\n                break\n    if provenance:\n        existing = record.get('mobile_water_provenance')\n        merged = dict(existing) if isinstance(existing, dict) else {}\n        merged.update(provenance)\n        record['mobile_water_provenance'] = merged\n    return record\n\n\ndef detect_six_market_contradictions(record: dict[str, Any]) -> list[dict[str, Any]]:\n    if not isinstance(record, dict):\n        return []\n    contradictions = []\n    if record.get('predicted_ou') and record.get('ou_line') is None:\n        contradictions.append({'type': 'missing_ou_line', 'severity': 'low'})\n    return contradictions\n\n\ndef water_is_present(value: Any) -> bool:\n    \"\"\"水位字段算不算「有」。\n\n    0.0 是真实盘口（平手盘 / 大小球 0 线），必须算有；None、空串、空容器、\n    空 bool 之外的缺失都算没有。`not value` 会把 0.0 误判成缺失，\n    于是全齐的记录被报缺、被整场重抓、被研判闸门挡住。\n    \"\"\"\n    if value is None:\n        return False\n    if isinstance(value, str):\n        return bool(value.strip())\n    if isinstance(value, (dict, list, tuple, set)):\n        return bool(value)\n    if isinstance(value, bool):\n        return True\n    if isinstance(value, (int, float)):\n        return True\n    return True\n\n\n_WATER_FIELDS = ('asian_handicap', 'ou_line', 'odds_1x2')\n\n\ndef missing_six_market_waters(record: dict[str, Any]) -> list[str]:\n    if not isinstance(record, dict):\n        return ['invalid_record']\n    return [key for key in _WATER_FIELDS if not water_is_present(record.get(key))]\n\n\ndef finish_match_water_scrape(record: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:\n    if isinstance(record, dict):\n        record['water_scrape_finished'] = True\n    return {'ok': True, 'missing': missing_six_market_waters(record)}\n\n\ndef six_market_fetch_blocked(record: dict[str, Any]) -> bool:\n    if not isinstance(record, dict):\n        return True\n    block = record.get('six_market_mobile')\n    return isinstance(block, dict) and bool(block.get('block_reason'))\n\n\ndef _contradiction_store(match_id: Any = None) -> Path:\n    if match_id in (None, ''):\n        return _STORE\n    return _STORE.with_name(f'six_market_contradictions_{_safe_id(match_id)}.json')\n\n\ndef save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:\n    match_id = None if items is None else match_id_or_items\n    payload = match_id_or_items if items is None else items\n    path = _contradiction_store(match_id)\n    try:\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(json.dumps(payload or [], ensure_ascii=False, indent=2), encoding='utf-8')\n        return True\n    except OSError as exc:\n        print(f\"   ⚠️ [澳客手机CS] 保存对账缺口失败: {type(exc).__name__}\")\n        return False\n\n\ndef load_six_market_contradictions(match_id: Any = None) -> list[Any]:\n    \"\"\"读取某场的对账缺口文件。\n\n    文件不存在是正常空状态（本场还没写过缺口），不是错误：不打印告警，\n    直接返回空列表。只有真的读不动（权限/JSON 损坏）才留一行提示。\n    \"\"\"\n    path = _contradiction_store(match_id)\n    if not path.exists():\n        return []\n    try:\n        data = json.loads(path.read_text(encoding='utf-8'))\n    except FileNotFoundError:\n        # 探测与读取之间被删掉：同样是空状态，不吵。\n        return []\n    except json.JSONDecodeError as exc:\n        print(f\"   ℹ️ [澳客手机CS] 对账缺口文件损坏，按空处理: {path.name} ({exc.msg})\")\n        return []\n    except OSError as exc:\n        print(f\"   ℹ️ [澳客手机CS] 对账缺口文件不可读，按空处理: {path.name} ({type(exc).__name__})\")\n        return []\n    return data if isinstance(data, list) else []\n",
+  "odds_index_math": "\"\"\"Odds/index math helpers used by app_v84_hermes.\"\"\"\nfrom __future__ import annotations\n\nimport math\nfrom typing import Any\n\n\ndef _f(value: Any, default: float | None = None) -> float | None:\n    try:\n        number = float(value)\n        return number if math.isfinite(number) else default\n    except (TypeError, ValueError):\n        return default\n\n\ndef normalize_return_rate(value: Any) -> float | None:\n    n = _f(value)\n    if n is None:\n        return None\n    return n / 100.0 if n > 1.5 else n\n\n\ndef return_rate_pct(value: Any) -> float | None:\n    n = normalize_return_rate(value)\n    return None if n is None else n * 100.0\n\n\ndef calc_return_rate(*odds: Any) -> float | None:\n    vals = []\n    for odd in odds:\n        value = _f(odd)\n        if value is not None and value > 1:\n            vals.append(value)\n    if not vals:\n        return None\n    inv = sum(1.0 / v for v in vals)\n    return (1.0 / inv) if inv > 0 else None\n\n\ndef calc_instant_probs(win: Any, draw: Any, lose: Any) -> dict[str, Any]:\n    win_f = _f(win)\n    draw_f = _f(draw)\n    lose_f = _f(lose)\n    if win_f is None or draw_f is None or lose_f is None or win_f <= 1 or draw_f <= 1 or lose_f <= 1:\n        return {'valid': False, 'home': None, 'draw': None, 'away': None, 'return_rate': None}\n    inv_sum = (1.0 / win_f) + (1.0 / draw_f) + (1.0 / lose_f)\n    rr = 1.0 / inv_sum if inv_sum > 0 else None\n    return {\n        'valid': rr is not None,\n        'home': (rr / win_f) if rr else None,\n        'draw': (rr / draw_f) if rr else None,\n        'away': (rr / lose_f) if rr else None,\n        'return_rate': rr,\n        'return_rate_pct': rr * 100.0 if rr else None,\n    }\n\n\ndef calc_kelly_index(prob: Any, odds: Any) -> float | None:\n    p = _f(prob)\n    o = _f(odds)\n    if p is None or o is None or o <= 1:\n        return None\n    return p * o\n\n\ndef apply_six_cs_settlement_v2_to_rec(rec: dict[str, Any]) -> dict[str, Any]:\n    \"\"\"六盘口×市均清算 v2。\n\n    只有真的拿到输入才算 available。空记录曾返回 available=True 且每个字段都是\n    None（日志里 `status=None ah=None ou=None cs=None cos=None` 还打了 ✅），\n    属于「对空输入宣称成功」。现在缺什么就在 block_reason 里点名。\n    \"\"\"\n    if not isinstance(rec, dict):\n        return {'available': False, 'reason': 'invalid_rec', 'block_reason': 'invalid_rec'}\n    ou_line = rec.get('ou_line')\n    # 平手盘 ah=0.0 是真实盘口：`or` 会让它落到 ah_line 甚至 None。\n    # 规则：数值线只要 is not None 就算有；None/空串/空容器才算缺。\n    _ah = rec.get('asian_handicap')\n    asian_handicap = _ah if _ah is not None else rec.get('ah_line')\n    cs_books = rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg')\n    cs_available = bool(isinstance(cs_books, dict) and cs_books) or bool(\n        isinstance(rec.get('odds_correct_score'), dict) and rec.get('odds_correct_score')\n    )\n    missing = []\n    if ou_line is None or (isinstance(ou_line, str) and not ou_line.strip()) or isinstance(ou_line, (dict, list)):\n        missing.append('ou_line')\n    if asian_handicap is None or (isinstance(asian_handicap, str) and not asian_handicap.strip()):\n        missing.append('asian_handicap')\n    if not cs_available:\n        missing.append('correct_score')\n    board: dict[str, Any] = {\n        'available': not missing,\n        'ou_line': ou_line,\n        'asian_handicap': asian_handicap,\n        'correct_score_available': cs_available,\n        'cs_market_count': len(cs_books) if isinstance(cs_books, dict) else 0,\n    }\n    if missing:\n        board['block_reason'] = 'missing_inputs:' + '/'.join(missing)\n    rec['six_cs_settlement_v2'] = board\n    return board\n",
+  "odds_fallback": "\"\"\"Fallback odds helpers.\n\nNetwork scrapers return structured unavailable results unless the caller supplies\nalready-fetched data. This avoids missing-module failures without pretending that\nexternal 500.com data exists.\n\"\"\"\nfrom __future__ import annotations\n\nimport os\nfrom typing import Any\n\n\ndef odds_fallback_enabled() -> bool:\n    return os.environ.get('ODDS_FALLBACK_DISABLED', '').lower() not in {'1','true','yes'}\n\n\ndef build_heat_from_odds_map(odds: Any, source: str = 'fallback_odds_map', channel: str = 'fallback') -> dict[str, Any]:\n    rows=[]\n    if isinstance(odds, dict):\n        for score, odd in odds.items():\n            try:\n                raw_value = odd.get('odds') if isinstance(odd, dict) else odd\n                if raw_value is None:\n                    continue\n                value = float(raw_value)\n            except (TypeError, ValueError):\n                continue\n            if value > 1:\n                rows.append({'score': str(score).replace(':','-'), 'odds': value, 'heat': 1.0/value})\n    rows.sort(key=lambda r: r['heat'], reverse=True)\n    return {\n        'available': bool(rows),\n        'source': source,\n        'heat_source': source,\n        'channel': channel,\n        'ranking': rows,\n        'top_scores': [r['score'] for r in rows[:8]],\n    }\n\n\ndef scrape_500_detail(fixture_id_500: Any, proxies: Any = None) -> dict[str, Any]:\n    return {'available': False, 'source': '500_detail', 'reason': 'external_fetch_not_configured', 'fixture_id_500': str(fixture_id_500 or '')}\n\n\ndef apply_fallback_cs_to_rec(rec: dict[str, Any], m_obj: Any = None, **kwargs: Any) -> dict[str, Any]:\n    odds = rec.get('odds_correct_score') if isinstance(rec, dict) else {}\n    heat = build_heat_from_odds_map(odds, source='fallback_existing_odds')\n    if isinstance(rec, dict):\n        rec['fallback_cs_heat'] = heat\n    return heat\n\n\ndef attach_500_shuju_to_rec(rec: dict[str, Any], force: bool = False) -> dict[str, Any]:\n    pack={'available': False, 'reason': 'external_500_shuju_not_configured'}\n    if isinstance(rec, dict): rec['fallback_500_shuju']=pack\n    return pack\n\n\ndef _line_present(value: Any) -> bool:\n    \"\"\"水位/盘口线算不算「有」。0.0 是真实盘口（平手盘），算有。\n\n    None / 空串 / 空容器才算缺。判「有」绝不能用 `not value`。\n    \"\"\"\n    if value is None:\n        return False\n    if isinstance(value, str):\n        return bool(value.strip())\n    if isinstance(value, (dict, list, tuple, set)):\n        return bool(value)\n    return True\n\n\ndef _local_water_gaps(rec: Any) -> list[str]:\n    \"\"\"本地重算水位缺口（与 okooo_mobile_cs.missing_six_market_waters 同规则）。\n\n    这里不 import 那个模块：odds_fallback 被 app 在抓取链路里早早导入，\n    反向依赖会绕成环。规则很短，就地实现并保持同步——\n    **判「有」不能用 `not value`**：0.0 是平手盘/大小球0线这种真实盘口。\n    \"\"\"\n    if not isinstance(rec, dict):\n        return ['invalid_record']\n    return [key for key in ('asian_handicap', 'ou_line', 'odds_1x2') if not _line_present(rec.get(key))]\n\n\ndef ensure_dual_source_before_judgment(rec: dict[str, Any], extra_sources: Any = None) -> dict[str, Any]:\n    \"\"\"把手机市均与 500 兜底合成一个可审计的整合包。\n\n    返回值里每个字段都有明确类型（不再出现 ready=None / reason=None）：\n      ready              是否足够进研判\n      mobile_cs_entered  手机市均是否真的进了整合包\n      cs_books_n         手机市均公司数\n      filled_from_500    从 500 补进来的槽位\n      kept_mobile        保留的手机市均槽位\n      reason             未就绪时的具体原因（就绪时为空串）\n    \"\"\"\n    if not isinstance(rec, dict):\n        return {\n            'available': False, 'ready': False, 'mobile_cs_entered': False,\n            'cs_books_n': 0, 'filled_from_500': [], 'kept_mobile': [],\n            'reason': 'invalid_record',\n        }\n    facts = rec.setdefault('dual_source_facts', {})\n    if not isinstance(facts, dict):\n        facts = {}\n        rec['dual_source_facts'] = facts\n    if isinstance(extra_sources, dict):\n        for key, value in extra_sources.items():\n            facts[key] = value\n\n    books_avg = rec.get('correct_score_books_avg')\n    page_avg = rec.get('correct_score_page_avg')\n    site_avg = rec.get('correct_score_site_avg')\n    books_from = ''\n    if isinstance(books_avg, dict) and books_avg:\n        books_from = 'correct_score_books_avg'\n    elif isinstance(page_avg, dict) and page_avg:\n        books_avg = page_avg\n        books_from = 'correct_score_page_avg'\n    elif isinstance(site_avg, dict) and site_avg:\n        books_avg = site_avg\n        books_from = 'correct_score_site_avg'\n    else:\n        books_avg = {}\n    cs_books_n = len(books_avg) if isinstance(books_avg, dict) else 0\n    mobile_channel = str(rec.get('correct_score_channel') or '').lower()\n    mobile_entered = bool(cs_books_n and mobile_channel in {'mobile', 'desktop_cs', 'okooo_cs'})\n\n    _fb_raw = facts.get('fallback_500_fenxi')\n    fallback_500: dict[str, Any] = _fb_raw if isinstance(_fb_raw, dict) else {}\n    filled_from_500: list[str] = []\n    if isinstance(fallback_500, dict) and fallback_500.get('available'):\n        # 500 只在「本地确实没有」时补。`not rec.get(slot)` 会把平手盘 0.0\n        # 当成缺，从而用 500 的数字覆盖真实的 0 线。\n        _slot_keys = {\n            'ah_line': ('ah_line', 'asian_handicap'),\n            'ou_line': ('ou_line',),\n            'euro_1x2': ('odds_1x2',),\n        }\n        for slot in ('ah_line', 'ou_line', 'euro_1x2'):\n            if not fallback_500.get(slot):\n                continue\n            if any(_line_present(rec.get(k)) for k in _slot_keys[slot]):\n                continue\n            filled_from_500.append(slot)\n\n    kept_mobile: list[str] = []\n    for slot, key in (('asian_handicap', 'asian_handicap'), ('ou_line', 'ou_line'), ('odds_1x2', 'odds_1x2')):\n        if rec.get(key) not in (None, '', {}, []):\n            kept_mobile.append(slot)\n\n    # 水位缺口必须每次从字段现算。缓存的 rec['water_gaps'] 可能是上一轮（或抓取失败时）\n    # 留下的旧名单；信它会把「三块都齐」的记录判成未就绪，日志就会出现\n    # reason=水位缺asian_handicap/ou_line/odds_1x2 而实际并不缺。\n    # 水位缺口每次从字段现算，缓存的 rec['water_gaps'] 不再参与判断。\n    # 曾经的写法信缓存名单，结果把「三块都齐」的记录判成未就绪\n    # （reason=水位缺asian_handicap/ou_line/odds_1x2），也把纯空记录的缺项\n    # 交给一份可能过期的名单。现算永远以字段为准。\n    water_gaps = _local_water_gaps(rec)\n    rec['water_gaps'] = list(water_gaps)\n\n    cs_block = str(rec.get('cs_block_reason') or '').strip()\n    reasons: list[str] = []\n    if not mobile_entered:\n        reasons.append(f'手机市均未进入整合包(cs_n={cs_books_n}, channel={mobile_channel or \"-\"})')\n        if cs_block:\n            reasons.append(f'cs_block={cs_block}')\n    if water_gaps:\n        reasons.append('水位缺' + '/'.join(str(g) for g in water_gaps))\n    ready = bool(mobile_entered) and not water_gaps\n    facts['judgment_ready'] = ready\n    facts['correct_score'] = {\n        'mobile_entered': mobile_entered,\n        'books_n': cs_books_n,\n        'books_avg': dict(books_avg) if isinstance(books_avg, dict) else {},\n        # 读的是哪个键必须写清楚：日志里的 books=N 与 cs_n 必须同源同值。\n        'books_from': books_from,\n    }\n    for slot in filled_from_500:\n        facts[f'filled_500_{slot}'] = fallback_500.get(slot)\n    return {\n        'available': True,\n        'ready': ready,\n        'mobile_cs_entered': mobile_entered,\n        'cs_books_n': cs_books_n,\n        'filled_from_500': filled_from_500,\n        'kept_mobile': kept_mobile,\n        'books_from': books_from,\n        'water_gaps': list(water_gaps),\n        'reason': '' if ready else '；'.join(reasons) or '数据不足且未给出原因',\n    }\n",
   "sporttery_jc": "\"\"\"Sporttery/Jingcai merge-table helpers.\"\"\"\nfrom __future__ import annotations\n\nfrom typing import Any\n\n_FIXED_CACHE: dict[str, Any] = {}\n\n\ndef get(key: Any, default: Any = None) -> Any:\n    \"\"\"Compatibility helper for module-level cache lookups.\"\"\"\n    return _FIXED_CACHE.get(str(key), default)\n\n\ndef _odds_value(value: Any) -> float | None:\n    try:\n        if isinstance(value, dict): value = value.get('odds') or value.get('sp') or value.get('value')\n        f=float(value)\n        return f if f > 0 else None\n    except (TypeError, ValueError):\n        return None\n\n\ndef build_merged_market_heat_jc_table(heat: Any, jc: Any) -> dict[str, Any]:\n    rows=[]\n    if isinstance(heat, dict):\n        for row in heat.get('ranking') or heat.get('rows') or []:\n            if isinstance(row, dict): rows.append(dict(row))\n    if isinstance(jc, dict):\n        for score, val in jc.items():\n            odd=_odds_value(val)\n            if odd is None: continue\n            found=False\n            for row in rows:\n                if str(row.get('score')).replace(':','-') == str(score).replace(':','-'):\n                    row['jc_odds']=odd; found=True; break\n            if not found:\n                rows.append({'score': str(score).replace(':','-'), 'jc_odds': odd})\n    return {'available': bool(rows), 'rows': rows, 'cross_table': rows}\n\n\ndef format_merged_heat_jc_tg_lines(table: Any) -> list[str]:\n    t=table if isinstance(table, dict) else {}\n    rows=t.get('rows') or []\n    lines=['📊【市均***竞彩对比表】']\n    if not rows:\n        lines.append('  暂无可合并比分数据')\n    else:\n        for row in rows[:10]:\n            if isinstance(row, dict): lines.append(f\"  {row.get('score','?')} 市热={row.get('heat','-')} 竞彩={row.get('jc_odds','-')}\")\n    return lines\n",
-  "convergence_arbitrator": "\"\"\"Small convergence arbitration helpers.\"\"\"\nfrom __future__ import annotations\n\nfrom typing import Any\n\n\ndef _to_float(value: Any, default: float = 2.5) -> float:\n    if value is None:\n        return default\n    try:\n        return float(value)\n    except (TypeError, ValueError):\n        return default\n\n\ndef _parse(score: Any) -> tuple[int, int] | None:\n    parts = str(score or '').replace(':', '-').split('-', 1)\n    if len(parts) != 2:\n        return None\n    try:\n        return int(parts[0]), int(parts[1])\n    except ValueError:\n        return None\n\n\ndef ou_from_scores(scores: Any, *extra_scores: Any, line: Any = None) -> str:\n    if len(extra_scores) >= 2 and line is None:\n        try:\n            vals = [int(scores) + int(extra_scores[0])]\n            line = extra_scores[1]\n        except (TypeError, ValueError):\n            vals = []\n        if vals:\n            ln = _to_float(line)\n            avg = sum(vals) / len(vals)\n            return '大' if avg > ln else ('小' if avg < ln else '走')\n    if extra_scores:\n        if len(extra_scores) == 1 and line is None:\n            line = extra_scores[0]\n            score_values = scores\n        else:\n            score_values = (scores, *extra_scores[:-1])\n            if line is None:\n                line = extra_scores[-1]\n    else:\n        score_values = scores\n    if isinstance(score_values, str):\n        iterable = [score_values]\n    elif isinstance(score_values, (list, tuple, set)):\n        iterable = list(score_values)\n    else:\n        iterable = [score_values]\n    vals = []\n    for s in iterable:\n        parsed = _parse(s)\n        if parsed:\n            vals.append(sum(parsed))\n    if not vals:\n        return ''\n    avg = sum(vals) / len(vals)\n    ln = _to_float(line)\n    return '大' if avg > ln else ('小' if avg < ln else '走')\n\n\ndef resolve_direction(scores: Any, *args: Any, **kwargs: Any) -> str:\n    counts = {'胜': 0, '平': 0, '负': 0}\n    for s in scores or []:\n        parsed = _parse(s)\n        if not parsed:\n            continue\n        h, a = parsed\n        counts['胜' if h > a else ('平' if h == a else '负')] += 1\n    return max(counts, key=lambda direction: counts[direction]) if any(counts.values()) else ''\n\n\ndef resolve_cores(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    scores = []\n    for item in args:\n        if isinstance(item, (list, tuple)):\n            scores.extend(item)\n    return {'available': True, 'direction': resolve_direction(scores), 'ou': ou_from_scores(scores)}\n",
+  "convergence_arbitrator": "\"\"\"Small convergence arbitration helpers.\"\"\"\nfrom __future__ import annotations\n\nfrom typing import Any\n\n\ndef _to_float(value: Any, default: float = 2.5) -> float:\n    if value is None:\n        return default\n    try:\n        return float(value)\n    except (TypeError, ValueError):\n        return default\n\n\ndef _parse(score: Any) -> tuple[int, int] | None:\n    parts = str(score or '').replace(':', '-').split('-', 1)\n    if len(parts) != 2:\n        return None\n    try:\n        return int(parts[0]), int(parts[1])\n    except ValueError:\n        return None\n\n\ndef ou_from_scores(scores: Any, *extra_scores: Any, line: Any = None) -> str:\n    if len(extra_scores) >= 2 and line is None:\n        try:\n            vals = [int(scores) + int(extra_scores[0])]\n            line = extra_scores[1]\n        except (TypeError, ValueError):\n            vals = []\n        if vals:\n            ln = _to_float(line)\n            avg = sum(vals) / len(vals)\n            return '大' if avg > ln else ('小' if avg < ln else '走')\n    if extra_scores:\n        if len(extra_scores) == 1 and line is None:\n            line = extra_scores[0]\n            score_values = scores\n        else:\n            score_values = (scores, *extra_scores[:-1])\n            if line is None:\n                line = extra_scores[-1]\n    else:\n        score_values = scores\n    if isinstance(score_values, str):\n        iterable = [score_values]\n    elif isinstance(score_values, (list, tuple, set)):\n        iterable = list(score_values)\n    else:\n        iterable = [score_values]\n    vals = []\n    for s in iterable:\n        parsed = _parse(s)\n        if parsed:\n            vals.append(sum(parsed))\n    if not vals:\n        return ''\n    avg = sum(vals) / len(vals)\n    ln = _to_float(line)\n    return '大' if avg > ln else ('小' if avg < ln else '走')\n\n\n_DIRECTION_ALIASES = {\n    '胜': '胜', 'home': '胜', 'win': '胜', '主胜': '胜',\n    '平': '平', 'draw': '平', '平局': '平',\n    '负': '负', 'away': '负', 'lose': '负', '客胜': '负',\n}\n\n\ndef resolve_direction(scores: Any, *args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:\n    \"\"\"方向投票，返回文档约定的 `(direction, resolution)` 两元组。\n\n    历史实现只返回一个字符串，而 app 是按两元组解包的，于是每场都抛\n    「not enough values to unpack」并被吞成降级。这里返回二元组；\n    同时保留 `_legacy_string=True` 选项给需要旧形状的调用方。\n    \"\"\"\n    # 非可迭代输入（3 / 3.5 / True / None）必须降级成空方向，绝不抛 TypeError。\n    if isinstance(scores, str) or not isinstance(scores, (list, tuple, set, dict)):\n        try:\n            iter(scores)\n        except TypeError:\n            scores = []\n    scores_list: list[Any] = list(scores or [])\n    module_direction = ''\n    if args:\n        module_direction = str(args[0] or '')\n    elif 'module_direction' in kwargs:\n        module_direction = str(kwargs.get('module_direction') or '')\n    counts = {'胜': 0, '平': 0, '负': 0}\n    for s in scores_list:\n        parsed = _parse(s)\n        if not parsed:\n            continue\n        h, a = parsed\n        counts['胜' if h > a else ('平' if h == a else '负')] += 1\n    lock_direction = max(counts, key=lambda d: counts[d]) if any(counts.values()) else ''\n    module_norm = _DIRECTION_ALIASES.get(module_direction.strip().lower(), '')\n    direction = lock_direction or module_norm\n    resolution = {\n        'lock_direction': lock_direction,\n        'module_direction': module_direction,\n        'counts': dict(counts),\n        'conflict': bool(lock_direction and module_norm and lock_direction != module_norm),\n        'source': 'lock' if lock_direction else ('module' if module_norm else 'none'),\n    }\n    return direction, resolution\n\n\ndef resolve_direction_value(scores: Any, *args: Any, **kwargs: Any) -> str:\n    \"\"\"只要方向字符串的调用方用这个（旧 resolve_direction 的形状）。\"\"\"\n    direction, _resolution = resolve_direction(scores, *args, **kwargs)\n    return direction\n\n\ndef resolve_cores(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    scores = []\n    for item in args:\n        if isinstance(item, (list, tuple)):\n            scores.extend(item)\n    return {'available': True, 'direction': resolve_direction(scores), 'ou': ou_from_scores(scores)}\n",
   "ProductionRunnerBridge": "\"\"\"Bridge helpers for attaching engine clearing details.\"\"\"\nfrom __future__ import annotations\n\nfrom typing import Any\n\n\ndef attach_engine_clearing(arbitration_result: dict[str, Any], direction_lock_payload: Any = None, *args: Any, **kwargs: Any) -> dict[str, Any]:\n    if not isinstance(arbitration_result, dict):\n        return {'available': False, 'reason': 'invalid_arbitration'}\n    arbitration_result['engine_clearing'] = {\n        'available': True,\n        'direction_lock_available': isinstance(direction_lock_payload, dict) and bool(direction_lock_payload),\n    }\n    return arbitration_result['engine_clearing']\n",
   "blade_monitor_panel": "\"\"\"Optional Streamlit monitor panel fallbacks.\"\"\"\nfrom __future__ import annotations\n\nfrom typing import Any\n\n\ndef render_monitor_sidebar_controls(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    try:\n        import streamlit as st\n\n        st.sidebar.caption('Blade monitor panel: local lightweight controls loaded')\n    except Exception as exc:  # noqa: BLE001 - optional panel should never break main app\n        print(f\"   ⚠️ [监控面板] 侧栏渲染跳过: {type(exc).__name__}\")\n    return {'available': True}\n\n\ndef render_blade_monitor_dashboard(*args: Any, **kwargs: Any) -> dict[str, Any]:\n    try:\n        import streamlit as st\n\n        st.caption('Blade monitor dashboard: local lightweight view loaded')\n    except Exception as exc:  # noqa: BLE001 - optional panel should never break main app\n        print(f\"   ⚠️ [监控面板] 主面板渲染跳过: {type(exc).__name__}\")\n    return {'available': True}\n"
 }
@@ -383,6 +383,68 @@ def _check_proxy_available():
         return True
     return _blade_proxy_port_reachable(base)
 
+def _blade_quiet_asyncio_noise():
+    """屏蔽 asyncio 传输层在 Windows 上的 ConnectionResetError 回溯。
+
+    `Exception in callback _ProactorBasePipeTransport._call_connection_lost`
+    是 httpx/requests 关闭连接时 proactor 的已知噪音，不影响任何业务结果。
+    只忽略「连接丢失/重置」这一类，其它异常照常输出。
+    """
+    try:
+        import asyncio
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop is None:
+            return
+        _noise = ('ConnectionResetError', '_call_connection_lost', 'Connection lost')
+
+        def _handler(loop_, context):
+            exc = context.get('exception')
+            text = f'{type(exc).__name__}: {exc}' if exc else str(context.get('message') or '')
+            if any(token in text for token in _noise):
+                return
+            try:
+                loop_.default_exception_handler(context)
+            except Exception:  # noqa: BLE001,S110 - 兜底处理器自身也不能抛  # nosec B110
+                pass
+
+        loop.set_exception_handler(_handler)
+    except Exception:  # noqa: BLE001,S110 - 任何失败都不影响主流程  # nosec B110
+        pass
+
+
+def _blade_boot_banner(text):
+    """每个进程只打一次 [boot] 行。
+
+    Streamlit 每次交互都会重跑整个脚本，直接 print 会刷出几十行同样的 banner。
+    """
+    import os as _os
+    flag = '_BLADE_BOOT_BANNER_PRINTED'
+    if _os.environ.get(flag):
+        return
+    _os.environ[flag] = '1'
+    try:
+        print(f"[boot] {text}", flush=True)
+        # 让日志能一眼对上构建：以后任何一段控制台输出都能被追溯到具体 pin。
+        import hashlib as _hl
+        _me = _os.path.abspath(__file__)
+        try:
+            with open(_me, 'rb') as _fh:
+                _sha = _hl.sha256(_fh.read()).hexdigest()[:12]
+        except OSError:
+            _sha = 'unknown'
+        try:
+            from okooo_mobile_cs import CACHE_SCHEMA as _cs_schema
+        except ImportError:  # 模块缺失时仍要打印
+            _cs_schema = -1
+        print(f"[build] app_sha256={_sha} cache_schema={_cs_schema}", flush=True)
+    except Exception:  # noqa: BLE001 - 控制台不可用就算了
+        _os.environ[flag] = '1'
+
+
 _BOOT_PROXY = _local_proxy_base()
 _BOOT_ROUTE = _blade_normalize_okooo_route(os.environ.get("OKOOO_ROUTE") or _CLI_OKOOO_ROUTE or "auto")
 if _BOOT_PROXY and _BOOT_ROUTE != "direct":
@@ -393,22 +455,13 @@ if _BOOT_PROXY and _BOOT_ROUTE != "direct":
     os.environ["OKOOO_PROXY"] = _BOOT_PROXY
     os.environ["OKOOO_PROXY_POOL"] = _BOOT_PROXY
     os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
-    try:
-        print(
-            f"[boot] OkoooRoute={_BOOT_ROUTE} OkoooProxy={_BOOT_PROXY}",
-            flush=True,
-        )
-    except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
-        pass
+    _blade_boot_banner(f"OkoooRoute={_BOOT_ROUTE} OkoooProxy={_BOOT_PROXY}")
 else:
     # 代理不可用，清除环境变量避免干扰直连
     for _k in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]:
         os.environ.pop(_k, None)
     os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
-    try:
-        print("[boot] OkoooRoute=%s OkoooProxy=direct" % (_BOOT_ROUTE or "auto"), flush=True)
-    except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
-        pass
+    _blade_boot_banner("OkoooRoute=%s OkoooProxy=direct" % (_BOOT_ROUTE or "auto"))
 
 # proxies=None 仍会吃环境变量。直连必须显式传 None 值。
 _DIRECT_PROXIES = {'http': None, 'https': None}
@@ -1274,7 +1327,15 @@ class UnifiedConvergenceArbitrator:
             resolve_cores,
             resolve_direction,
         )
-        voted_direction, direction_resolution = resolve_direction(lock_side, module_direction)
+        # resolve_direction 现在按文档返回 (direction, resolution)，但历史版本只返回字符串。
+        # 两种形状都吃下，绝不因为解包失败而整段降级。
+        _vote_ret = resolve_direction(lock_side, module_direction)
+        if isinstance(_vote_ret, tuple) and len(_vote_ret) == 2:
+            voted_direction, direction_resolution = _vote_ret
+        else:
+            voted_direction, direction_resolution = str(_vote_ret or ''), {}
+        if not isinstance(direction_resolution, dict):
+            direction_resolution = {}
         adapted = resolve_cores(lock if lock_side else {}, lock_picks if lock_side else [])
         tuple(adapted.get('cover') or ())
         tuple(adapted.get('hedge') or ())
@@ -1307,7 +1368,9 @@ class UnifiedConvergenceArbitrator:
         score_candidates = {}  # score -> {logic_score, supporters, reasoning}
         
         ou_line = match_context.get('ou_line')
-        ah_line = match_context.get('ah_line') or match_context.get('asian_handicap')
+        # 平手盘 ah=0.0 是真实盘口：`or` 会让它落到另一个键甚至 None。
+        _ah_ctx = match_context.get('ah_line')
+        ah_line = _ah_ctx if _ah_ctx is not None else match_context.get('asian_handicap')
         
         for v in verdicts:
             for score_str in [v.first_score, v.second_score]:
@@ -4558,10 +4621,72 @@ class SafeJSONEncoder(json.JSONEncoder):
             return bool(o)
         return super().default(o)
 
+def _json_safe(value, _seen=None, _depth=0):
+    """把任意结构转成可 JSON 序列化的纯 Python 对象，遇到自引用就断开。
+
+    以前的 save_json 直接把 rec/bundle 交给 json.dump，一旦某个包持有
+    指回自己的引用（或 DataFrame），就会抛 `ValueError: Circular reference detected`，
+    日志里表现为「市热/落盘准备失败」「数据保存异常」，市热也一起丢了。
+    这里主动断环并给个说明字符串，落盘永远成功、也能看出环在哪。
+    """
+    if _depth > 40:
+        return '<max-depth>'
+    if _seen is None:
+        _seen = set()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, bytes):
+        return f'<bytes:{len(value)}>'
+    oid = id(value)
+    if oid in _seen:
+        return '<circular>'
+    try:
+        import numpy as np  # type: ignore
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return [_json_safe(v, _seen, _depth + 1) for v in value.tolist()]
+    except Exception:  # noqa: BLE001,S110 - numpy 不存在时按普通对象处理  # nosec B110
+        pass
+    if isinstance(value, dict):
+        _seen.add(oid)
+        try:
+            return {
+                str(k): _json_safe(v, _seen, _depth + 1)
+                for k, v in value.items()
+            }
+        finally:
+            _seen.discard(oid)
+    if isinstance(value, (list, tuple, set)):
+        _seen.add(oid)
+        try:
+            return [_json_safe(v, _seen, _depth + 1) for v in value]
+        finally:
+            _seen.discard(oid)
+    # 常见的不可序列化对象：给个可读占位，而不是让整次落盘失败。
+    for attr in ('tolist', 'to_dict'):
+        method = getattr(value, attr, None)
+        if callable(method):
+            try:
+                return _json_safe(method(), _seen, _depth + 1)
+            except Exception:  # noqa: BLE001 - 转换失败退回占位
+                break
+    return f'<unserializable:{type(value).__name__}>'
+
+
 def save_json(path, data):
-    """线程安全地保存JSON文件（SafeJSONEncoder防止numpy/bool序列化报错）"""
+    """线程安全地保存JSON文件。
+
+    先过 _json_safe 断环，再用 SafeJSONEncoder 兜住残留的 numpy 类型：
+    任何调用方都不会因为循环引用而整次落盘失败。
+    """
+    safe = _json_safe(data)
     with json_lock, open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4, cls=SafeJSONEncoder)
+        json.dump(safe, f, ensure_ascii=False, indent=4, cls=SafeJSONEncoder)
 
 
 def _normalize_feature_column_name(feature_name):
@@ -10408,6 +10533,29 @@ def calc_poisson_prob(lam_h, lam_a, max_goals=8, rho=-0.05, matrix_context=None,
 # 市场概率：竞彩波胆赔率反推（1/赔率，去除水分后归一化）。
 # 偏差 = 理论概率 - 市场概率：正偏差=市场低估（可能有价值），负偏差=市场高估。
 # ============================================================================
+def chart31_pool_verdict(text: Any) -> dict[str, Any]:
+    """判断31池图谱到底是「生成对比行」还是「只发了降级说明」。
+
+    判据用生成函数自己的输出结构，不看日志措辞：
+      * 降级文本只有「标题 + 一行 ⚠️」
+      * 正常文本一定有表头 `排名 | 比分 | …` 和 31 行数据
+    返回 {'status': 'degraded'|'theory_only'|'full', 'rows': int, 'note': str}。
+    """
+    lines = [ln for ln in str(text or '').splitlines() if ln.strip()]
+    if not lines:
+        return {'status': 'empty', 'rows': 0, 'note': '无输出'}
+    data_rows = sum(1 for ln in lines if re.match(r'^\d{2}\s*\|', ln))
+    degraded = data_rows == 0 and any('⚠️' in ln for ln in lines[1:])
+    market_zero = '市场概率均置0' in str(text or '')
+    if degraded:
+        note = lines[-1].strip() if lines else ''
+        return {'status': 'degraded', 'rows': 0, 'note': note}
+    if market_zero:
+        return {'status': 'theory_only', 'rows': data_rows,
+                'note': '波胆市均不可用，市场概率全为0'}
+    return {'status': 'full', 'rows': data_rows, 'note': ''}
+
+
 def generate_31pool_theory_vs_market_chart(match_data):
     """生成31池完整比分理论vs市场概率对比图谱的TG报告文本段。
 
@@ -10608,6 +10756,11 @@ def generate_31pool_theory_vs_market_chart(match_data):
         # ── 4. 生成全中文TG报告文本段 ──
         lines = []
         lines.append("📊 31池理论vs市场概率对比图谱")
+        _msrc = str(match_data.get('market_source_note') or '').strip()
+        if _msrc:
+            # 市场口径可能是「市均+竞彩31比分」的混合来源，必须写在抬头，
+            # 免得有人把竞彩比分赔率当成市均读。
+            lines.append(f"  市场来源: {_msrc}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("排名 | 比分 | 方向 | 理论概率 | 市场概率 | 偏差")
         for _idx, _row in enumerate(_rows, 1):
@@ -16904,26 +17057,241 @@ def build_probability_rankings(prob_dict, limit=None):
     ]
 
 
-def build_score_pool31_views(ranked_scores, odds_correct_score=None, synth_market=None):
+def _pool31_aggregate(raw_probs):
+    """把任意比分→概率映射聚合成竞彩 31 项。
+
+    非 31 项的比分（如 4-3 / 3-4 / 6-1）不占 31 池名额，它们的概率并入
+    同方向的「胜其它 / 平其它 / 负其它」。这样 31 池就恒等于竞彩 31 个投注选项，
+    与审计、build_theo_mkt_31_pack 用同一张表。
+    """
+    jc_set = set(JCZQ_ALL_OPTIONS)
+    out: dict[str, float] = {}
+    other = {'home': 0.0, 'draw': 0.0, 'away': 0.0}
+    for score, prob in (raw_probs or {}).items():
+        key = str(score or '').replace('：', '-').replace(':', '-').strip()
+        try:
+            value = float(prob or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if key in jc_set:
+            out[key] = out.get(key, 0.0) + value
+            continue
+        h, a = parse_score(key)
+        if h is None or a is None:
+            continue
+        if h > a:
+            other['home'] += value
+        elif h == a:
+            other['draw'] += value
+        else:
+            other['away'] += value
+    for label, option in (('home', '胜其它'), ('draw', '平其它'), ('away', '负其它')):
+        if other[label]:
+            out[option] = out.get(option, 0.0) + other[label]
+    return out
+
+
+def build_pool31_option_rows(
+    ranked_scores=None,
+    *,
+    prob_dict=None,
+    odds_correct_score=None,
+    synth_market=None,
+    jc_score_odds=None,
+    lam_home=None,
+    lam_away=None,
+):
+    """构造与竞彩31项严格同集的表：每项 score/theory/market，供三视图与审计共用。
+
+    theory 优先用冻结 λ 的泊松聚合（含三个「其它」桶），否则把 ranked_scores
+    聚合到31项。market 依次尝试 市均赔率 → 竞彩比分赔率 → 合成市场。
+    """
+    ranked_scores = list(ranked_scores or [])
+    odds_correct_score = odds_correct_score if isinstance(odds_correct_score, dict) else {}
+    synth_market = synth_market if isinstance(synth_market, dict) else {}
+    jc_score_odds = jc_score_odds if isinstance(jc_score_odds, dict) else {}
+
+    theory_src: dict[str, float] = {}
+    theory_from = ''
+    _lh = _la = 0.0
+    if lam_home is not None and lam_away is not None:
+        try:
+            _lh, _la = float(lam_home), float(lam_away)
+        except (TypeError, ValueError):
+            _lh = _la = 0.0
+    if _lh > 0 and _la > 0:
+        try:
+            from blade_deepseek_pipeline import _poisson_score_probs
+            theory_src = _poisson_score_probs(_lh, _la)
+            theory_from = 'frozen_lambda_poisson'
+        except Exception:  # noqa: BLE001 - λ 聚合不可用时退回池内概率
+            theory_src = {}
+    if not theory_src:
+        raw: dict[str, float] = {}
+        if isinstance(prob_dict, dict) and prob_dict:
+            for score, prob in prob_dict.items():
+                raw[str(score)] = float(prob or 0.0)
+        else:
+            for item in ranked_scores:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    score, info = item[0], item[1]
+                elif isinstance(item, dict):
+                    score, info = item.get('score'), item
+                else:
+                    continue
+                value = info.get('prob', 0) if isinstance(info, dict) else (info or 0)
+                try:
+                    raw[str(score)] = float(value or 0.0)
+                except (TypeError, ValueError):
+                    continue
+        theory_src = _pool31_aggregate(raw)
+        theory_from = 'ranked_pool_aggregate'
+
+    def _implied(odds_map, label):
+        implied: dict[str, float] = {}
+        for score, odd in (odds_map or {}).items():
+            raw_value = odd.get('odds') if isinstance(odd, dict) else odd
+            if raw_value is None:
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if value > 1:
+                implied[str(score).replace('：', '-').replace(':', '-')] = 1.0 / value
+        if not implied:
+            return {}, ''
+        agg = _pool31_aggregate(implied)
+        total = sum(agg.values())
+        return ({k: v / total for k, v in agg.items()}, label) if total > 0 else ({}, '')
+
+    def _pct(value):
+        """概率→百分比，保留 4 位；极小但非零的值不四舍五入成 0。
+
+        审计把 market<=0 当缺失。20 万倍的冷门赔率折算后可能 <0.00005%，
+        直接 round 会变 0.0，把本来完整的表又判成不完整。
+        """
+        if value is None:
+            return None
+        pct = float(value) * 100.0
+        if pct <= 0:
+            return None
+        rounded = round(pct, 4)
+        return rounded if rounded > 0 else 0.0001
+
+    # 竞彩官方 31 项：原生 31 键，无需折叠。
+    jc_vec, _ = _implied(jc_score_odds, 'jc_score_odds')
+    # 市均：只认它「显式给出」的键。4-3/3-4/4-4 会被 _pool31_aggregate 折进 其它，
+    # 但那是聚合产物，不是市均对「胜其它」的报价。若把折出来的 其它 当成市均的值，
+    # 就会把「25键聚合」和「31键归一」两种口径混在同一个桶里，而且会让
+    # 市均覆盖数从 22 变成 25、竞彩从 9 变 6 —— 数字看着正常，其实串了口径。
+    page_explicit, _ = _implied(
+        {k: v for k, v in (odds_correct_score or {}).items()
+         if str(k).replace('：', '-').replace(':', '-') in set(JCZQ_ALL_OPTIONS)},
+        'market_odds',
+    )
+    synth_mkt, _ = _implied(synth_market, 'synth_market') if synth_market else ({}, '')
+
+    others_folded: dict[str, dict[str, float]] = {}
+    for _off, _bucket in (('4-3', '胜其它'), ('3-4', '负其它'), ('4-4', '平其它')):
+        _raw = (odds_correct_score or {}).get(_off)
+        try:
+            _v = float(_raw) if _raw is not None else None
+        except (TypeError, ValueError):
+            _v = None
+        if _v and _v > 1:
+            others_folded.setdefault(_bucket, {})[_off] = _v
+
+    market_src: dict[str, float] = {}
+    market_src_of: dict[str, str] = {}
+    for option in JCZQ_ALL_OPTIONS:
+        if option in page_explicit:
+            market_src[option] = page_explicit[option]
+            market_src_of[option] = 'market_odds'
+        elif option in jc_vec:
+            market_src[option] = jc_vec[option]
+            market_src_of[option] = 'jc_score_odds'
+        elif option in synth_mkt:
+            market_src[option] = synth_mkt[option]
+            market_src_of[option] = 'synth_market'
+    # 混合后统一归一到 31 项合计 100%：这样 market% 与 jc% 才是同一把尺子。
+    _mix_total = sum(market_src.values())
+    if _mix_total > 0:
+        market_src = {k: v / _mix_total for k, v in market_src.items()}
+    _n_page = sum(1 for v in market_src_of.values() if v == 'market_odds')
+    _n_jc = sum(1 for v in market_src_of.values() if v == 'jc_score_odds')
+    _n_synth = sum(1 for v in market_src_of.values() if v == 'synth_market')
+    if _n_page and (_n_jc or _n_synth):
+        market_from = f'market_from_mixed(市均{_n_page}/竞彩{_n_jc + _n_synth})'
+    elif _n_page:
+        market_from = 'market_odds'
+    elif _n_jc:
+        market_from = 'jc_score_odds'
+    elif _n_synth:
+        market_from = 'synth_market'
+    else:
+        market_from = ''
+
+    rows = []
+    for option in JCZQ_ALL_OPTIONS:
+        theory = theory_src.get(option)
+        market = market_src.get(option)
+        jc_only = market_src_of.get(option) == 'jc_score_odds'
+        jc_pct = _pct(jc_vec.get(option))
+        rows.append({
+            'score': option,
+            'theory': round(theory * 100.0, 4) if theory is not None else None,
+            'market': _pct(market),
+            'theory_source': theory_from if theory is not None else '',
+            # 逐行来源（不是整表一个字符串）：表格要按行标 desktop_cs / jc_official。
+            'market_source': market_src_of.get(option, '') if market is not None else '',
+            'market_mixed_from': market_from if market is not None else '',
+            'jc_odds_pct': jc_pct,
+            'jc_odds': (
+                round(100.0 / jc_pct, 4) if (jc_pct and jc_pct > 0) else None
+            ),
+            # 市场本来就取自竞彩时，Δ 恒为 0，是「同源」而不是「真的没偏差」。
+            'delta_same_source': bool(jc_only),
+            'others_folded': others_folded,
+        })
+    return rows
+
+
+def build_score_pool31_views(
+    ranked_scores,
+    odds_correct_score=None,
+    synth_market=None,
+    *,
+    prob_dict=None,
+    jc_score_odds=None,
+    lam_home=None,
+    lam_away=None,
+):
     """构建31池对外比分视图：市场降序、理论降序、双序对齐。
 
     rt/rm 均为1起始顺位；Δr=rt-rm，正值表示市场顺位相对理论顺位上升。
     市场概率优先使用正确比分赔率的去水隐含概率，缺失时回退到合成市场概率。
+
+    31 池恒等于竞彩 31 个投注选项（JCZQ_ALL_OPTIONS）：非31项的比分
+    （4-3 / 3-4 / 6-1 等）会并入同方向的「其它」，不再占用 31 个名额。
     """
-    ranked_scores = list(ranked_scores or [])[:31]
-    odds_correct_score = odds_correct_score if isinstance(odds_correct_score, dict) else {}
-    synth_market = synth_market if isinstance(synth_market, dict) else {}
-    inv_total = sum(1.0 / float(v) for v in odds_correct_score.values()
-                    if isinstance(v, (int, float)) and float(v) > 0)
-    records = []
-    for score, info in ranked_scores:
-        theory = float(info.get('prob', 0) if isinstance(info, dict) else (info or 0)) * 100.0
-        odds_val = odds_correct_score.get(score) or odds_correct_score.get(str(score).replace('-', ':'))
-        if odds_val and inv_total > 0:
-            market = (1.0 / float(odds_val)) / inv_total * 100.0
-        else:
-            market = float(synth_market.get(score, 0) or 0) * 100.0
-        records.append({'比分选项': str(score), '理论概率': theory, '市场概率': market})
+    option_rows = build_pool31_option_rows(
+        ranked_scores,
+        prob_dict=prob_dict,
+        odds_correct_score=odds_correct_score,
+        synth_market=synth_market,
+        jc_score_odds=jc_score_odds,
+        lam_home=lam_home,
+        lam_away=lam_away,
+    )
+    records = [
+        {
+            '比分选项': row['score'],
+            '理论概率': float(row['theory'] or 0.0),
+            '市场概率': float(row['market'] or 0.0),
+        }
+        for row in option_rows
+    ]
     theory_sorted = sorted(records, key=lambda x: (-x['理论概率'], x['比分选项']))
     market_sorted = sorted(records, key=lambda x: (-x['市场概率'], x['比分选项']))
     rt = {x['比分选项']: i for i, x in enumerate(theory_sorted, 1)}
@@ -16942,6 +17310,9 @@ def build_score_pool31_views(ranked_scores, odds_correct_score=None, synth_marke
         'dual_alignment': aligned,
         'average_positive_net_rank': avg_positive,
         'pool_size': len(records),
+        # rows 用审计同一套键（score/theory/market），三视图与31全表审计看同一张表。
+        'rows': option_rows,
+        'options': [row['score'] for row in option_rows],
     }
 
 
@@ -17466,6 +17837,21 @@ def calc_market_volatility(odds_1x2_dict=None, asian_handicap=None, ou_line=None
     if not scores:
         return 0.35
     return round(max(0.0, min(1.0, sum(scores) / len(scores))), 3)
+
+
+def explain_low_dti(dti, missing_inputs, threshold=None):
+    """低 DTI 的归因。缺输入在前，市场异动在后——空场不能冒充「市场异常」。"""
+    limit = DTI_ANOMALY if threshold is None else threshold
+    missing = [str(item) for item in (missing_inputs or []) if item]
+    if missing:
+        cause = f"输入不足({'/'.join(missing)}缺失)，DTI 由基础值主导，不代表市场异常"
+    else:
+        cause = '输入齐全但 DTI 极低，需人工复核是否市场异动'
+    return {
+        'warning': f'⚠️DTI低值说明(DTI={dti}≤{limit})：{cause}',
+        'cause': cause,
+        'missing_inputs': missing,
+    }
 
 
 def calc_dti(asian_handicap, cold_score, recent_draw_rate=0.25, league_name='',
@@ -19462,7 +19848,7 @@ class RankTrackingMatrix:
         """
         result = {'ok': False, 'matrix': [], 'iron_anchors': [], 'toxic_baits': [],
                   'anchor_scores': [], 'bait_scores': [],
-                  'deep_singularity_exempt': []}
+                  'deep_singularity_exempt': [], 'error': ''}
         try:
             _records = []
             for _it in (pool15_enriched or []):
@@ -19478,6 +19864,12 @@ class RankTrackingMatrix:
                     print(f"   ⚠️ [异常已捕获·continue降级 L15012] {_silent_err}")
                     continue
             if not _records:
+                # 空池是「数据不足」，不是「未知」：把原因写进结果，供视角7直接引用。
+                result['error'] = (
+                    'pool15_enriched 为空（上游未生成15池，无可排序的比分记录）'
+                    if not pool15_enriched else
+                    'pool15_enriched 无有效记录（每项都缺 score/theory/market）'
+                )
                 return result
             _inst = cls(_records)
             _inst.generate_matrix()
@@ -20504,74 +20896,496 @@ class SkillMatchingEngine:
     _strat_skills = None      # 博弈策略技能库 list
     _loaded = False           # 是否已尝试加载
     _load_error = None        # 加载失败原因(用于降级提示)
+    _seeded = False           # 本次进程是否已尝试补种知识库
 
     # ---- 知识库文件名 ----
     _KB_DIR = 'knowledge_base'
     _STAT_FILE = 'statistical_skills.json'
     _STRAT_FILE = 'strategy_skills.json'
 
+    # ---- 内置种子内容 ----
+    # 与仓库 knowledge_base/*.json 同源（scripts/build_single_file.py 会同步校验）。
+    # 装好却没带知识库时按这份补齐，所以正常路径永远是「加载成功」，不是「不可用」。
+# >>> FLANALYZER_EMBEDDED_KNOWLEDGE_BASE >>>
+    # Generated from knowledge_base/*.json by scripts/build_single_file.py. Do not hand-edit.
+    _SEED_SKILLS: ClassVar[dict[str, list[dict[str, Any]]]] = {
+        "statistical_skills.json": [
+            {
+                "id": "STAT-001",
+                "name": "31池理论概率头部集中",
+                "category": "比分结构",
+                "trigger_conditions": [
+                    "理论概率>15%",
+                    "样本充足"
+                ],
+                "analysis_method": "取31池理论概率最大值，判断是否存在单一比分主导。",
+                "decision_rule": "头部项理论概率>15%时，首选比分只在头部3项内选，不做分散。",
+                "confidence_weight": 0.62
+            },
+            {
+                "id": "STAT-002",
+                "name": "市场低估正偏差",
+                "category": "理论市场偏离",
+                "trigger_conditions": [
+                    "理论概率与市场隐含概率偏离>=3%"
+                ],
+                "analysis_method": "逐项算 理论-市场 偏差，正偏差=市场低估。",
+                "decision_rule": "正偏差>=3%的项进入价值观察，但不单独改方向锁。",
+                "confidence_weight": 0.58
+            },
+            {
+                "id": "STAT-003",
+                "name": "市场高估负偏差",
+                "category": "理论市场偏离",
+                "trigger_conditions": [
+                    "理论概率与市场隐含概率偏离>=5%"
+                ],
+                "analysis_method": "负偏差=市场把钱压在该比分上但理论不支持。",
+                "decision_rule": "负偏差>=5%的项降级为诱饵，不作首选。",
+                "confidence_weight": 0.6
+            },
+            {
+                "id": "STAT-004",
+                "name": "IBI 极端偏离",
+                "category": "庄家防备",
+                "trigger_conditions": [
+                    "IBI偏离度>0.35"
+                ],
+                "analysis_method": "IBI 偏离 1.0 的绝对值，衡量庄家防备强度。",
+                "decision_rule": "IBI 偏离>0.35 的项标记为高防备，不追。",
+                "confidence_weight": 0.65
+            },
+            {
+                "id": "STAT-005",
+                "name": "IBI 低位集中",
+                "category": "庄家防备",
+                "trigger_conditions": [
+                    "IBI<1.0"
+                ],
+                "analysis_method": "IBI 低于 1 表示庄家对该比分防备最弱。",
+                "decision_rule": "IBI 最低的 3 项作为冷门防范观察池。",
+                "confidence_weight": 0.5
+            },
+            {
+                "id": "STAT-006",
+                "name": "亚指深盘",
+                "category": "盘口结构",
+                "trigger_conditions": [
+                    "让球>=1.0"
+                ],
+                "analysis_method": "读取亚指绝对值，判定是否深盘。",
+                "decision_rule": "深盘时不选受让方小胜比分，优先让球方净胜2球以上的比分。",
+                "confidence_weight": 0.55
+            },
+            {
+                "id": "STAT-007",
+                "name": "亚指平手盘",
+                "category": "盘口结构",
+                "trigger_conditions": [
+                    "让球<=0.25"
+                ],
+                "analysis_method": "浅盘/平手盘时两队实力接近。",
+                "decision_rule": "平手盘把平局比分权重上调，首选不写大比分。",
+                "confidence_weight": 0.52
+            },
+            {
+                "id": "STAT-008",
+                "name": "大小球低位",
+                "category": "进球结构",
+                "trigger_conditions": [
+                    "大小球<=2.25"
+                ],
+                "analysis_method": "读取大小球盘口线。",
+                "decision_rule": "盘口<=2.25 时排除总进球>=4 的比分。",
+                "confidence_weight": 0.56
+            },
+            {
+                "id": "STAT-009",
+                "name": "大小球高位",
+                "category": "进球结构",
+                "trigger_conditions": [
+                    "大小球>=3.0"
+                ],
+                "analysis_method": "盘口>=3.0 表示市场预期多球。",
+                "decision_rule": "盘口>=3.0 时首选比分总进球不低于 3。",
+                "confidence_weight": 0.56
+            },
+            {
+                "id": "STAT-010",
+                "name": "必发主胜亏损",
+                "category": "资金面",
+                "trigger_conditions": [
+                    "必发主胜亏损"
+                ],
+                "analysis_method": "必发盈亏主胜方向为负，表示庄家在主胜方向承担亏损。",
+                "decision_rule": "主胜亏损且金额显著时，主胜方向作为真实风险方向记录。",
+                "confidence_weight": 0.6
+            },
+            {
+                "id": "STAT-011",
+                "name": "必发客胜亏损",
+                "category": "资金面",
+                "trigger_conditions": [
+                    "必发客队亏损"
+                ],
+                "analysis_method": "必发盈亏客胜方向为负。",
+                "decision_rule": "客胜亏损时，客胜方向进入方向锁候选。",
+                "confidence_weight": 0.6
+            },
+            {
+                "id": "STAT-012",
+                "name": "水位缺项不写待定",
+                "category": "数据完整性",
+                "trigger_conditions": [
+                    "返还率"
+                ],
+                "analysis_method": "六盘口水位（亚指/大小球/胜平负）是否齐全。",
+                "decision_rule": "任一水位缺失时只记缺口，不写待定数字、不用其他源冒充。",
+                "confidence_weight": 0.7
+            },
+            {
+                "id": "STAT-013",
+                "name": "市短方向集中",
+                "category": "市均结构",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "analysis_method": "市均低于竞彩的项按胜平负聚合，看方向是否集中。",
+                "decision_rule": "方向集中度>60% 时该方向进入方向锁候选。",
+                "confidence_weight": 0.5
+            },
+            {
+                "id": "STAT-014",
+                "name": "相邻比分概率递减",
+                "category": "比分结构",
+                "trigger_conditions": [
+                    "理论概率>5%"
+                ],
+                "analysis_method": "检查同方向相邻比分理论概率是否单调递减。",
+                "decision_rule": "出现非单调（远处比分概率高于近处）时标记异常，不改方向锁。",
+                "confidence_weight": 0.45
+            },
+            {
+                "id": "STAT-015",
+                "name": "λ 未形成时不出比分",
+                "category": "数据完整性",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "analysis_method": "上游 λ 或概率矩阵是否形成。",
+                "decision_rule": "λ 未形成时不补默认进球期望，比分概率矩阵按空处理，出数据不足报告。",
+                "confidence_weight": 0.75
+            }
+        ],
+        "strategy_skills.json": [
+            {
+                "id": "STRAT-001",
+                "name": "信息不对称·庄家深盘",
+                "category": "信息不对称",
+                "trigger_conditions": [
+                    "让球>=0.75",
+                    "IBI偏离度>0.2"
+                ],
+                "strategy_logic": "深盘且 IBI 明显偏离，说明庄家对某一比分有明确防备，而市场资金尚未跟上。",
+                "execution_rule": "只把庄家防备最弱的方向写进首选，不追高防备比分。",
+                "risk_level": "中",
+                "confidence_weight": 0.6
+            },
+            {
+                "id": "STRAT-002",
+                "name": "信号博弈·浅盘诱多",
+                "category": "信号博弈",
+                "trigger_conditions": [
+                    "让球<=0.25",
+                    "理论概率与市场隐含概率偏离>=4%"
+                ],
+                "strategy_logic": "浅盘下市场把大额资金压在热门方向，理论概率却不支持，属于典型诱多结构。",
+                "execution_rule": "热门方向降级为观察，首选转向理论概率前排的冷门比分。",
+                "risk_level": "中",
+                "confidence_weight": 0.58
+            },
+            {
+                "id": "STRAT-003",
+                "name": "必发死亡敞口铁锚",
+                "category": "资金面",
+                "trigger_conditions": [
+                    "必发主胜亏损",
+                    "必发客队亏损"
+                ],
+                "strategy_logic": "两个方向同时亏损意味着庄家无论哪边打出都要赔，真实恐惧方向由极差亏损决定。",
+                "execution_rule": "极差亏损方向作为铁锚方向，方向锁不得反向。",
+                "risk_level": "高",
+                "confidence_weight": 0.68
+            },
+            {
+                "id": "STRAT-004",
+                "name": "六盘口矛盾降级",
+                "category": "盘口一致性",
+                "trigger_conditions": [
+                    "返还率",
+                    "样本充足"
+                ],
+                "strategy_logic": "亚指、大小球、胜平负三块水位互相矛盾时，单一盘口的结论不可信。",
+                "execution_rule": "出现矛盾时只用三块一致的结论，其余记为未形成。",
+                "risk_level": "中",
+                "confidence_weight": 0.55
+            },
+            {
+                "id": "STRAT-005",
+                "name": "水位缺失时的诚实降级",
+                "category": "数据完整性",
+                "trigger_conditions": [
+                    "返还率"
+                ],
+                "strategy_logic": "盘口线缺失时任何方向判断都缺依据。",
+                "execution_rule": "缺水位只报告缺口与原因，不写待定、不用 500 或桌面页冒充手机水位。",
+                "risk_level": "低",
+                "confidence_weight": 0.72
+            },
+            {
+                "id": "STRAT-006",
+                "name": "λ 冻结不补默认",
+                "category": "数据完整性",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "strategy_logic": "上游未形成进球期望时，任何补默认 λ 都会伪造概率矩阵。",
+                "execution_rule": "λ 保持冻结，按数据不足回报，不计算比分。",
+                "risk_level": "高",
+                "confidence_weight": 0.75
+            },
+            {
+                "id": "STRAT-007",
+                "name": "方向锁优先于模型首选",
+                "category": "决策顺序",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "strategy_logic": "方向锁由市均×竞彩算出，属于可复算证据；模型首选是概率排序结果。",
+                "execution_rule": "方向锁成立时，模型首选必须落在锁内，否则改判为未形成。",
+                "risk_level": "中",
+                "confidence_weight": 0.62
+            },
+            {
+                "id": "STRAT-008",
+                "name": "双源互补闸门",
+                "category": "数据完整性",
+                "trigger_conditions": [
+                    "返还率"
+                ],
+                "strategy_logic": "手机市均未进入整合包时，下游矩阵全部是空壳。",
+                "execution_rule": "闸门未就绪只记录原因，不用空整合包冒充手机市均。",
+                "risk_level": "高",
+                "confidence_weight": 0.7
+            },
+            {
+                "id": "STRAT-009",
+                "name": "冷门搏杀·低 IBI 反向",
+                "category": "冷门结构",
+                "trigger_conditions": [
+                    "IBI<1.0",
+                    "大小球>=2.75"
+                ],
+                "strategy_logic": "高盘口下庄家对某个大比分防备最低，通常是冷门真正的落点。",
+                "execution_rule": "低 IBI + 高盘口时，该比分进入次选，不进首选。",
+                "risk_level": "高",
+                "confidence_weight": 0.5
+            },
+            {
+                "id": "STRAT-010",
+                "name": "同质化首选惩罚",
+                "category": "组合结构",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "strategy_logic": "多场首选比分完全相同（如全 1-0）说明模型退化，不是真实判断。",
+                "execution_rule": "同质化时只标注惩罚，不强行改比分。",
+                "risk_level": "低",
+                "confidence_weight": 0.45
+            },
+            {
+                "id": "STRAT-011",
+                "name": "数据缺口优先于结论",
+                "category": "报告规范",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "strategy_logic": "报告的第一责任是把缺什么说清楚，而不是先给结论。",
+                "execution_rule": "任一关键输入缺失时，报告首段写缺口，结论段标未形成。",
+                "risk_level": "低",
+                "confidence_weight": 0.66
+            },
+            {
+                "id": "STRAT-012",
+                "name": "熔炉多场共振",
+                "category": "跨场结构",
+                "trigger_conditions": [
+                    "样本充足",
+                    "理论概率>12%"
+                ],
+                "strategy_logic": "多场同方向同时出现理论概率头部，比单场信号更可靠。",
+                "execution_rule": "共振方向只提升观察优先级，不改单场方向锁。",
+                "risk_level": "中",
+                "confidence_weight": 0.5
+            },
+            {
+                "id": "STRAT-013",
+                "name": "盘口反向验证",
+                "category": "盘口一致性",
+                "trigger_conditions": [
+                    "让球>=0.5",
+                    "大小球<=2.5"
+                ],
+                "strategy_logic": "让球深但大小球低，说明市场认为让球方小胜，比分应集中在 1-0/2-0/2-1。",
+                "execution_rule": "该组合下首选只在让球方净胜 1-2 球的比分内选。",
+                "risk_level": "中",
+                "confidence_weight": 0.56
+            },
+            {
+                "id": "STRAT-014",
+                "name": "时间衰减·临近开赛",
+                "category": "时序结构",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "strategy_logic": "临场盘口变化比初盘更能反映真实资金。",
+                "execution_rule": "有最新水位时以最新为准，初盘只作对照。",
+                "risk_level": "低",
+                "confidence_weight": 0.48
+            },
+            {
+                "id": "STRAT-015",
+                "name": "未开赛才补发研判",
+                "category": "流程约束",
+                "trigger_conditions": [
+                    "样本充足"
+                ],
+                "strategy_logic": "已开赛或完场的比赛不能再出赛前研判。",
+                "execution_rule": "阶段2 只对未开赛场次发报，已开赛直接跳过并记录原因。",
+                "risk_level": "低",
+                "confidence_weight": 0.7
+            }
+        ]
+    }
+# <<< FLANALYZER_EMBEDDED_KNOWLEDGE_BASE <<<
+
     def __init__(self):
         """初始化时确保知识库已加载(带缓存, 只加载一次)。"""
         self._ensure_loaded()
 
     # ------------------------------------------------------------------
-    # 知识库加载(懒加载 + 缓存)
+    # 知识库加载（懒加载 + 缓存 + 一次性补种）
     # ------------------------------------------------------------------
+    @classmethod
+    def _kb_base_dirs(cls) -> list[str]:
+        """候选知识库父目录：脚本目录、当前目录、BLADE_KB_DIR。"""
+        dirs: list[str] = []
+        try:
+            dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        except (OSError, ValueError):
+            dirs.append(os.getcwd())
+        dirs.append(os.getcwd())
+        env_dir = str(os.environ.get('BLADE_KB_DIR') or '').strip()
+        if env_dir:
+            dirs.append(env_dir)
+        seen: list[str] = []
+        for path in dirs:
+            if path and path not in seen:
+                seen.append(path)
+        return seen
+
+    @classmethod
+    def _seed_knowledge_base(cls, kb_dir: str) -> bool:
+        """知识库缺失时把内置种子写盘。失败只返回 False，不抛异常。"""
+        if cls._seeded:
+            return False
+        cls._seeded = True
+        if not cls._SEED_SKILLS.get(cls._STAT_FILE) and not cls._SEED_SKILLS.get(cls._STRAT_FILE):
+            return False
+        try:
+            os.makedirs(kb_dir, exist_ok=True)
+            for name in (cls._STAT_FILE, cls._STRAT_FILE):
+                skills = cls._SEED_SKILLS.get(name) or []
+                if not skills:
+                    continue
+                target = os.path.join(kb_dir, name)
+                if os.path.exists(target):
+                    continue
+                payload = {
+                    'schema_version': 1,
+                    'kind': name.replace('.json', ''),
+                    'note': '由程序首次启动自动补种；可直接编辑，改完重启生效。',
+                    'skills': skills,
+                }
+                with open(target, 'w', encoding='utf-8') as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+            return True
+        except OSError as exc:
+            cls._load_error = f'知识库补种失败({kb_dir}): {type(exc).__name__}: {exc}'
+            return False
+
     @classmethod
     def _ensure_loaded(cls):
         """加载两个JSON知识库到类变量缓存。仅在首次调用时真正读盘。
-        使用相对路径（脚本所在目录/knowledge_base/），文件不存在时直接报错挂起。
+
+        知识库是可选增强：缺失/损坏/空表都只是「本场不激活技能」，
+        绝不是启动失败。缺失时先按内置种子补种一次；补不上才记一条原因，
+        由 match_skills 统一打印一行，绝不打印「系统已挂起」，也不抛空异常。
         """
         if cls._loaded:
             return
         cls._loaded = True  # 无论成败都标记, 避免反复读盘
 
-        # ---- 使用相对路径解析知识库目录 ----
-        try:
-            _base_dir = os.path.dirname(os.path.abspath(__file__))
-        except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            _base_dir = os.getcwd()
-        _kb_dir = os.path.join(_base_dir, cls._KB_DIR)
-        _stat_path = os.path.join(_kb_dir, cls._STAT_FILE)
-        _strat_path = os.path.join(_kb_dir, cls._STRAT_FILE)
+        _stat_path = _strat_path = ''
+        _kb_dir = ''
+        for base in cls._kb_base_dirs():
+            candidate_dir = base if os.path.basename(base) == cls._KB_DIR else os.path.join(base, cls._KB_DIR)
+            candidate_stat = os.path.join(candidate_dir, cls._STAT_FILE)
+            candidate_strat = os.path.join(candidate_dir, cls._STRAT_FILE)
+            if os.path.exists(candidate_stat) and os.path.exists(candidate_strat):
+                _kb_dir, _stat_path, _strat_path = candidate_dir, candidate_stat, candidate_strat
+                break
+        if not _stat_path:
+            # 一个都没找到：在脚本目录下补种一次，再读。
+            _kb_dir = os.path.join(cls._kb_base_dirs()[0], cls._KB_DIR)
+            _stat_path = os.path.join(_kb_dir, cls._STAT_FILE)
+            _strat_path = os.path.join(_kb_dir, cls._STRAT_FILE)
+            cls._seed_knowledge_base(_kb_dir)
 
-        # ---- 强校验：文件必须存在，否则直接报错挂起 ----
-        _missing = []
-        if not os.path.exists(_kb_dir):
-            _missing.append(f"知识库目录不存在: {_kb_dir}")
-        else:
-            if not os.path.exists(_stat_path):
-                _missing.append(f"统计分析知识库文件不存在: {_stat_path}")
-            if not os.path.exists(_strat_path):
-                _missing.append(f"博弈策略知识库文件不存在: {_strat_path}")
+        _missing = [_path for _path in (_stat_path, _strat_path) if not os.path.exists(_path)]
         if _missing:
-            _err_msg = ("\n❌❌❌ [智能技能匹配引擎] 知识库文件缺失，系统无法启动！\n"
-                        + "\n".join(f"  • {m}" for m in _missing)
-                        + "\n\n请确保以下文件存在：\n"
-                        f"  {_stat_path}\n"
-                        f"  {_strat_path}\n"
-                        "\n系统已挂起，请补充知识库文件后重新启动。")
-            print(_err_msg)
-            raise FileNotFoundError(_err_msg)
+            cls._stat_skills = []
+            cls._strat_skills = []
+            cls._load_error = (
+                f"知识库不可用({_kb_dir})：缺 {', '.join(os.path.basename(p) for p in _missing)}；"
+                "重跑 install_blade_quant.ps1 会自动补种，或设 BLADE_KB_DIR 指向已有知识库目录"
+            )
+            return
 
-        # ---- 加载知识库 ----
-        with open(_stat_path, 'r', encoding='utf-8') as _f:
-            _stat_data = json.load(_f)
-        with open(_strat_path, 'r', encoding='utf-8') as _f:
-            _strat_data = json.load(_f)
+        _loaded_any = False
+        for _path, _attr, _label in (
+            (_stat_path, '_stat_skills', '统计分析'),
+            (_strat_path, '_strat_skills', '博弈策略'),
+        ):
+            try:
+                with open(_path, 'r', encoding='utf-8') as _f:
+                    _data = json.load(_f)
+            except (OSError, ValueError) as _kb_err:
+                cls._load_error = f"{_label}知识库读取失败({os.path.basename(_path)}): {type(_kb_err).__name__}: {_kb_err}"
+                setattr(cls, _attr, [])
+                continue
+            _skills = _data.get('skills', []) if isinstance(_data, dict) else []
+            if not isinstance(_skills, list) or not _skills:
+                cls._load_error = f"{_label}知识库为空({os.path.basename(_path)}): 0条技能"
+                setattr(cls, _attr, [])
+                continue
+            setattr(cls, _attr, _skills)
+            _loaded_any = True
 
-        cls._stat_skills = _stat_data.get('skills', []) if isinstance(_stat_data, dict) else []
-        cls._strat_skills = _strat_data.get('skills', []) if isinstance(_strat_data, dict) else []
-
-        # ---- 校验条目数量 ----
-        if len(cls._stat_skills) == 0:
-            raise ValueError(f"统计分析知识库为空(0条技能): {_stat_path}")
-        if len(cls._strat_skills) == 0:
-            raise ValueError(f"博弈策略知识库为空(0条技能): {_strat_path}")
-
-        print(f"   🧠 [智能技能匹配引擎] 知识库加载成功: "
-              f"统计技能{len(cls._stat_skills)}条 + 策略技能{len(cls._strat_skills)}条"
-              f" (路径: {_kb_dir})")
+        if _loaded_any:
+            print(f"   🧠 [智能技能匹配引擎] 知识库加载成功: "
+                  f"统计技能{len(cls._stat_skills or [])}条 + 策略技能{len(cls._strat_skills or [])}条"
+                  f" (路径: {_kb_dir})")
 
 
     # ------------------------------------------------------------------
@@ -20908,8 +21722,8 @@ class SkillMatchingEngine:
         try:
             self._ensure_loaded()
             if not self._stat_skills and not self._strat_skills:
-                _result['error'] = self._load_error or '知识库为空'
-                _result['summary'] = '智能技能匹配引擎: 知识库不可用(已降级)'
+                _result['error'] = getattr(self, '_load_error', None) or '知识库为空(0条技能)'
+                _result['summary'] = '智能技能匹配引擎: 未激活（知识库不可用）'
                 return _result
 
             feat = self._build_feature_index(match_data or {})
@@ -26678,6 +27492,24 @@ def _betfair_from_mobile_pnl(pack):
     }
 
 
+def _pack_reason(pack):
+    """不可用原因：block_reason → reason → error → 'empty'，绝不吞掉真实原因。
+
+    三个抓取器历史上只填 reason（如 external_fetch_not_configured），
+    而日志只读 block_reason，于是真实原因被 'empty' 盖住。
+    """
+    if not isinstance(pack, dict):
+        return 'invalid_payload'
+    for key in ('block_reason', 'reason'):
+        value = str(pack.get(key) or '').strip()
+        if value:
+            return value
+    error = str(pack.get('error') or '').strip()
+    if error:
+        return error[:160]
+    return 'empty'
+
+
 def _attach_mobile_exchange_pnl(rec, match_id, proxies=None):
     """每场走手机竞足→析→盈亏，保存四块表。失败留空，不写 first_score。"""
     rec = rec if isinstance(rec, dict) else {}
@@ -26706,8 +27538,21 @@ def _attach_mobile_exchange_pnl(rec, match_id, proxies=None):
             f"五要素={len((pack.get('five_elements') or {}).get('rows') or [])}"
         )
     else:
-        print(f"   ⚠️ [手机盈亏] 不可用 reason={pack.get('block_reason') or 'empty'}")
+        print(f"   ⚠️ [手机盈亏] 不可用 reason={_pack_reason(pack)}")
     return pack
+
+
+def _absence_count(pack):
+    """伤停人数。兼容两种形状：[{side,name,...}] 或 [{rows:[...]}]。"""
+    total = 0
+    for item in (pack.get('absences') or []) if isinstance(pack.get('absences'), list) else []:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get('rows'), list):
+            total += len(item['rows'])
+        elif item.get('name'):
+            total += 1
+    return total
 
 
 def _attach_mobile_lineup(rec, match_id, proxies=None):
@@ -26727,17 +27572,18 @@ def _attach_mobile_lineup(rec, match_id, proxies=None):
         }
     rec['mobile_lineup'] = pack
     if pack.get('available') or pack.get('players'):
-        _line_tag = '手机阵容' if str(pack.get('channel') or '') == 'mobile' else '阵容'
+        _src = str(pack.get('channel') or '')
+        _line_tag = '桌面阵容' if 'formation' in _src else ('手机阵容' if _src == 'mobile' else '阵容')
         print(
-            f"   📱 [{_line_tag}] 概览={len(pack.get('overview') or [])} "
-            f"技术={len(pack.get('tech_compare') or [])} "
-            f"实力={len(pack.get('strength_compare') or [])} "
-            f"首发={len(pack.get('starters') or [])} "
-            f"伤停={sum(len((b or {}).get('rows') or []) for b in (pack.get('absences') or []))} "
-            f"球员子页={pack.get('players_fetched') or 0}/{pack.get('player_url_total') or 0}"
+            f"   📱 [{_line_tag}] 首发={len(pack.get('starters') or [])} "
+            f"(主{len((pack.get('home') or {}).get('starters') or [])}/"
+            f"客{len((pack.get('away') or {}).get('starters') or [])}) "
+            f"替补={len(pack.get('substitutes') or [])} "
+            f"伤停={_absence_count(pack)} "
+            f"来源={(pack.get('source_report') or {}).get('url') or '-'}"
         )
     else:
-        print(f"   ⚠️ [手机阵容] 不可用 reason={pack.get('block_reason') or 'empty'}")
+        print(f"   ⚠️ [手机阵容] 不可用 reason={_pack_reason(pack)}")
     return pack
 
 
@@ -26747,6 +27593,38 @@ def _attach_mobile_lineup_if_missing(rec, match_id, proxies=None):
     if pack.get('available'):
         return pack
     return _attach_mobile_lineup(rec, match_id, proxies=proxies)
+
+
+def _line_present(value):
+    """盘口线算不算「有」。0.0（平手盘）算有；None/空串/空容器才算缺。"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _merge_books_pack(prev, new):
+    """公司明细包合并：抓取失败不要覆盖已经拿到的明细。
+
+    失败包通常只有 available/block_reason，直接赋值会把上次抓到的
+    companies + change.php 时间线整块冲掉，日志随即出现
+    「亚指/大小 不可用」却又「AH=0.0 OU=2.5 来源 ah:ok」的自相矛盾。
+    """
+    prev = prev if isinstance(prev, dict) else {}
+    new = new if isinstance(new, dict) else {}
+    if not new:
+        return prev or {'available': False}
+    if new.get('available'):
+        return new
+    if not prev.get('available'):
+        return new
+    merged = dict(prev)
+    # 失败原因保留在明细包里，便于日志诊断，但不改动已有数据。
+    merged['last_attempt_reason'] = new.get('block_reason') or new.get('reason') or 'failed'
+    return merged
 
 
 def _attach_mobile_ah_ou_books(rec, match_id, proxies=None):
@@ -26764,7 +27642,8 @@ def _attach_mobile_ah_ou_books(rec, match_id, proxies=None):
             'writes_first_score': False,
             'changes_direction': False,
         }
-    rec['mobile_ah_ou_books'] = pack
+    rec['mobile_ah_ou_books'] = _merge_books_pack(rec.get('mobile_ah_ou_books'), pack)
+    pack = rec['mobile_ah_ou_books']
     ah_n = len(_as_dict(pack.get('asian_handicap')).get('companies') or [])
     ou_pack = _as_dict(pack.get('over_under'))
     ou_companies = ou_pack.get('companies') or []
@@ -26776,7 +27655,17 @@ def _attach_mobile_ah_ou_books(rec, match_id, proxies=None):
         if ou_n and not ou_tl and ou_pack.get('detail_block_reason'):
             print(f"   ⚠️ [手机大小球时间线] {ou_pack.get('detail_block_reason')}")
     else:
-        print(f"   ⚠️ [手机亚指/大小] 不可用 reason={pack.get('block_reason') or 'empty'}")
+        # 公司明细抓取失败 ≠ 盘口线不可用。标量 AH/OU 由六盘口包提供，
+        # 这里只说「公司明细不可用」，绝不因此把 AH/OU 置空（那会让日志出现
+        # 「亚指/大小 不可用」旁边又写着「AH=0.0 OU=2.5 来源=ah:ok」的矛盾）。
+        _have_lines = [
+            name for name, key in (('AH', 'asian_handicap'), ('OU', 'ou_line'))
+            if _line_present(rec.get(key))
+        ]
+        print(
+            f"   ⚠️ [手机亚指/大小·公司明细] 不可用 reason={_pack_reason(pack)}"
+            f"｜盘口线={'/'.join(_have_lines) if _have_lines else '无'}（明细失败不影响标量线）"
+        )
     return pack
 
 
@@ -26821,15 +27710,62 @@ def _stamp_more_play_scores(rec, pack):
     scores = _as_dict(pack.get('jc_score_odds'))
     if not scores:
         return 0
+    # 同时落到 rec 上：31 全表重建要读 rec['jc_score_odds']（这是它的唯一写者）。
+    if not rec.get('jc_score_odds'):
+        rec['jc_score_odds'] = dict(scores)
+    if pack.get('jc_score_source') and not rec.get('jc_score_source'):
+        rec['jc_score_source'] = pack.get('jc_score_source')
+    # 传带键的容器，而不是裸的比分映射：_okooo_apply_jc_score_fill 以前
+    # 读 src['correct_score_jc_official'] / src['jc_score_odds']，
+    # 裸映射两个键都没有，于是 correct_score_jc_official 永远写不进去（日志 jc=0）。
     return _okooo_apply_jc_score_fill(
         rec,
-        scores,
+        {
+            'jc_score_odds': scores,
+            'correct_score_jc_official': scores,
+        },
         source_note=pack.get('jc_score_source') or 'https://m.okooo.com/jczq/#oddsData.SportteryScore',
         overwrite=True,
     )
 
 
 _WATER_FULL_SCRAPE_IDS = set()
+_WATER_GAP_LOGGED = set()
+
+
+def _water_gap_reason(rec, gaps):
+    """把「为什么还缺」写成一句可诊断的话，直接来自各源的真实返回。"""
+    six = _as_dict(rec.get('six_market_mobile'))
+    report = _as_dict(six.get('source_report'))
+    labels = {'asian_handicap': 'ah', 'ou_line': 'ou', 'odds_1x2': '1x2'}
+    bits = []
+    for gap in gaps:
+        entry = _as_dict(report.get(labels.get(gap, '')))
+        if not entry:
+            bits.append(f'{gap}=无抓取记录')
+            continue
+        detail = f"{gap}:{entry.get('stage') or '-'}"
+        if entry.get('status'):
+            detail += f"/HTTP{entry.get('status')}"
+        if entry.get('blocked'):
+            detail += '/被拦截'
+        elif entry.get('error'):
+            detail += f"/{str(entry.get('error'))[:60]}"
+        bits.append(detail)
+    return '；'.join(bits)
+
+
+def _log_water_gaps_once(rec, mid, gaps, prefix='   '):
+    """每场只留一行水位结论：缺哪些字段 + 每个字段卡在哪一步。"""
+    key = str(mid or '')
+    if key and key in _WATER_GAP_LOGGED:
+        return
+    if key:
+        _WATER_GAP_LOGGED.add(key)
+    print(
+        f"{prefix}[水位] mid={mid} 仍缺{'、'.join(gaps)}，不写待定"
+        f"；原因: {_water_gap_reason(rec, gaps)}"
+    )
 _OKOOO_DETAIL_KEYS = (
     'correct_score_okooo', 'correct_score_page_avg', 'correct_score_books_avg',
     'correct_score_books_n', 'correct_score_site_avg', 'correct_score_jc_official',
@@ -26841,6 +27777,17 @@ _OKOOO_DETAIL_KEYS = (
     'asian_handicap', 'ah_line', 'ah_channel', 'ou_line', 'ou_channel',
     'odds_1x2', 'odds_1x2_channel', 'jc_handicap',
     'jc_lottery_no', 'jc_morder', 'water_gaps',
+    'jc_score_odds', 'jc_score_source', 'jc_score_orderid',
+    # 明细与派生块：白名单曾经只收「水位标量」，于是 scrape_okooo_detail 新产出的
+    # ah_detail（含 change.php 公司时间线）在这里被静默丢掉，seed 拿不到明细，
+    # 记录里永远 0 家公司。新增生产者输出必须同步加进来（有测试盯着）。
+    'ah_detail', 'ou_detail',
+    'mobile_water_provenance', 'six_cs_settlement_v2', 'dual_source_facts',
+    'water_scrape_finished',
+    # 31 池的出处与完整性：pack 一直在产出这四项，白名单没列就整块丢掉，
+    # 于是记录里只剩「已合并的 31 键市均」，下游再也分不清哪 9 项其实来自竞彩，
+    # 31 行表把它们全标成 desktop_cs、市短还拿竞彩去比竞彩。
+    'cs31_provenance', 'cs31_counts', 'cs31_extras', 'cs31_complete',
 )
 
 
@@ -26857,6 +27804,14 @@ def _merge_okooo_detail_into_rec(rec, pack):
         val = pack.get(key)
         if key not in replace_even_empty and val in (None, '', [], {}):
             continue
+        if key == 'six_market_mobile':
+            # 重抓失败时不要把已经抓到的竞彩31比分一起丢掉：新包没有的就沿用旧包。
+            prev = rec.get('six_market_mobile')
+            if isinstance(val, dict) and isinstance(prev, dict):
+                for _keep in ('jc_score_odds', 'jc_score_source', 'jc_score_orderid'):
+                    if not val.get(_keep) and prev.get(_keep):
+                        val = dict(val)
+                        val[_keep] = prev[_keep]
         rec[key] = val
     if isinstance(pack.get('markets'), dict) and pack.get('markets'):
         rec['okooo_markets'] = pack.get('markets')
@@ -26881,18 +27836,24 @@ def _ensure_mobile_six(rec, mid, force=False):
     if _water_gaps:
         if str(mid) in _WATER_FULL_SCRAPE_IDS:
             rec['water_gaps'] = list(_water_gaps)
-            print(f"   [水位] mid={mid} 仍缺{'、'.join(_water_gaps)}，重复抓取后仍无，不写待定")
+            _log_water_gaps_once(rec, mid, _water_gaps)
             return False
-        print(f"   [水位重抓] mid={mid} 缺{'、'.join(_water_gaps)}，整场重新抓取")
+        # 单场单次：这一场这一轮只整场重抓一次，之后无论成败都封口。
+        _WATER_FULL_SCRAPE_IDS.add(str(mid))
+        print(f"   [水位重抓] mid={mid} 缺{'、'.join(_water_gaps)}，整场重新抓取（本场只重抓一次）")
         try:
-            _pack = scrape_okooo_detail(mid, jc_handicap=_record_jc_handicap(rec)) or {}
+            _pack = scrape_okooo_detail(mid, jc_handicap=_record_jc_handicap(rec), _water_attempt=1) or {}
         except Exception as _water_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   [水位重抓] 失败: {_water_err}")
+            print(f"   [水位重抓] 失败 mid={mid}: {type(_water_err).__name__}: {_water_err}")
             rec['water_gaps'] = list(_water_gaps)
             return False
         _merge_okooo_detail_into_rec(rec, _pack)
-        if six_market_fetch_blocked(rec):
-            _WATER_FULL_SCRAPE_IDS.add(str(mid))
+        _after = missing_six_market_waters(rec)
+        rec['water_gaps'] = list(_after)
+        if _after:
+            _log_water_gaps_once(rec, mid, _after)
+        else:
+            print(f"   [水位] mid={mid} 六盘口已齐（本场重抓一次后补齐）")
         return True
     existing = _as_dict(rec.get('six_market_mobile'))
     _hit = _as_dict(existing.get('boards_hit'))
@@ -26971,7 +27932,10 @@ def _ensure_mobile_six(rec, mid, force=False):
     _attach_mobile_exchange_pnl(rec, mid)
     _attach_mobile_lineup_if_missing(rec, mid)
     _attach_mobile_ah_ou_books(rec, mid)
-    rec['mobile_ah_ou_books'] = seed_mobile_ah_ou_books(rec.get('mobile_ah_ou_books'), pack)
+    # seed 的第一个参数是**记录**（它自己读 record['mobile_ah_ou_books']）。
+    # 这里曾把 books 包当记录传进去：函数内部读不到已挂上的明细，就把六盘口包
+    # 整个当成结果返回，赋值又把 books 包覆盖掉，公司明细与时间线全丢。
+    seed_mobile_ah_ou_books(rec, pack)
     _ou_before = pack.get('ou_line')
     _ah_before = pack.get('asian_handicap')
     apply_mobile_books_lines(rec)
@@ -27007,23 +27971,43 @@ def _ensure_mobile_six(rec, mid, force=False):
     if pack.get('jc_handicap') is not None:
         rec['jc_handicap'] = pack.get('jc_handicap')
     _stamp_more_play_scores(rec, pack)
+    _report_raw = pack.get('source_report')
+    _report: dict[str, Any] = _report_raw if isinstance(_report_raw, dict) else {}
+    _report_text = '；'.join(
+        '{k}:{stage}/HTTP{status}'.format(
+            k=key,
+            stage=(value or {}).get('stage') or '-',
+            status=(value or {}).get('status'),
+        )
+        for key, value in _report.items()
+        if isinstance(value, dict)
+    ) or '无'
     print(
-        f"   🔄 [手机六盘口] 已刷新 mid={mid} "
+        f"   🔄 [手机六盘口] mid={mid} "
         f"AH={pack.get('asian_handicap')} OU={pack.get('ou_line')} "
-        f"缺={','.join(pack.get('missing') or []) or '无'}"
+        f"1X2={'有' if pack.get('odds_1x2') else '无'} "
+        f"缺={','.join(pack.get('missing') or []) or '无'} | 来源={_report_text}"
     )
     _after_gaps = missing_six_market_waters(rec)
     if _after_gaps and str(mid) not in _WATER_FULL_SCRAPE_IDS:
-        print(f"   [水位重抓] mid={mid} 缺{'、'.join(_after_gaps)}，整场重新抓取")
+        _WATER_FULL_SCRAPE_IDS.add(str(mid))
+        print(f"   [水位重抓] mid={mid} 缺{'、'.join(_after_gaps)}，整场重新抓取（本场只重抓一次）")
         try:
-            _pack = scrape_okooo_detail(mid, jc_handicap=_record_jc_handicap(rec)) or {}
+            _pack = scrape_okooo_detail(mid, jc_handicap=_record_jc_handicap(rec), _water_attempt=1) or {}
         except Exception as _water_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   [水位重抓] 失败: {_water_err}")
+            print(f"   [水位重抓] 失败 mid={mid}: {type(_water_err).__name__}: {_water_err}")
             rec['water_gaps'] = list(_after_gaps)
             return True
         _merge_okooo_detail_into_rec(rec, _pack)
+        _left_after = missing_six_market_waters(rec)
+        rec['water_gaps'] = list(_left_after)
+        if _left_after:
+            _log_water_gaps_once(rec, mid, _left_after)
+        else:
+            print(f"   [水位] mid={mid} 六盘口已齐（本场重抓一次后补齐）")
     elif _after_gaps:
         rec['water_gaps'] = list(_after_gaps)
+        _log_water_gaps_once(rec, mid, _after_gaps)
     return True
 
 
@@ -27100,17 +28084,9 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                     print(f"   ⚠️ [补抓] 手机CS失败: {_mob_err}")
                     pack = {}
             if isinstance(pack, dict) and pack:
-                for _ck in (
-                    'correct_score_okooo', 'correct_score_page_avg', 'correct_score_books_avg',
-                    'correct_score_books_n', 'correct_score_site_avg', 'correct_score_jc_official',
-                    'correct_score_channel', 'correct_score_available', 'cs_fetch_url',
-                    'cs_block_reason', 'pool31_forbidden', 'okooo_match_id',
-                    'six_market_mobile', 'six_market_contradictions',
-                    'mobile_exchange_pnl', 'mobile_lineup', 'betfair_data', 'mobile_ah_ou_books',
-                    'prior_six_market_contradictions',
-                    'asian_handicap', 'ah_line', 'ou_line', 'odds_1x2', 'jc_handicap',
-                    'jc_lottery_no', 'jc_morder',
-                ):
+                # 与 _merge_okooo_detail_into_rec 共用同一份键表：两处各留一份拷贝
+                # 必然漂移（这里曾漏掉 jc_score_odds/jc_score_source/jc_score_orderid）。
+                for _ck in _OKOOO_DETAIL_KEYS:
                     if pack.get(_ck) not in (None, '', [], {}):
                         rec[_ck] = pack.get(_ck)
                 if isinstance(pack.get('markets'), dict):
@@ -27127,9 +28103,15 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                         rec['score_market_heat'] = _hb
                 except Exception as _he:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                     print(f"   ⚠️ [补挂市热] {_he}")
+                # 「可用」不能只看竞彩官方比分或市热排行：桌面 /cs/ 的市均
+                # 只写 correct_score_page_avg / books_avg（jc 官方与 heat 都可能空），
+                # 旧条件会把刚抓到的 25 家市均判成不可用，然后白跑一趟 500 兜底。
                 ok = bool(
                     (isinstance(rec.get('correct_score_jc_official'), dict) and rec.get('correct_score_jc_official'))
                     or (isinstance(rec.get('score_market_heat'), dict) and (rec.get('score_market_heat') or {}).get('ranking'))
+                    or (isinstance(rec.get('correct_score_page_avg'), dict) and rec.get('correct_score_page_avg'))
+                    or (isinstance(rec.get('correct_score_books_avg'), dict) and rec.get('correct_score_books_avg'))
+                    or (isinstance(rec.get('correct_score_site_avg'), dict) and rec.get('correct_score_site_avg'))
                 )
                 if ok:
                     print(f"   OK [补抓CS] mid={mid} available={ok}")
@@ -27152,6 +28134,24 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
             print(f"   ⚠️ [补抓CS] 异常: {_cs_e}")
 
     # ── 手机失败 / 无澳客ID：live.500.com + 析页清洗兜底（骨架仍走 DeepSeek 对比表）──
+    # 竞彩 31 比分赔率齐全时，31 项已有真实市场赔率，不必再跑 500 兜底。
+    # 注意：这不影响前面的市均抓取（books_avg/page_avg 仍要抓，供 heat 与双源闸门用）。
+    # 判「要不要跑 500 兜底」之前，必须先把 jc31 抓到手。
+    # 这行以前没有：guard 读的正是还没被填充的字段（实测 jc=0 → 500 兜底白跑一趟，
+    # 而 _ensure_mobile_six 在 27961 才把 jc31 写进来）。
+    # _ensure_mobile_six 自身有 _core_ok 短路，数据已在时几乎不花时间。
+    if mid and not rec.get('jc_score_odds'):
+        try:
+            _ensure_mobile_six(rec, mid)
+        except Exception as _jc_pre_err:  # noqa: BLE001 - 预取失败仍按原逻辑走兜底
+            print(f"   ℹ️ [兜底] jc31 预取跳过: {type(_jc_pre_err).__name__}")
+    _jc31_n = len(rec.get('jc_score_odds') or {}) if isinstance(rec.get('jc_score_odds'), dict) else 0
+    if _jc31_n >= 31:
+        print(
+            f"   ℹ️ [兜底] 竞彩31比分赔率已齐（{_jc31_n}项），31池市场概率有合法来源，"
+            f"跳过 live.500.com 兜底: {cn}"
+        )
+        return False
     try:
         from odds_fallback import apply_fallback_cs_to_rec, odds_fallback_enabled
         if odds_fallback_enabled():
@@ -27191,14 +28191,18 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                     ensure_dual_source_before_judgment as _ensure_dual,
                 )
                 _gate = _ensure_dual(rec)
-                print(
-                    f"   ✅ [双源互补] ready={_gate.get('ready')} "
+                _gate_line = (
+                    f"ready={_gate.get('ready')} "
                     f"mobile_cs_entered={_gate.get('mobile_cs_entered')} "
-                    f"fill500={len(_gate.get('filled_from_500') or [])} "
-                    f"reason={_gate.get('reason')}"
+                    f"cs_n={_gate.get('cs_books_n')} "
+                    f"fill500={len(_gate.get('filled_from_500') or [])}"
                 )
+                if _gate.get('ready'):
+                    print(f"   ✅ [双源互补] {_gate_line}")
+                else:
+                    print(f"   ⚠️ [双源互补] {_gate_line} reason={_gate.get('reason') or '未给出原因'}")
             except Exception as _dual_fb_e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                print(f"   ⚠️ [双源互补] {_dual_fb_e}")
+                print(f"   ⚠️ [双源互补] 闸门异常: {type(_dual_fb_e).__name__}: {_dual_fb_e}")
             if mid:
                 _ensure_mobile_six(rec, mid)
             return ok_fb
@@ -27256,14 +28260,20 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
             result['pool31_forbidden'] = True
             if isinstance(_cs_pack, dict) and isinstance(_cs_pack.get('correct_score_jc_official'), dict):
                 result['correct_score_jc_official'] = _cs_pack.get('correct_score_jc_official')
-            if isinstance(_cs_pack, dict) and _cs_pack.get('block_reason'):
-                result['cs_block_reason'] = _cs_pack.get('block_reason')
+            _cs_reason = 'empty_payload'
+            _cs_detail = ''
+            if isinstance(_cs_pack, dict):
+                _cs_reason = str(_cs_pack.get('block_reason') or _cs_pack.get('reason') or 'empty_payload')
+                _cs_detail = str(_cs_pack.get('error') or '').strip()
+                result['cs_block_reason'] = _cs_reason
+                if _cs_detail:
+                    result['cs_block_detail'] = _cs_detail
             print(
-                f"      ⚠️ [澳客手机CS] 不可用 "
-                f"reason={(_cs_pack or {}).get('block_reason') if isinstance(_cs_pack, dict) else 'empty'}"
+                f"      ⚠️ [澳客手机CS] 不可用 reason={_cs_reason}"
+                + (f" | {_cs_detail}" if _cs_detail else '')
             )
     except Exception as _cs_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        print(f"      ⚠️ [澳客手机CS] 挂接异常: {_cs_err}")
+        print(f"      ⚠️ [澳客手机CS] 挂接异常: {type(_cs_err).__name__}: {_cs_err}")
         result['correct_score_available'] = False
         result['correct_score_channel'] = ''
         result['pool31_forbidden'] = True
@@ -27300,10 +28310,8 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
         _attach_mobile_exchange_pnl(result, match_id, proxies=_proxies)
         _attach_mobile_lineup(result, match_id, proxies=_proxies)
         _attach_mobile_ah_ou_books(result, match_id, proxies=_proxies)
-        result['mobile_ah_ou_books'] = seed_mobile_ah_ou_books(
-            result.get('mobile_ah_ou_books'),
-            result.get('six_market_mobile'),
-        )
+        # 同上：传记录，不传 books 包；返回值也不要再赋回同一个键。
+        seed_mobile_ah_ou_books(result, result.get('six_market_mobile'))
         _ou_before = _six_ok.get('ou_line')
         _ah_before = _six_ok.get('asian_handicap')
         apply_mobile_books_lines(result)
@@ -27322,6 +28330,11 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
                     f"ah={_led.get('ah_line')} ou={_led.get('ou_line')} "
                     f"cs={_led.get('cs_market_count')} cos={_led.get('filtered_company_count')}"
                 )
+            else:
+                print(
+                    "      ⚠️ [六盘口×市均清算v2] 未形成 "
+                    f"reason={(_set_v2 or {}).get('block_reason') or 'missing_inputs'}"
+                )
         except Exception as _set_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             print(f"      ⚠️ [六盘口×市均清算v2] {_set_err}")
     except Exception as _six_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -27329,18 +28342,32 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
         result['six_market_mobile'] = {'available': False, 'channel': 'mobile', 'block_reason': 'attach_error'}
         result['six_market_contradictions'] = []
     _water_gaps = missing_six_market_waters(result)
-    if _water_gaps and _water_attempt < 1:
-        print(f"      [水位重抓] 缺{'、'.join(_water_gaps)}，整场重新抓取")
-    result = finish_match_water_scrape(
-        result,
-        _water_attempt,
-        lambda: scrape_okooo_detail(
-            match_id,
-            proxies=proxies,
-            jc_handicap=jc_handicap,
-            _water_attempt=_water_attempt + 1,
-        ),
-    )
+    result['water_gaps'] = list(_water_gaps)
+    # 只有第一次进抓取时才允许一次整场重抓；重抓后无论成败都封口，绝不再来第二轮。
+    if _water_gaps and _water_attempt == 0 and str(match_id) not in _WATER_FULL_SCRAPE_IDS:
+        _WATER_FULL_SCRAPE_IDS.add(str(match_id))
+        print(f"      [水位重抓] mid={match_id} 缺{'、'.join(_water_gaps)}，整场重抓一次")
+        try:
+            _retry_pack = scrape_okooo_detail(
+                match_id,
+                proxies=proxies,
+                jc_handicap=jc_handicap,
+                _water_attempt=_water_attempt + 1,
+            ) or {}
+        except Exception as _water_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
+            print(f"      [水位重抓] 失败 mid={match_id}: {type(_water_err).__name__}: {_water_err}")
+            _retry_pack = {}
+        if isinstance(_retry_pack, dict) and _retry_pack:
+            _merge_okooo_detail_into_rec(result, _retry_pack)
+        _water_gaps = missing_six_market_waters(result)
+        result['water_gaps'] = list(_water_gaps)
+    # 记账；不要把 finish_match_water_scrape 的返回值赋回 result（那会把整场结果换成一个空壳）。
+    # 第三个参数是模块缺失兜底桩的签名；真实模块用 *args 收下，忽略即可。
+    finish_match_water_scrape(result, _water_attempt, None)
+    if _water_gaps:
+        _log_water_gaps_once(result, match_id, _water_gaps, prefix='      ')
+    else:
+        print(f"      [水位] mid={match_id} 六盘口水位已齐")
     # 抓取结束即做双源整合骨架：手机市均必须进入 dual_source_facts（500 在 analyze 再并入）
     try:
         from odds_fallback import (
@@ -27358,13 +28385,7 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
                 f"reason={_gate_sc.get('reason')}"
             )
     except Exception as _dual_sc_e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        print(f"      ⚠️ [双源互补·抓取末] {_dual_sc_e}")
-    if _water_attempt == 0 and not six_market_fetch_blocked(result):
-        _WATER_FULL_SCRAPE_IDS.add(str(match_id))
-    if _water_attempt == 0:
-        _left = result.get('water_gaps') if isinstance(result, dict) else None
-        if _left:
-            print(f"      [水位] 重复抓取后仍缺 {'、'.join(_left)}，不写待定")
+        print(f"      ⚠️ [双源互补·抓取末] {type(_dual_sc_e).__name__}: {_dual_sc_e}")
     return result
 
 
@@ -27675,21 +28696,123 @@ def scrape_betfair_profit_loss(match_info):
         
         return (False, 0.0)
     
-    # ===== 数据源1：澳客网必发盈亏页面 =====
+    # ===== 数据源0：手机交易盈亏页（唯一真给数的来源）=====
+    # 桌面必发页已 405 失效；手机 exchanges.php 有「竞足保存盈亏 / 竞足人气盈亏」真数据，
+    # 「必发交易盈亏」那一段常由页面自己写「暂无数据」——那就如实说没有，不拿竞足冒充必发。
+    _bf_mobile_summary = '未执行'
+    _bf_desktop_summary = '未执行'
+    _zg_summary = '未执行'
+    _mid_pnl = str(match_info.get('okooo_match_id') or '').strip()
+    if _mid_pnl:
+        try:
+            print("      📡 [必发盈亏] 尝试数据源0: 手机交易盈亏页（竞足保存盈亏/人气盈亏/必发）...")
+            _pnl_url = f'https://m.okooo.com/match/exchanges.php?MatchID={_mid_pnl}'
+            _pnl_resp = None
+            for _px in _http_routes():
+                try:
+                    _proxies_p = cast(dict[str, str] | None, None if _px is _DIRECT_PROXIES else _px)
+                    _cand = requests.get(
+                        _pnl_url,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 '
+                                          '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+                            'Accept-Language': 'zh-CN,zh;q=0.9',
+                            'Referer': 'https://m.okooo.com/jczq/',
+                        },
+                        proxies=_proxies_p, timeout=15, verify=_verify_tls,
+                    )
+                    if _cand.status_code == 200 and _cand.content:
+                        _pnl_resp = _cand
+                        break
+                except Exception as _route_err:  # noqa: BLE001 - 单个路由失败就换下一个
+                    print(f"      ℹ️ [必发盈亏] 手机盈亏路由跳过: {type(_route_err).__name__}")
+                    continue
+            if _pnl_resp is None:
+                _bf_mobile_summary = f'手机盈亏无响应(url={_pnl_url})'
+            else:
+                from okooo_mobile_cs import _mobile_exchange_pnl, decode_okooo_html
+                _pnl_html = decode_okooo_html(_pnl_resp.content, _pnl_resp.headers)
+                _pnl = _mobile_exchange_pnl(_pnl_html)
+                _title_m = re.search(r'<title[^>]*>(.*?)</title>', _pnl_html, re.DOTALL | re.IGNORECASE)
+                _pnl_title = re.sub(r'\s+', ' ', _title_m.group(1)).strip()[:40] if _title_m else ''
+                _bf_mobile_summary = (
+                    f'HTTP=200 bytes={len(_pnl_resp.content)} title={_pnl_title or "-"} '
+                    f'竞足保存盈亏={"有" if _pnl.get("jc_saved") else "无"} '
+                    f'人气={"有" if _pnl.get("jc_popularity") else "无"} '
+                    f'必发={"有" if _pnl.get("betfair_available") else "暂无数据"}'
+                )
+                print(f"      📡 [必发盈亏] 手机盈亏页: {_bf_mobile_summary}")
+                if _pnl.get('betfair_available'):
+                    _bf_rows = _pnl.get('betfair_trade') or {}
+                    _bf_vals = {
+                        side: _bf_rows.get(side) or {} for side in ('胜', '平', '负')
+                    }
+                    if all((v.get('pnl') is not None) for v in _bf_vals.values()):
+                        result['home_profit_loss'] = _bf_vals['胜']['pnl']
+                        result['draw_profit_loss'] = _bf_vals['平']['pnl']
+                        result['away_profit_loss'] = _bf_vals['负']['pnl']
+                        result['home_volume'] = _bf_vals['胜'].get('volume')
+                        result['draw_volume'] = _bf_vals['平'].get('volume')
+                        result['away_volume'] = _bf_vals['负'].get('volume')
+                        _vols = [v.get('volume') for v in _bf_vals.values()]
+                        if any(isinstance(v, (int, float)) for v in _vols):
+                            result['volume'] = sum(v for v in _vols if isinstance(v, (int, float)))
+                        result['available'] = True
+                        result['source'] = '手机交易盈亏·必发段'
+                        result['analysis_hint'] = _generate_betfair_analysis_hint(result)
+                        print("      ✅ [必发盈亏] 手机必发段取到三个方向盈亏")
+                        return result
+                if _pnl.get('betfair_note'):
+                    print(f"      ℹ️ [必发盈亏] {_pnl['betfair_note']}")
+                if _pnl.get('jc_saved'):
+                    # 竞足保存盈亏是本地真数据：记进 raw_data 供报告对照，但不当必发用。
+                    result['raw_data']['jc_saved_pnl'] = _pnl.get('jc_saved')
+                    result['raw_data']['jc_saved_total'] = _pnl.get('saved_total')
+                    print(
+                        "      ℹ️ [必发盈亏] 竞足保存盈亏已记录（保存量"
+                        f"={_pnl.get('saved_total')}），但不冒充必发盈亏"
+                    )
+        except Exception as _pnl_err:  # noqa: BLE001 - 必发永远不影响主流程
+            _bf_mobile_summary = f'异常 {type(_pnl_err).__name__}: {str(_pnl_err)[:80]}'
+            print(f"      ⚠️ [必发盈亏] 手机盈亏页异常（不影响主流程）: {type(_pnl_err).__name__}: {_pnl_err}")
+
+    # ===== 数据源1：澳客网必发盈亏页面（桌面，已 405 失效，保留以留下证据）=====
     try:
         print("      📡 [必发盈亏] 尝试数据源: 澳客网必发盈亏...")
         bf_url = 'https://www.okooo.cn/jingcai/shuju/betfa/'
         resp = _request_with_retry(bf_url, referer='https://www.okooo.cn/jingcai/')
+        if not resp:
+            _bf_desktop_summary = f'无响应(url={bf_url})'
+        elif resp.status_code != 200:
+            _bf_desktop_summary = f'HTTP={resp.status_code} url={bf_url}'
         if resp and resp.status_code == 200:
             _bf_body = resp.text or ""
+            _bf_title_m = re.search(r'<title[^>]*>(.*?)</title>', _bf_body, re.DOTALL | re.IGNORECASE)
+            _bf_title = re.sub(r'\s+', ' ', _bf_title_m.group(1)).strip()[:60] if _bf_title_m else ''
+            _bf_bytes = len(resp.content or b'')
             tables = []
-            if "滑动验证" in _bf_body or "aliyuncaptcha" in _bf_body.lower():
-                print("      ⚠️ [必发盈亏] 澳客网必发页是验证页，不按空表解析")
+            # 该页实际会给三种东西：WAF 拦截页（title 405 / blocked）、滑动验证页、
+            # 或者空壳。三种都不是数据，全部如实记录，绝不按空表解析。
+            _bf_waf = bool(
+                _bf_title.strip() == '405'
+                or 'your request has been blocked' in _bf_body.lower()
+                or 'renderData' in _bf_body
+            )
+            if _bf_waf or "滑动验证" in _bf_body or "aliyuncaptcha" in _bf_body.lower():
+                _bf_why = 'WAF拦截页' if _bf_waf else '验证页'
+                print(f"      ⚠️ [必发盈亏] 桌面澳客必发页返回{_bf_why}，不按空表解析")
+                _bf_desktop_summary = (
+                    f'{_bf_why} bytes={_bf_bytes} title={_bf_title or "-"} url={bf_url}'
+                )
             else:
                 resp.encoding = 'gb2312'
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 tables = soup.select('table#table')
                 print(f"      📡 [必发盈亏] 澳客网找到 {len(tables)} 场比赛数据")
+                _bf_desktop_summary = (
+                    f'HTTP=200 bytes={_bf_bytes} title={_bf_title or "-"} '
+                    f'tables={len(tables)} url={bf_url}'
+                )
             
             for table in tables:
                 # 从 table 的前一个兄弟 div 获取比赛信息
@@ -27860,15 +28983,22 @@ def scrape_betfair_profit_loss(match_info):
             if not result['available']:
                 print(f"      ℹ️ [必发盈亏] 澳客网未匹配到 {_home_key}/{_away_key}")
     except Exception as e_okooo:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        print(f"      ⚠️ [必发盈亏] 澳客网抓取异常: {e_okooo}")
+        _bf_desktop_summary = f'异常 {type(e_okooo).__name__}: {str(e_okooo)[:80]}'
+        print(f"      ⚠️ [必发盈亏] 澳客网抓取异常: {type(e_okooo).__name__}: {e_okooo}")
     
     # ===== 数据源2：足彩网必发交易量 =====
     try:
         print("      📡 [必发盈亏] 尝试数据源2: 足彩网...")
         zgzcw_url = 'https://odds.zgzcw.com/jczq/bf_data.jsp'
         resp = _request_with_retry(zgzcw_url, referer='https://odds.zgzcw.com/')
-        if resp and resp.status_code == 200:
+        _zg_html = ''
+        _zg_title = ''
+        if resp is not None:
             resp.encoding = 'utf-8'
+            _zg_html = resp.text or ''
+            _zg_title_match = re.search(r'<title[^>]*>(.*?)</title>', _zg_html, re.DOTALL | re.IGNORECASE)
+            _zg_title = re.sub(r'\s+', ' ', _zg_title_match.group(1)).strip()[:60] if _zg_title_match else ''
+        if resp and resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
             # 足彩网可能使用不同的页面结构，尝试多种选择器
@@ -27879,6 +29009,9 @@ def scrape_betfair_profit_loss(match_info):
                              _has_common_substr_global(_home_team, all_text) or
                              _has_common_substr_global(_away_team, all_text))
             if _page_has_team:
+                _zg_summary = (
+                    f'HTTP=200 bytes={len(resp.content or b"")} title={_zg_title or "-"} 含球队关键词'
+                )
                 print("      ℹ️ [必发盈亏] 足彩网页面包含球队关键词，尝试解析...")
                 # 尝试表格解析
                 tables = soup.select('table')
@@ -27905,12 +29038,29 @@ def scrape_betfair_profit_loss(match_info):
                                     result['analysis_hint'] = _generate_betfair_analysis_hint(result)
                                     return result
             else:
-                print("      ℹ️ [必发盈亏] 足彩网页面未包含球队关键词")
+                _zg_summary = (
+                    f'HTTP=200 bytes={len(resp.content or b"")} '
+                    f'title={_zg_title or "-"} 页面无球队关键词'
+                )
+                print(
+                    f"      ℹ️ [必发盈亏] 足彩网页面未包含球队关键词 "
+                    f"(HTTP={resp.status_code} bytes={len(resp.content or b'')} "
+                    f"title={_zg_title or '-'})"
+                )
+        elif resp is not None:
+            _zg_summary = f'HTTP={resp.status_code} url={zgzcw_url}'
+        else:
+            _zg_summary = f'无响应(url={zgzcw_url})'
     except Exception as e_zgzcw:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        print(f"      ⚠️ [必发盈亏] 足彩网抓取异常: {e_zgzcw}")
-    
+        _zg_summary = f'异常 {type(e_zgzcw).__name__}: {str(e_zgzcw)[:80]}'
+        print(f"      ⚠️ [必发盈亏] 足彩网抓取异常: {type(e_zgzcw).__name__}: {e_zgzcw}")
+
     # 所有数据源均失败
     print(f"      ⚠️ [必发盈亏] 所有数据源均未获取到 '{cn_name}' 的必发盈亏数据")
+    print(
+        f"      ℹ️ [必发盈亏] 源摘要: 手机盈亏={_bf_mobile_summary} | "
+        f"桌面澳客必发={_bf_desktop_summary} | 足彩网={_zg_summary}"
+    )
     result['analysis_hint'] = '必发盈亏数据暂不可用（可能该场比赛尚未开盘或不在当前竞猜期）'
     return result
 
@@ -29860,33 +31010,62 @@ def compare_market_heat_with_dual_align(heat, mng=None):
 
 
 def build_31pool_enriched_list(match_data):
-    """Minimal theory rows from λ / prob_dict for DeepSeek enrichment."""
+    """31 池理论行：恒为竞彩 31 个投注选项（含三个「其它」）。
+
+    历史实现把泊松原始格子（4-3/3-4/6-1 等）直接当行，且 max_goals=6 会截掉
+    5-0/5-1/5-2，导致「31 池」既不等于竞彩31项、也丢大比分。现在：
+      * 有 λ 时用 _poisson_score_probs 聚合到31项（含 其它 = 方向总和 − 已列之和）；
+      * 否则把 prob_dict 聚合到31项；
+      * 31 项概率归一化到 1，再换算成百分比。
+    market 仍留 None，由调用方按市均填充。
+    """
     md = match_data if isinstance(match_data, dict) else {}
-    out = []
     try:
+        from blade_deepseek_pipeline import _poisson_score_probs
+    except Exception:  # noqa: BLE001 - 管线不可用时退回 prob_dict
+        _poisson_score_probs = None  # type: ignore[assignment]
+
+    probs: dict[str, float] = {}
+    lh = md.get('lam_h') if md.get('lam_h') is not None else md.get('lambda_home')
+    la = md.get('lam_a') if md.get('lam_a') is not None else md.get('lambda_away')
+    _lh = _la = 0.0
+    if lh is not None and la is not None:
+        try:
+            _lh, _la = float(lh), float(la)
+        except (TypeError, ValueError):
+            _lh = _la = 0.0
+    if _lh > 0 and _la > 0 and _poisson_score_probs is not None:
+        try:
+            probs = _poisson_score_probs(_lh, _la)
+        except Exception:  # noqa: BLE001 - λ 聚合失败再用 prob_dict
+            probs = {}
+    if not probs:
         pd = md.get('prob_dict') if isinstance(md.get('prob_dict'), dict) else {}
-        if not pd:
-            lh = md.get('lam_h') or md.get('lambda_home')
-            la = md.get('lam_a') or md.get('lambda_away')
-            if lh is not None and la is not None:
-                pd = calc_poisson_prob(float(lh), float(la), max_goals=6) or {}
+        raw: dict[str, float] = {}
         for sc, p in (pd or {}).items():
             try:
-                tp = float(p)
-            except Exception:  # noqa: BLE001,S112 - intentional degraded-mode guard or structure-preserving fallback  # nosec B112  # intentional degraded-mode continue fallback
+                raw[str(sc)] = float(p)
+            except (TypeError, ValueError):
                 continue
-            if tp <= 0:
-                continue
-            out.append({
-                'score': str(sc).replace(':', '-'),
-                'theory': round(tp * 100.0, 2) if tp <= 1.5 else round(tp, 2),
-                'theory_prob': tp if tp <= 1.5 else tp / 100.0,
-                'market': None,
-                'market_prob': None,
-            })
-        out.sort(key=lambda x: float(x.get('theory') or 0), reverse=True)
-    except Exception:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        out = []
+        probs = _pool31_aggregate(raw) if raw else {}
+    if not probs:
+        return []
+
+    total = sum(v for v in probs.values() if v > 0)
+    out = []
+    for option in JCZQ_ALL_OPTIONS:
+        value = probs.get(option)
+        if value is None:
+            continue
+        norm = (value / total) if total > 0 else 0.0
+        out.append({
+            'score': option,
+            'theory': round(norm * 100.0, 4),
+            'theory_prob': norm,
+            'market': None,
+            'market_prob': None,
+        })
+    out.sort(key=lambda x: float(x.get('theory') or 0), reverse=True)
     return out
 
 
@@ -30154,7 +31333,12 @@ def _empty_mobile_cs_heat(reason='okooo_mobile_cs_missing'):
 
 
 def _cs_heat_labels(rec):
-    """手机表沿用默认源名。比分表页把 heat_source / channel 原样交给排行，避免标成手机。"""
+    """手机表沿用默认源名。比分表页把 heat_source / channel 原样交给排行，避免标成手机。
+
+    注意：build_score_market_heat_ranking 的参数叫 `channel`，这里必须发 `channel`。
+    曾经发 `heat_channel` 导致 desktop_cs 场次整块 score_market_heat 抛
+    TypeError 被吞成「⚠️ [补挂市热]」并连带方向锁重建失败。
+    """
     rec = rec if isinstance(rec, dict) else {}
     ch = str(rec.get('correct_score_channel') or '')
     markets = _as_dict(rec.get('markets'))
@@ -30164,9 +31348,12 @@ def _cs_heat_labels(rec):
     src = str(slot.get('heat_source') or '')
     if ch in ('', 'mobile') and (not src or 'okooo_mobile_cs_' in src):
         return {}
+    # 桌面 /cs/ 波胆页（27 家公司均值）是合法市均，标签用 okooo_cs。
+    # 被禁的是「桌面分析页 / pool31」，它们的 src/ch 会带 pool31 或 desktop_api。
+    legal_ch = 'mobile' if ch == 'mobile' else 'okooo_cs'
     return {
         'heat_source': src or 'okooo_cs_books_avg',
-        'heat_channel': ch or 'okooo_cs',
+        'channel': legal_ch,
     }
 
 
@@ -30648,15 +31835,36 @@ def rebuild_pipeline_bundle_from_history(rec, fid='', cn_name=''):
                                 'correct_score_site_avg': (rec.get('correct_score_site_avg') if isinstance(rec, dict) else None),
                                 'markets': (rec.get('markets') if isinstance(rec, dict) else None)
                                 or (rec.get('okooo_markets') if isinstance(rec, dict) else None),
+                                'cs31_provenance': (rec.get('cs31_provenance') if isinstance(rec, dict) else None),
                             },
                             _flat,
                         )
+                        # 记录里的 page_avg 已是 merge_cs31 的 31 键合并值，
+                        # 那 9 项数值上分不出来自竞彩，出处必须显式传进来；
+                        # 老记录没有出处表时由 helper 从 books_avg 反推（并标注）。
+                        _t31_prov = deepseek_analyzer.resolve_cs31_provenance(rec, ds_payload)
                         _pack31 = deepseek_analyzer.build_theo_mkt_31_pack(
                             _flat,
                             home=str(ds_payload.get('home') or ''),
                             away=str(ds_payload.get('away') or ''),
                             match_name=str(ds_payload.get('match') or match_name or ''),
                             extra_market_odds=_extra_mkt,
+                            market_provenance=_t31_prov.get('provenance') or None,
+                            market_provenance_source=_t31_prov.get('source') or '',
+                            # 竞彩官方31比分是那 9 个市均覆盖不到的选项唯一的合法来源。
+                            # 这个补表点曾漏传，于是重建出来的表恒为 25/31。
+                            jc_score_odds=(
+                                (rec.get('jc_score_odds') if isinstance(rec, dict) else None)
+                                or ds_payload.get('jc_score_odds')
+                                or (rec.get('correct_score_jc_official') if isinstance(rec, dict) else None)
+                                or {}
+                            ),
+                            lam_home=(
+                                (rec.get('lam_home') or rec.get('lam_h')) if isinstance(rec, dict) else None
+                            ) or ds_payload.get('lam_home') or ds_payload.get('lam_h'),
+                            lam_away=(
+                                (rec.get('lam_away') or rec.get('lam_a')) if isinstance(rec, dict) else None
+                            ) or ds_payload.get('lam_away') or ds_payload.get('lam_a'),
                         )
                         ds_payload['theo_mkt_31_pack'] = _pack31
                         ds_payload['system_theo_mkt_prejudge'] = _pack31.get('system_prejudge') or {}
@@ -30924,6 +32132,54 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
             return {'complete': False, 'missing': ['analyzer_missing']}
         return _stage2_analyzer.audit_theo_mkt_31_rows(rows)
 
+    def _rebuild_theo_mkt_pack(rec_obj, payload, label=''):
+        """用「当前记录里的市均 + 竞彩31比分 + 冻结λ」重建31全表。
+
+        审计对象必须是重建后的新表；拿待替换的旧空表去审计，
+        只会反复得到「缺 31 项」，重抓永远不可能成功。
+        """
+        if _stage2_analyzer is None:
+            return {}
+        rec_obj = rec_obj if isinstance(rec_obj, dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        flat: list[dict[str, Any]] = []
+        dfr = payload.get('direction_full_rows')
+        if isinstance(dfr, dict):
+            for lab in ('胜', '平', '负'):
+                flat.extend([r for r in (dfr.get(lab) or []) if isinstance(r, dict)])
+        if not flat:
+            flat = [r for r in (payload.get('jc_cross_rows') or []) if isinstance(r, dict)]
+        try:
+            extra = _stage2_analyzer._collect_legal_cs_market_odds(
+                {
+                    **payload,
+                    'correct_score_page_avg': rec_obj.get('correct_score_page_avg'),
+                    'correct_score_books_avg': rec_obj.get('correct_score_books_avg'),
+                    'correct_score_site_avg': rec_obj.get('correct_score_site_avg'),
+                    'markets': rec_obj.get('markets') or rec_obj.get('okooo_markets'),
+                    'cs31_provenance': rec_obj.get('cs31_provenance') or payload.get('cs31_provenance'),
+                },
+                flat,
+            )
+        except Exception as _extra_err:  # noqa: BLE001 - 市均反推失败只是少了补项
+            print(f"   ⚠️ [31全表] 市均反推失败({label}): {type(_extra_err).__name__}")
+            extra = {}
+        _stage2_prov = _stage2_analyzer.resolve_cs31_provenance(rec_obj, payload)
+        return _stage2_analyzer.build_theo_mkt_31_pack(
+            flat,
+            home=str(payload.get('home') or ''),
+            away=str(payload.get('away') or ''),
+            match_name=str(payload.get('match') or label or ''),
+            extra_market_odds=extra,
+            market_provenance=_stage2_prov.get('provenance') or None,
+            market_provenance_source=_stage2_prov.get('source') or '',
+            jc_score_odds=rec_obj.get('jc_score_odds') or payload.get('jc_score_odds') or {},
+            lam_home=(rec_obj.get('lam_home') or rec_obj.get('lam_h')
+                      or payload.get('lam_home') or payload.get('lam_h')),
+            lam_away=(rec_obj.get('lam_away') or rec_obj.get('lam_a')
+                      or payload.get('lam_away') or payload.get('lam_a')),
+        )
+
     _cs31_audit = _cs31_audit_of(_ds_payload)
     if not _cs31_audit.get('complete') and isinstance(rec, dict):
         _miss0 = '、'.join(_cs31_audit.get('missing') or [])
@@ -30947,19 +32203,40 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                         'correct_score_books_avg': rec.get('correct_score_books_avg'),
                         'correct_score_site_avg': rec.get('correct_score_site_avg'),
                         'markets': rec.get('markets') or rec.get('okooo_markets'),
+                        'cs31_provenance': rec.get('cs31_provenance') or _ds_payload.get('cs31_provenance'),
                     },
                     _flat0,
                 )
-            if _flat0 or _extra0:
+            if _flat0 or _extra0 or rec.get('jc_score_odds') or _ds_payload.get('lam_home'):
                 if _stage2_analyzer is None:
                     _pack_fix = {}
                 else:
+                    # λ 已冻结、JC 31 比分赔率已落盘：两者都传给补表器，
+                    # 这样「理论概率缺31项 / 市场概率缺9项」不会被永久固化。
+                    _pack_fix_prov = _stage2_analyzer.resolve_cs31_provenance(rec, _ds_payload)
                     _pack_fix = _stage2_analyzer.build_theo_mkt_31_pack(
                         _flat0,
                         home=str(_ds_payload.get('home') or ''),
                         away=str(_ds_payload.get('away') or ''),
                         match_name=str(_ds_payload.get('match') or cn_name or ''),
                         extra_market_odds=_extra0,
+                        market_provenance=(
+                            _pack_fix_prov.get('provenance') or None
+                        ),
+                        market_provenance_source=_pack_fix_prov.get('source') or '',
+                        jc_score_odds=(
+                            rec.get('jc_score_odds')
+                            or _ds_payload.get('jc_score_odds')
+                            or {}
+                        ),
+                        lam_home=(
+                            rec.get('lam_home') or rec.get('lam_h')
+                            or _ds_payload.get('lam_home') or _ds_payload.get('lam_h')
+                        ),
+                        lam_away=(
+                            rec.get('lam_away') or rec.get('lam_a')
+                            or _ds_payload.get('lam_away') or _ds_payload.get('lam_a')
+                        ),
                     )
                 _ds_payload['theo_mkt_31_pack'] = _pack_fix
                 if isinstance(bundle.get('ds_payload'), dict):
@@ -30985,6 +32262,13 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                 if isinstance(bundle, dict) and isinstance(bundle.get('ds_payload'), dict):
                     history[fid]['pipeline_report_bundle'] = bundle
                     _ds_payload = dict(bundle.get('ds_payload') or {})
+                    # 关键：重抓后必须先用新数据把 31 全表重建出来再审计。
+                    # 直接审计重建后仍为空的旧 pack，等于永远证明「缺 31 项」，
+                    # 重试一次都不可能成功，比赛就被无声丢掉。
+                    _pack_after = _rebuild_theo_mkt_pack(rec, _ds_payload, cn_name or fid)
+                    if _pack_after:
+                        _ds_payload['theo_mkt_31_pack'] = _pack_after
+                        history[fid]['pipeline_report_bundle']['ds_payload']['theo_mkt_31_pack'] = _pack_after
                     _cs31_audit = _cs31_audit_of(_ds_payload)
             try:
                 save_json(HISTORY_FILE, history)
@@ -30994,10 +32278,19 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
             print(f"   ⚠️ [31全表] 重抓失败: {_re31}")
     if not _cs31_audit.get('complete'):
         _miss = '、'.join(_cs31_audit.get('missing') or [])
-        print(f"   ⛔ [31全表未齐] {cn_name or fid} 跳过系统分析。缺：{_miss}")
+        # 说清楚「哪一项 + 哪个源没给」：市均、竞彩31比分、冻结λ 三源逐条点名。
+        _src_state = []
+        _src_state.append('市均=' + ('有' if (rec.get('correct_score_page_avg') or rec.get('correct_score_books_avg')) else '无'))
+        _src_state.append('竞彩31比分=' + (f"{len(rec.get('jc_score_odds') or {})}项" if rec.get('jc_score_odds') else '无'))
+        _has_lam = bool(rec.get('lam_home') or rec.get('lam_h') or rec.get('lam_away') or rec.get('lam_a'))
+        _src_state.append('冻结λ=' + ('有' if _has_lam else '无'))
+        print(
+            f"   ⛔ [31全表未齐] {cn_name or fid} 跳过系统分析。缺：{_miss}｜源：{' '.join(_src_state)}"
+        )
         if isinstance(rec, dict):
             rec['cs31_analysis_blocked'] = True
             rec['cs31_missing'] = list(_cs31_audit.get('missing') or [])
+            rec['cs31_block_sources'] = _src_state
             history[fid] = rec
             try:
                 save_json(HISTORY_FILE, history)
@@ -32113,6 +33406,14 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 ) or {}
                 if data_okooo:
                     print(f"      ✅ [澳客网] 成功抓取 okooo_match_id={okooo_match_id}")
+                    # 同一份抓取结果必须落进 rec：研判闸门（ensure_dual_source_before_judgment）
+                    # 读的是 rec，而这里之前只放在局部 data_okooo 里，
+                    # 于是「抓取末 cs_n=25 ready=True」与「研判闸门 cs_n=0 channel=-」
+                    # 描述的是同一场比赛的两个不同对象。canonical 包只此一份。
+                    try:
+                        _merge_okooo_detail_into_rec(rec, data_okooo)
+                    except Exception as _rec_merge_err:  # noqa: BLE001 - 落盘失败不阻断抓取
+                        print(f"      ⚠️ [澳客] 写入 rec 失败: {type(_rec_merge_err).__name__}: {_rec_merge_err}")
                     if data_okooo.get('ah_current_line_okooo'):
                         try:
                             ah_val = float(data_okooo['ah_current_line_okooo'])
@@ -32268,19 +33569,19 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                     f"mobile_cs_entered={_dual_gate.get('mobile_cs_entered')} "
                     f"cs_n={_dual_gate.get('cs_books_n')} "
                     f"kept={_dual_gate.get('kept_mobile')} "
-                    f"fill500={_dual_gate.get('filled_from_500')} "
-                    f"reason={_dual_gate.get('reason')}"
+                    f"fill500={_dual_gate.get('filled_from_500')}"
                 )
             else:
                 print(
                     f"      ⚠️ [双源互补·研判闸门] ready={_dual_gate.get('ready')} "
                     f"mobile_cs_entered={_dual_gate.get('mobile_cs_entered')} "
-                    f"cs_n={_dual_gate.get('cs_books_n')} reason={_dual_gate.get('reason')}"
+                    f"cs_n={_dual_gate.get('cs_books_n')} "
+                    f"reason={_dual_gate.get('reason') or '未给出原因'}"
                 )
             if not _dual_gate.get('ready'):
                 print("      ⛔ [双源互补] 未就绪：后续系统仍可记未形成，但不得用空整合包冒充手机市均")
         except Exception as _dual_gate_e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"      ⚠️ [双源互补·研判闸门] {_dual_gate_e}")
+            print(f"      ⚠️ [双源互补·研判闸门] 异常: {type(_dual_gate_e).__name__}: {_dual_gate_e}")
 
         # ===== 【】必发交易盈亏数据抓取 =====
         betfair_data = {}
@@ -33061,8 +34362,18 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
         # 步骤3：融合概率排序（ML融合优先，失败回退传统概率矩阵）
         ranked_scores = build_probability_rankings(prob_dict)
         # 提前构建对外31池视图，确保后续历史记录组装时变量已存在。
+        # 三视图必须与 31 全表审计读同一张表：把 jc31 与冻结 λ 一起传进去，
+        # 否则 theory 只来自已形成行、market 只有市均，两边算出的「31」又不一样。
         _score_pool31_views = build_score_pool31_views(
-            ranked_scores, odds_correct_score=odds_correct_score, synth_market=locals().get('_synth_market', {})
+            ranked_scores, odds_correct_score=odds_correct_score,
+            synth_market=locals().get('_synth_market', {}),
+            prob_dict=locals().get('prob_dict') if isinstance(locals().get('prob_dict'), dict) else None,
+            jc_score_odds=(
+                (rec.get('jc_score_odds') if isinstance(rec, dict) else None)
+                or locals().get('jc_score_odds')
+            ),
+            lam_home=locals().get('lam_h') if locals().get('lam_h') is not None else locals().get('lam_home'),
+            lam_away=locals().get('lam_a') if locals().get('lam_a') is not None else locals().get('lam_away'),
         )
         _market31_sorted = _score_pool31_views.get('market_desc', [])
         _theory31_sorted = _score_pool31_views.get('theory_desc', [])
@@ -34708,10 +36019,22 @@ trap_signal: true/false（是否存在陷阱信号）
         )
 
         # 【改进】DTI异常数据预警（阈值收紧至0.05）
+        # 低 DTI 有两种来源：真的市场异常，或者上游输入本来就空（盘口/λ/冷门分全缺）。
+        # 后者必须先说清楚是缺输入，否则每次空场都像市场异动。
         dti_anomaly_warning = ""
         if dti > 0 and dti <= DTI_ANOMALY:
-            dti_anomaly_warning = f"⚠️DTI异常低值预警(DTI={dti}≤{DTI_ANOMALY})：数据可能异常，建议人工复核"
-            print(f"   ⚠️ [DTI异常预警] {cn_name} DTI={dti} ≤ {DTI_ANOMALY}，数据可能异常")
+            _dti_missing = []
+            if asian_handicap is None:
+                _dti_missing.append('亚指盘口')
+            if not cold_total:
+                _dti_missing.append('冷门分')
+            if _lam_h_pass is None or _lam_a_pass is None:
+                _dti_missing.append('λ')
+            if not ranked_scores:
+                _dti_missing.append('比分池')
+            _dti_note = explain_low_dti(dti, _dti_missing, DTI_ANOMALY)
+            dti_anomaly_warning = _dti_note['warning']
+            print(f"   ⚠️ [DTI低值] {cn_name} DTI={dti} ≤ {DTI_ANOMALY}｜{_dti_note['cause']}")
 
         # 【自动权重调整】DTI自适应阈值，根据近有7日方向命中率动态调整
         _dti_strong, _dti_medium, _dti_light = get_adaptive_dti_thresholds()
@@ -35359,8 +36682,18 @@ Top5比分及概率：
 
         _ventropy_quant_result = {}
         # 使用此阶段已完成的赔率/合成市场数据刷新最终31池三视图。
+        # 三视图必须与 31 全表审计读同一张表：把 jc31 与冻结 λ 一起传进去，
+        # 否则 theory 只来自已形成行、market 只有市均，两边算出的「31」又不一样。
         _score_pool31_views = build_score_pool31_views(
-            ranked_scores, odds_correct_score=odds_correct_score, synth_market=locals().get('_synth_market', {})
+            ranked_scores, odds_correct_score=odds_correct_score,
+            synth_market=locals().get('_synth_market', {}),
+            prob_dict=locals().get('prob_dict') if isinstance(locals().get('prob_dict'), dict) else None,
+            jc_score_odds=(
+                (rec.get('jc_score_odds') if isinstance(rec, dict) else None)
+                or locals().get('jc_score_odds')
+            ),
+            lam_home=locals().get('lam_h') if locals().get('lam_h') is not None else locals().get('lam_home'),
+            lam_away=locals().get('lam_a') if locals().get('lam_a') is not None else locals().get('lam_away'),
         )
         _market31_sorted = _score_pool31_views.get('market_desc', [])
         _theory31_sorted = _score_pool31_views.get('theory_desc', [])
@@ -35376,12 +36709,18 @@ Top5比分及概率：
                 _dual_gate2 = ensure_dual_source_before_judgment(rec, extra_sources=_extra_end)
                 _dual_pack = rec.get('dual_source_facts') if isinstance(rec.get('dual_source_facts'), dict) else {}
                 _cs_ent = ((_dual_pack.get('correct_score') or {}) if isinstance(_dual_pack.get('correct_score'), dict) else {})
+                # cs_n / books_in_pack 必须是同一个数：都取自闸门，
+                # 并点名闸门读的是哪个落盘键，避免与上一行 [澳客比分] books=N 互相矛盾。
+                _pack_n = len(_cs_ent.get('books_avg') or {}) if _cs_ent else _dual_gate2.get('cs_books_n', 0)
+                _icon = '✅' if _dual_gate2.get('ready') else '⚠️'
                 print(
-                    f"      ✅ [双源互补·落盘复核] ready={_dual_gate2.get('ready')} "
+                    f"      {_icon} [双源互补·落盘复核] ready={_dual_gate2.get('ready')} "
                     f"mobile_cs_entered={_dual_gate2.get('mobile_cs_entered')} "
                     f"cs_n={_dual_gate2.get('cs_books_n')} "
-                    f"books_in_pack={len(_cs_ent.get('books_avg') or {})} "
+                    f"books_in_pack={_pack_n} "
+                    f"books_from={_dual_gate2.get('books_from') or _cs_ent.get('books_from') or '-'} "
                     f"kept={_dual_gate2.get('kept_mobile')}"
+                    + (f" reason={_dual_gate2.get('reason')}" if not _dual_gate2.get('ready') else '')
                 )
                 _db = str(_dual_pack.get('judgment_brief') or '')
                 if _db:
@@ -35395,6 +36734,11 @@ Top5比分及概率：
                         print(
                             f"      ✅ [六盘口×市均清算v2] {_sv2.get('ledger', {}).get('data_status')} "
                             f"gap={(_sv2.get('ledger') or {}).get('top_cs_gap_option')}"
+                        )
+                    else:
+                        print(
+                            "      ⚠️ [六盘口×市均清算v2] 未形成 "
+                            f"reason={(_sv2 or {}).get('block_reason') or 'missing_inputs'}"
                         )
                 except Exception as _sv2_e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                     print(f"      ⚠️ [六盘口×市均清算v2] {_sv2_e}")
@@ -37695,15 +39039,42 @@ Top5比分及概率：
 
         # 【新版对外输出】不再以15池作为比分展示池，统一使用31池三视图。
         _score_pool31_views = build_score_pool31_views(
-            ranked_scores, odds_correct_score=odds_correct_score, synth_market=_synth_market
+            ranked_scores, odds_correct_score=odds_correct_score, synth_market=_synth_market,
+            prob_dict=prob_dict if 'prob_dict' in locals() and isinstance(prob_dict, dict) else None,
+            jc_score_odds=(
+                (rec.get('jc_score_odds') if isinstance(rec, dict) else None)
+                or locals().get('jc_score_odds')
+            ),
+            lam_home=locals().get('lam_h_dyn') if locals().get('lam_h_dyn') is not None else locals().get('lam_h'),
+            lam_away=locals().get('lam_a_dyn') if locals().get('lam_a_dyn') is not None else locals().get('lam_a'),
         )
         _market31_sorted = _score_pool31_views.get('market_desc', [])
         _theory31_sorted = _score_pool31_views.get('theory_desc', [])
         _dual31_aligned = _score_pool31_views.get('dual_alignment', [])
-        print(
-            f"   📊 [31池三视图] 市场/理论/双序对齐={_score_pool31_views.get('pool_size', 0)}项 | "
-            f"正向跃升平均净位值={_score_pool31_views.get('average_positive_net_rank', 0.0):.2f}"
-        )
+        # 三视图的「项数」必须与31全表审计口径一致：审计说缺几项，这里就不能报满31。
+        _pool31_n = int(_score_pool31_views.get('pool_size', 0) or 0)
+        _audit_local: dict[str, Any] = {}
+        try:
+            # 审计三视图自己的 rows：它与 build_theo_mkt_31_pack 同用竞彩31项与
+            # score/theory/market 三个键，所以这里的「31项」和审计的「31项」是同一张表。
+            _pool31_rows_src = _score_pool31_views.get('rows') or []
+            _p31_analyzer = _ensure_deepseek_analyzer()
+            if _p31_analyzer is not None:
+                _audit_local = _p31_analyzer.audit_theo_mkt_31_rows(_pool31_rows_src)
+        except Exception:  # noqa: BLE001 - 计数对齐失败不影响主流程
+            _audit_local = {}
+        if _audit_local and not _audit_local.get('complete'):
+            print(
+                f"   📊 [31池三视图] 市场/理论/双序对齐={_pool31_n}项（31全表仅形成"
+                f"{int(_audit_local.get('formed') or 0)}/{int(_audit_local.get('rows') or 31)}，"
+                f"未齐故不作满额结论）| "
+                f"正向跃升平均净位值={_score_pool31_views.get('average_positive_net_rank', 0.0):.2f}"
+            )
+        else:
+            print(
+                f"   📊 [31池三视图] 市场/理论/双序对齐={_pool31_n}项 | "
+                f"正向跃升平均净位值={_score_pool31_views.get('average_positive_net_rank', 0.0):.2f}"
+            )
 
         # Shannon信息熵场态：替换旧固定60/40权重，并供TG报告直接使用。
         _shannon_entropy_result = {}
@@ -38580,11 +39951,38 @@ Top5比分及概率：
                     print(f"   ⚠️ [视角7] build_tg_view返回空(matrix长度={len(_rtm_tg_result.get('matrix',[]))})")
                     _rank_tracking_text = "🧭【视角7：顺位追踪矩阵与拓扑过滤器】\n  ⚠️ build_tg_view返回空"
             else:
-                _rtm_err_msg = _rtm_tg_result.get('error', '未知') if isinstance(_rtm_tg_result, dict) else '结果为None'
-                print(f"   ⚠️ [视角7] RankTrackingMatrix.run失败: {_rtm_err_msg}, pool15_enriched长度={len(_pool15_enriched)}")
-                _rank_tracking_text = f"🧭【视角7：顺位追踪矩阵与拓扑过滤器】\n  ⚠️ 矩阵生成失败: {_rtm_err_msg}"
+                _rtm_pool = _pool15_enriched if isinstance(_pool15_enriched, list) else []
+                _filled_n = sum(
+                    1 for item in _rtm_pool
+                    if isinstance(item, dict)
+                    and any(item.get(k) not in (None, '', 0) for k in ('theory', 'market', 'ibi'))
+                )
+                if _rtm_tg_result is None:
+                    _rtm_err_msg = 'run返回None（未抛异常但未产出结果）'
+                elif not isinstance(_rtm_tg_result, dict):
+                    _rtm_err_msg = f'run返回类型异常: {type(_rtm_tg_result).__name__}'
+                else:
+                    _rtm_err_msg = str(_rtm_tg_result.get('error') or '').strip()
+                    if not _rtm_err_msg:
+                        if not _rtm_pool:
+                            _rtm_err_msg = 'pool15_enriched 为空（上游未生成15池）'
+                        elif not _filled_n:
+                            _rtm_err_msg = (
+                                f'pool15_enriched 有{len(_rtm_pool)}项但 theory/market/ibi 全为空'
+                                '（比赛未开盘或抓取未回填）'
+                            )
+                        else:
+                            _rtm_err_msg = (
+                                f'矩阵计算未产出（可计算项{_filled_n}/{len(_rtm_pool)}，'
+                                '四维顺位不足）'
+                            )
+                print(
+                    f"   ⚠️ [视角7] RankTrackingMatrix.run 未产出: {_rtm_err_msg}, "
+                    f"pool15_enriched长度={len(_rtm_pool)}, 有数值项={_filled_n}"
+                )
+                _rank_tracking_text = f"🧭【视角7：顺位追踪矩阵与拓扑过滤器】\n  ⚠️ 矩阵未形成: {_rtm_err_msg}"
         except Exception as _rtm_tg_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   ⚠️ [视角7] 异常: {_rtm_tg_err}")
+            print(f"   ⚠️ [视角7] 异常: {type(_rtm_tg_err).__name__}: {_rtm_tg_err}")
             _rank_tracking_text = f"🧭【视角7：顺位追踪矩阵与拓扑过滤器】\n  ⚠️ 视角生成异常: {_rtm_tg_err}"
 
         # 6. 组装完整图谱（4个视角 + 分差分组 + 相邻比分分析）
@@ -38681,21 +40079,47 @@ Top5比分及概率：
         # 理论概率来自MLE泊松λ矩阵，市场概率来自竞彩波胆赔率去水归一化，
         # 偏差=理论-市场（正=市场低估可能有价值，负=市场高估）。
         try:
+            # 图表的市场概率：市均优先，竞彩31比分赔率补市均缺的项。
+            # 只在图表这一层合并，绝不写回 odds_correct_score / mkt_minus_jc
+            # ——那两个必须保持「市均 vs 竞彩」两个不同口径。
+            _chart_base = odds_correct_score if 'odds_correct_score' in locals() and isinstance(odds_correct_score, dict) else {}
+            _chart_jc = rec.get('jc_score_odds') if isinstance(rec, dict) and isinstance(rec.get('jc_score_odds'), dict) else {}
+            _chart_market: dict[str, Any] = {}
+            for _mk, _mv in _chart_jc.items():
+                _chart_market[str(_mk).replace('：', '-').replace(':', '-').strip()] = _mv
+            for _mk, _mv in _chart_base.items():
+                _chart_market[str(_mk).replace('：', '-').replace(':', '-').strip()] = _mv
             _chart31_match_data = {
                 'lam_h': float(lam_h) if 'lam_h' in locals() and lam_h is not None else None,
                 'lam_a': float(lam_a) if 'lam_a' in locals() and lam_a is not None else None,
                 'lambda_home': float(lam_h_dyn) if 'lam_h_dyn' in locals() and lam_h_dyn is not None else None,
                 'lambda_away': float(lam_a_dyn) if 'lam_a_dyn' in locals() and lam_a_dyn is not None else None,
-                'odds_correct_score': odds_correct_score if 'odds_correct_score' in locals() and isinstance(odds_correct_score, dict) else {},
+                'odds_correct_score': _chart_market,
                 'prob_dict': prob_dict if 'prob_dict' in locals() and isinstance(prob_dict, dict) else None,
                 'synth_market': _synth_market if '_synth_market' in locals() and isinstance(_synth_market, dict) else {},
+                'market_source_note': (
+                    '市均+竞彩31比分' if _chart_base and _chart_jc
+                    else ('竞彩31比分' if _chart_jc else ('市均' if _chart_base else ''))
+                ),
             }
             _chart31_text = generate_31pool_theory_vs_market_chart(_chart31_match_data)
             if _chart31_text and _chart31_text.strip():
                 _final_sections.append(_chart31_text)
-                print("   📊 [31池图谱] 理论vs市场概率对比图谱已生成并注入TG报告")
+                _c31 = chart31_pool_verdict(_chart31_text)
+                if _c31['status'] == 'full':
+                    print(
+                        f"   📊 [31池图谱] 理论vs市场概率对比图谱已生成并注入TG报告"
+                        f"（{_c31['rows']}项）"
+                    )
+                elif _c31['status'] == 'theory_only':
+                    print(
+                        f"   ℹ️ [31池图谱] 已注入理论概率{_c31['rows']}行，"
+                        f"但市场概率全为0（{_c31['note']}）"
+                    )
+                else:
+                    print(f"   ℹ️ [31池图谱] 未生成对比行，只注入降级说明: {_c31['note'][:80]}")
         except Exception as _chart31_tg_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   ⚠️ [31池图谱] TG报告生成异常(已降级): {_chart31_tg_err}")
+            print(f"   ⚠️ [31池图谱] TG报告生成异常(已降级): {type(_chart31_tg_err).__name__}: {_chart31_tg_err}")
         # L2.1: 15池比分概率对比图谱（理论vs市场，紧跟31池图谱之后）
         if _layer_appendix:
             _final_sections.append(_layer_appendix)
@@ -44098,10 +45522,14 @@ def listen():
                 continue
             listen.__dict__['_tg_poll_fail_count'] = 0
             if _last_status == 409:
+                # 409 = 另一个 getUpdates 消费者。这一条每个进程只提示一次，
+                # 之后按阶梯退避，避免控制台被同一句刷屏。
                 if not _conflict_logged:
                     print("   [TG] 指令通道被另一个程序占用，本窗口收不到分析。请只留一个战情室窗口。", flush=True)
                     _conflict_logged = True
-                time.sleep(5)
+                _conflict_hits = int(getattr(listen, '_tg_conflict_hits', 0) or 0) + 1
+                listen.__dict__['_tg_conflict_hits'] = _conflict_hits
+                time.sleep(min(60, 5 * _conflict_hits))
                 continue
             res = _tg_resp.json() if _tg_resp is not None and _last_status == 200 else {'ok': False, 'result': []}
             if res.get('ok') and res.get('result'):

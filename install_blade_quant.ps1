@@ -29,8 +29,8 @@ try {
 # 程序和向导都固定到同一个 commit（$PinCommit），受分支后续变动影响为零。
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
-# 7011827 = 2834fe6(λ guard/TG chat_id/占位符密钥/UTF-8) + c9e5234(安装路径测试) 的合并点
-$PinCommit = '70118275fcd9862c82f7f29689ad2c4d14e1f554'
+# 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
+$PinCommit = '97f1a13ffb1feeaa8b14f40be628117dea92fbdf'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
@@ -368,6 +368,98 @@ if ($null -ne $parseErrors -and $parseErrors.Count -gt 0) {
     Fail "向导文件第 $($first.Extent.StartLineNumber) 行有语法错误：$($first.Message)"
 }
 Write-Ok "configure_blade_quant.ps1 解析通过"
+
+# ---------- 8b. 知识库 ----------
+# 技能匹配引擎需要 knowledge_base\statistical_skills.json 与 strategy_skills.json。
+# 没有就只是「本场不激活技能」，但正常安装不该是这个状态，所以在这里补种。
+# 已存在且能解析、有内容的 JSON 一个字节都不动（用户可能自己改过技能）。
+Write-Step "知识库"
+$KbDir = Join-Path $InstallDir 'knowledge_base'
+if (-not (Test-Path $KbDir)) {
+    New-Item -ItemType Directory -Path $KbDir -Force | Out-Null
+}
+$KbHelper = Join-Path $InstallDir '.kb_seed_helper.py'
+$KbScript = @'
+"""Seed knowledge_base from the app's built-in skills without importing the app.
+
+Reading `_SEED_SKILLS` with ast keeps this offline: importing app_v84_hermes
+would boot Streamlit and print its warnings into the installer output.
+"""
+import ast
+import json
+import os
+import sys
+
+install_dir, kb_dir = sys.argv[1], sys.argv[2]
+app_path = os.path.join(install_dir, 'app_v84_hermes.py')
+
+seeds = {}
+try:
+    with open(app_path, 'r', encoding='utf-8') as handle:
+        tree = ast.parse(handle.read(), filename=app_path)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or node.name != 'SkillMatchingEngine':
+            continue
+        for item in node.body:
+            targets = []
+            if isinstance(item, ast.Assign):
+                targets = item.targets
+            elif isinstance(item, ast.AnnAssign):
+                targets = [item.target]
+            if not any(isinstance(t, ast.Name) and t.id == '_SEED_SKILLS' for t in targets):
+                continue
+            value = item.value
+            if isinstance(value, ast.Constant):
+                seeds = json.loads(value.value)
+            elif isinstance(value, ast.Dict):
+                seeds = ast.literal_eval(value)
+            break
+        break
+except (OSError, SyntaxError, ValueError) as exc:
+    sys.stderr.write('seed_read_failed:' + type(exc).__name__ + ':' + str(exc)[:160] + '\n')
+
+results = []
+for name in ('statistical_skills.json', 'strategy_skills.json'):
+    path = os.path.join(kb_dir, name)
+    skills = seeds.get(name) or []
+    ok = False
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            ok = isinstance(data, dict) and isinstance(data.get('skills'), list) and bool(data['skills'])
+        except (OSError, ValueError):
+            ok = False
+    if ok:
+        continue
+    if not skills:
+        results.append(name + '(无内置技能)')
+        continue
+    try:
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump({'schema_version': 1, 'kind': name.replace('.json', ''),
+                       'note': '由安装脚本补种；可直接编辑，重启生效。', 'skills': skills},
+                      handle, ensure_ascii=False, indent=2)
+        results.append(name + '(已补种)')
+    except OSError as exc:
+        results.append(name + '(写入失败:' + type(exc).__name__ + ')')
+print('KB_SEED:' + ('; '.join(results) if results else 'ok'))
+
+'@
+[System.IO.File]::WriteAllText($KbHelper, $KbScript, (New-Object System.Text.UTF8Encoding($false)))
+$KbOutput = & $VenvPython $KbHelper $InstallDir $KbDir 2>&1
+$KbCode = $LASTEXITCODE
+Remove-Item $KbHelper -Force -ErrorAction SilentlyContinue
+# 辅助脚本只回一行，以 KB_SEED: 开头，避免和程序自身的输出混在一起。
+$KbText = ("$KbOutput" -split "`n" | Where-Object { $_ -match 'KB_SEED:' } | Select-Object -Last 1)
+if ($KbText) { $KbText = $KbText.Trim() } else { $KbText = '' }
+if ($KbCode -eq 0 -and $KbText -eq 'KB_SEED:ok') {
+    Write-Ok "knowledge_base 已就绪（statistical_skills.json + strategy_skills.json 已存在且非空）"
+} elseif ($KbCode -eq 0 -and $KbText) {
+    Write-Ok ("knowledge_base " + $KbText.Substring('KB_SEED:'.Length))
+} else {
+    Write-Warn "knowledge_base: $KbOutput（程序仍会以「本场未激活技能」继续）"
+}
 
 # ---------- 9. 启动脚本 ----------
 # 只有检测到本机代理端口真的在监听时才写默认代理，避免 Clash 没开时拖慢抓取。
