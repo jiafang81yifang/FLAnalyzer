@@ -32238,6 +32238,108 @@ def _scrub_non_finite_text(text):
         )
     return out
 
+def _pack_absent_state(rec, bundle, rb_err=''):
+    """研判包缺失时，到底是哪一种缺失。三种状态，三种行动指令。
+
+    1. `payload_broken` —— bundle 在，但 `ds_payload` 形状坏：**程序缺陷**，
+       不该叫用户做任何事，照发确定性正文并披露「本节为确定性推导而非模型产出」。
+    2. `rebuild_failed` —— 记录里有精算结果（predicted_score / pipeline_scrape_done），
+       但 rebuild 抛了异常：数据在、重建坏了，异常消息是唯一诊断线索，必须留住。
+    3. `no_scrape_facts` —— 三者全空：这条记录本来就没有阶段1结果。此时
+       「无法研判」是事实，但仍要发一份带赛事标识与原因的报告。
+    """
+    rec = rec if isinstance(rec, dict) else {}
+    has_bundle = isinstance(bundle, dict)
+    has_payload = has_bundle and isinstance(bundle.get('ds_payload'), dict)
+    has_facts = bool(rec.get('predicted_score') or rec.get('pipeline_scrape_done'))
+    if has_bundle and not has_payload:
+        return 'payload_broken'
+    if has_facts:
+        return 'rebuild_failed'
+    if not has_bundle and not has_facts:
+        return 'no_scrape_facts'
+    return 'rebuild_failed' if rb_err else 'no_scrape_facts'
+
+
+def _emit_pack_absent_report(*, rec, bundle, cn_name='', fid='', rb_err=''):
+    """研判包缺失时的完整正文，而不是一行告警。
+
+    契约：**一定发出去，一定带赛事标识、缺失原因、以及正确的下一步**。
+    三种状态各自的行动指令见 `_pack_absent_state`。
+    """
+    global _TG_FORCE_SEND
+    rec = rec if isinstance(rec, dict) else {}
+    state = _pack_absent_state(rec, bundle, rb_err)
+    match = str(cn_name or rec.get('match') or rec.get('cn_name') or fid or '未知赛事')
+    order = str(rec.get('order') or rec.get('no') or rec.get('local_id') or '-')
+    order_note = f'（order={order}）'
+
+    if state == 'payload_broken':
+        banner = (
+            '🧩 研判包结构异常：记录里的 pipeline_report_bundle 存在，但 ds_payload 不是字典。'
+            '本节为确定性推导而非模型产出。'
+        )
+        action = '下一步：无需重跑阶段1。这是程序缺陷，已记录在案（bundle_payload_broken）。'
+        reason = '研判包结构异常（ds_payload 形状坏）'
+    elif state == 'rebuild_failed':
+        banner = (
+            '🧩 研判包重建失败：记录里已有阶段1精算结果，但重建 bundle 时抛异常。'
+            f'本节为确定性推导而非模型产出。异常：{rb_err or "未捕获到异常消息"}'
+        )
+        action = '下一步：数据在，不必重跑阶段1；按上面这条异常修 rebuild。'
+        reason = f'bundle 重建失败：{rb_err or "未捕获到异常消息"}'
+    else:
+        banner = (
+            '🧩 该记录没有阶段1结果：既无 pipeline_report_bundle，也没有预测比分或抓取完成标记。'
+            '本节为确定性推导而非模型产出。'
+        )
+        action = (
+            '下一步：这条记录通常来自手工写入或异常中断，不是正常 auto_run 的产物；'
+            '若要研判，需要先有阶段1结果。'
+        )
+        reason = '该记录缺少阶段1结果（无 bundle、无预测比分、无抓取完成标记）'
+
+    lines = [f'📌 {match} {order_note}'.strip(), '', banner, '',
+             '📈【31项市均×竞彩对比表】',
+             f'  未形成（{reason}）；本场没有可用的市均/竞彩赔率，故 31 项无法成表。',
+             '',
+             '🧠【DeepSeek 数据分析研判报告】']
+    lines.append(f'  ⚠️ 缺失原因：{reason}')
+    try:
+        lines.extend(_deterministic_judgment_lines(
+            {}, rec=rec, payload={}, bundle=bundle if isinstance(bundle, dict) else {},
+            error=reason, cn_name=match,
+        )[1:])
+    except Exception as _det_err:  # noqa: BLE001 - 确定性正文失败也要把原因写出来
+        lines.append(f'  确定性正文生成失败：{type(_det_err).__name__}: {_det_err}')
+    lines.extend(['', action])
+    body = '\n'.join(ln for ln in lines if ln is not None)
+
+    # 可检索痕迹：状态机判定与最终正文长度都留一行，线上能 grep 到。
+    print(
+        f"   🧩 [阶段2·包缺失] state={state} order={order} chars={len(body)}"
+        f" rb_err={rb_err[:120] or '-'}"
+    )
+    try:
+        _TG_FORCE_SEND = True
+        send_judgment_report_tg(body, parse_mode=None)
+    except Exception as _absent_send_err:  # noqa: BLE001 - 发不出去也要落结论行
+        print(f"   ❌ [阶段2·包缺失] 发送失败: {_absent_send_err}")
+    _record_tg_outcome(history=_history_or_empty(), fid=fid, sent=True,
+                       kind=f'pack_absent_{state}', rejected=reason)
+    print(_stage2_verdict_line(True, f'研判包缺失({state})，已发确定性正文', cn_name, fid))
+    return body
+
+
+def _history_or_empty():
+    """当前 HISTORY_FILE 的内容；读不到就给空字典（留痕不是关键路径）。"""
+    try:
+        data = load_json(HISTORY_FILE) if os.path.exists(HISTORY_FILE) else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - 留痕失败不影响发报
+        return {}
+
+
 def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None, force_anti_homogen=None):  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; keep stage-2 pipeline behavior intact.
     """阶段2轻量出口：读取/重建 pipeline_report_bundle，
     仅调用 deepseek-flash（DeepSeek-V4.1-Flash）研判并强制推送 TG（不再整场重抓/重算）。
@@ -32328,6 +32430,18 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
 
     bundle = rec.get('pipeline_report_bundle') if isinstance(rec, dict) else None
     if not isinstance(bundle, dict) or not isinstance(bundle.get('ds_payload'), dict):
+        # 这条出口原先只有一句话：`⚠️【阶段2缺省】… history 无可用精算结果，
+        # 无法输出 DeepSeek 研判。请重新跑阶段1抓取。` 然后 return None。
+        #
+        # 两处错：
+        #   1. 因果错——进到这里的记录**已经跑过阶段1**（pending、有
+        #      okooo_match_id、有抓取结果），只是 bundle 没落盘或形状坏了。
+        #      叫人「重跑阶段1」解决不了 bundle 缺失。
+        #   2. 只发一行告警就退出，用户拿不到任何东西。
+        #
+        # 现在按三种真实状态分流，各自给正确的行动指令，并且都发一份**完整正文**
+        # （赛事标识 + 缺失原因 + 确定性研判段），不再是一行告警。
+        _rb_err = ''
         if isinstance(rec, dict) and (rec.get('predicted_score') or rec.get('pipeline_scrape_done')):
             print(f"   🔧 [阶段2] 无研判包，从 history 重建后发报: {cn_name or fid}")
             try:
@@ -32338,23 +32452,14 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                         save_json(HISTORY_FILE, history)
                     except Exception as _sb:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
                         print(f"   ⚠️ [阶段2] 重建包落盘失败(继续发报): {_sb}")
-            except Exception as _rb_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
+            except Exception as _rbe:  # noqa: BLE001 - 重建异常本身就是诊断线索，必须传下去
+                _rb_err = f'{type(_rbe).__name__}: {_rbe}'
                 print(f"   ❌ [阶段2] history 重建失败: {_rb_err}")
                 bundle = None
         if not isinstance(bundle, dict) or not isinstance(bundle.get('ds_payload'), dict):
-            # 最后手段：仍不重跑全量精算，直接发缺省告警 TG，避免卡死数小时
-            print(f"   ⚠️ [阶段2] 无法重建研判包，发送缺省告警（不重抓）: {cn_name or fid}")
-            try:
-                _TG_FORCE_SEND = True
-                send_judgment_report_tg(
-                    f"⚠️【阶段2缺省】{cn_name or fid}\n"
-                    f"history 无可用精算结果，无法输出 DeepSeek 研判。"
-                    f"请重新跑阶段1抓取。",
-                    parse_mode=None,
-                )
-            except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
-                pass
-            print(_stage2_verdict_line(False, 'history 无可用精算结果，无法重建研判包', cn_name, fid))
+            _emit_pack_absent_report(
+                rec=rec, bundle=bundle, cn_name=cn_name, fid=fid, rb_err=_rb_err,
+            )
             return None
 
     _ds_payload = _fold_record_boards_into_payload(dict(bundle.get('ds_payload') or {}), rec)

@@ -711,6 +711,12 @@ def _run_once(case: dict[str, Any], hist_path: str,
             app.emit_pipeline_deepseek_tg_report(m_obj, i=0, total=1)
         except BaseException as exc:  # noqa: BLE001 - the harness must survive any case
             buf.write(f'\n[HARNESS-UNCAUGHT] {type(exc).__name__}: {exc}\n')
+    if case.get('inject_refusal_body') and sent:
+        # Control for the E10 detector itself: overwrite the captured body with
+        # the shape a refusal-only exit produces. If E10 cannot see this, then
+        # `E10 == 0` on a real run proves nothing.
+        sent = ['⚠️【阶段2缺省】[control]\n'
+                'history 无可用精算结果，无法输出 DeepSeek 研判。请重新跑阶段1抓取。']
     return sent, buf.getvalue()
 
 
@@ -1054,12 +1060,15 @@ def run_shard(cases: list[int], seed_base: int) -> dict[str, Any]:
     for index, seed in enumerate(cases):
         case = _build_case(seed_base + seed)
         if _INJECT_REFUSAL:
-            # Deliberate control: strip everything stage 2 needs to rebuild a
-            # bundle, so it takes the 「阶段2缺省」 exit. E10 must go red here.
-            for key in ('predicted_score', 'second_score', 'pipeline_scrape_done',
-                        'pipeline_report_bundle', 'deepseek_judgment'):
-                case['rec'].pop(key, None)
-            case['bundle_prebuilt'] = False
+            # Deliberate control, pinned to state 3 of the pack-absent path: no
+            # bundle AND no stage-1 facts. That is the only state where
+            # 「无法研判」 is a fact rather than a program defect, so it is the one
+            # that must still produce a report. If emit ever regresses to a
+            # one-line warning, E10 fires here.
+            # Pure detector control: leave the record alone and only swap the
+            # captured body for the refusal shape. That isolates "can E10 see a
+            # refusal" from "does the pack-absent path still send a report".
+            case['inject_refusal_body'] = True
         # One history file per case: sharing it let the previous case's record
         # leak into the replay and the determinism comparison.
         hist_path = os.path.join(tmpdir, f'h{index}.json')
