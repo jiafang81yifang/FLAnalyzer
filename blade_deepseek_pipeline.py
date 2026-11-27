@@ -1485,6 +1485,13 @@ class DeepSeekAnalyzer:
     # 这个分类只决定文案与处置建议，不决定发不发——报告一律照发。
     STRUCTURAL_BOARDS: ClassVar[tuple[str, ...]] = ('亚盘让球', '大小球')
 
+    # 已关闭引擎的章节名标记。它们对应的引擎已经从仓库删掉（`send_tg` 里那份
+    # 同名按行过滤是同一批名字），但模型偶尔仍会把它们的段落写进正文。
+    # `strip_judgment_tg_suppressed_sections` 按章节边界整段剔除。
+    CLOSED_ENGINE_SECTION_MARKS: ClassVar[tuple[str, ...]] = (
+        '博弈策略专家系统', 'AI预测引擎', '泊松融合', 'GBDT×泊松几何平均',
+    )
+
     @staticmethod
     def unavailable_line(reason: Any = '') -> str:
         """缺数据段落的唯一写法：`无数据（原因：…）`。
@@ -2068,10 +2075,6 @@ class DeepSeekAnalyzer:
         return []
 
     @staticmethod
-    def align_displayed_landings(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
-
-    @staticmethod
     def apply_operator_direction(payload: Any, direction: Any = '',
                                  *args: Any, **kwargs: Any) -> dict[str, Any] | Any:
         """Write an operator direction lock **into** the payload, in place.
@@ -2099,23 +2102,22 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def bold_tg_match_title_html(text: Any) -> str:
-        return f'<b>{escape(str(text or ""))}</b>'
+        """转义整段文本，只把**比赛标题那一行**包成 `<b>`。
 
-    @staticmethod
-    def mark_landing_direction_green(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
-
-    @staticmethod
-    def mark_locked_direction_yellow(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
-
-    @staticmethod
-    def mark_prob_ou_wdl_red(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
-
-    @staticmethod
-    def mark_selected_scores_deep_yellow(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
+        契约：输入是纯文本，输出是 Telegram HTML。以前它把整段 escape 后整个
+        包进一对 `<b>`——名字说的是「title」，做的是「全篇加粗」，而唯一调用点
+        正好在 HTML 渲染器的兜底里：渲染器一崩，整份报告（31 表、矩阵、六盘口
+        事实板）都变成粗体，`[n/m]` 分页标记也被吞进粗体。标题行判定与
+        `format_matrix_dual_prejudge_html` 完全一致，两处不会给出两种格式。
+        """
+        lines = escape(str(text if text is not None else '')).split('\n')
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            if line.lstrip().startswith('📌'):
+                lines[index] = f'<b>{line.lstrip()}</b>'
+            break
+        return '\n'.join(lines)
 
     @staticmethod
     def match_identity_fields(
@@ -2157,19 +2159,30 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def pin_match_title_first(text: Any) -> str:
-        return str(text or '')
+        """把 `📌` 那行挪到正文最前面，其余行顺序原样保留。
 
-    @staticmethod
-    def restrict_tg_text_to_direction_lock(text: Any, *args: Any, **kwargs: Any) -> str:
-        return str(text or '')
+        纯文本重排，不注入任何标签，所以 `parse_mode=None` 那条降级发送路径
+        看到的仍是同一批字符（测量：真实 emit 正文 -0/+0 行）。
+        调用点在两处 HTML 兜底里，那里 `send_tg` 会按「首行是不是比赛标题」
+        决定把 `[n/m]` 分页标记挂在标题前还是后；标题不在首行时标记会挤在
+        缺口横幅上面，读者看到的第一条消息以 `[1/6]` + `⚠️` 开头。
+        """
+        raw = str(text or '')
+        lines = raw.split('\n')
+        title_index = next(
+            (i for i, line in enumerate(lines) if line.lstrip().startswith('📌')), None
+        )
+        if title_index is None:
+            return raw
+        first_content = next((i for i, line in enumerate(lines) if line.strip()), None)
+        if first_content is None or first_content == title_index:
+            return raw
+        lines.insert(first_content, lines.pop(title_index))
+        return '\n'.join(lines)
 
     @staticmethod
     def sanitize_bot_output(text: Any) -> str:
         return str(text or '').strip()
-
-    @staticmethod
-    def sanitize_six_market_tg_text(text: Any) -> str:
-        return str(text or '')
 
     # 章节标题：以 emoji/装饰符开头、紧跟一个【…】块的那一行。
     # 只认这一类，是因为本仓库全部真实报告段都是这个写法（见 _section_title）。
@@ -2312,11 +2325,30 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def strip_judgment_tg_suppressed_sections(text: Any) -> str:
-        return str(text or '')
+        """整段剔除已关闭引擎的章节（标题 + 它的正文），纯文本过滤。
 
-    @staticmethod
-    def strip_tg_english(text: Any) -> str:
-        return str(text or '')
+        `send_tg` 里另有一条按行过滤：任何**含**关闭引擎名的行直接丢。那条
+        只能丢标题行，正文留在原地——测量过的现场是一条悬空的
+        `  投票权重 1.0 → 主胜`，读者不知道它在讲哪一节。这里按章节边界丢，
+        标题和它的正文一起走。
+
+        关闭名单只认引擎名，不认「模型偶尔这么写」的近似标题：名单里的每一
+        个都对应一个已经删掉的引擎，它的输出对读者没有意义。
+        """
+        raw = str(text or '')
+        if not raw.strip():
+            return raw
+        kept: list[str] = []
+        dropping = False
+        for line in raw.split('\n'):
+            title = DeepSeekAnalyzer._section_title(line)
+            if title:
+                dropping = any(
+                    mark in title for mark in DeepSeekAnalyzer.CLOSED_ENGINE_SECTION_MARKS
+                )
+            if not dropping:
+                kept.append(line)
+        return '\n'.join(kept)
 
     @staticmethod
     def summarize_hot_top8_hit_rate(items: Any) -> dict[str, Any]:
