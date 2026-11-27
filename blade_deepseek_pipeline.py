@@ -470,6 +470,7 @@ class DeepSeekAnalyzer:
         same = m.get('same_caliber') if isinstance(m.get('same_caliber'), dict) else {}
 
         def _num(value: Any, spec: str = '+.2f') -> str:
+            """原样格式化一个数（**不做单位换算**）。只用于计数这类非分数。"""
             try:
                 number = float(value)
             except (TypeError, ValueError):
@@ -479,8 +480,22 @@ class DeepSeekAnalyzer:
             return format(number, spec)
 
         def _pct(value: Any) -> str:
+            """0..1 的分数 → `5.00%`。"""
             try:
                 return f'{float(value) * 100:.2f}%'
+            except (TypeError, ValueError):
+                return '-'
+
+        def _pp(value: Any) -> str:
+            """0..1 的分数 → 百分点数值（`0.02` → `+2.00`）。
+
+            存在的理由：同一行里 `竞彩5.00%` 与 `Δ...pp` 必须是同一个单位。
+            用 `_num` 直接格式化 0..1 的分数会得到 `Δ+0.02pp`，
+            与左边的 `5.00% / 3.00%` 差 100 倍 —— 三个数字互相矛盾。
+            计数（如桶覆盖集大小）不是分数，**不要**过这个函数。
+            """
+            try:
+                return format(float(value) * 100.0, '+.2f')
             except (TypeError, ValueError):
                 return '-'
 
@@ -503,6 +518,7 @@ class DeepSeekAnalyzer:
         lines.append(
             f"  无损性：逐桶={'是' if per_bucket else '否'}"
             f" · 聚合={'是' if aggregate else '否'}"
+            # 这两个是**计数**（桶覆盖集的比分个数），不是分数，不过 _pp。
             f"（市场桶并集 {_num(sizes.get('market_buckets_union'), '.0f')}"
             f" vs 竞彩其他类并集 {_num(sizes.get('jc_other_union'), '.0f')}）"
         )
@@ -518,7 +534,7 @@ class DeepSeekAnalyzer:
             for row in priced[:10]:
                 lines.append(
                     f"    {row.get('bucket', '?')!s:<6} 竞彩{_pct(row.get('jc')):>8} "
-                    f"市场{_pct(row.get('market')):>8} Δ{_num(row.get('delta'))}pp"
+                    f"市场{_pct(row.get('market')):>8} Δ{_pp(row.get('delta'))}pp"
                 )
 
         # 结构性差异：盘面报了价、竞彩落不进任何键。不进上面那段，也不出 Δ 数字。
@@ -539,7 +555,7 @@ class DeepSeekAnalyzer:
             why = '有结构性不可达桶' if structural else '市场侧缺值'
             lines.append(f"  「其他」合计：Δ 不可比（{why}）")
         else:
-            lines.append(f"  「其他」合计：Δ{_num(other_delta)}pp")
+            lines.append(f"  「其他」合计：Δ{_pp(other_delta)}pp")
 
         # 26 项 + 单队5球→方向桶 的自相矛盾：原样带出，别让读者以为只是缺数据。
         for warning in (same.get('warnings') or []):

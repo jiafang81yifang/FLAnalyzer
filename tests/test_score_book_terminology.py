@@ -334,3 +334,178 @@ def test_same_caliber_is_persisted_in_the_bundle_payload() -> None:
     blob = json.dumps(ds_payload, ensure_ascii=False, default=str)
     assert 'same_caliber' in blob
     assert 'structural_buckets' in blob
+
+
+# --------------------------------------------------------------------------- #
+# 缺陷 9：同口径段里的 Δ 必须与左边的百分比同单位（0..1 分数 → 百分点）
+# --------------------------------------------------------------------------- #
+def _caliber_matrix(rows, *, structural=(), other_delta=None, sizes=(234, 234),
+                    per_bucket=True, aggregate=True) -> dict:
+    return {'same_caliber': {
+        'available': True,
+        'policy_label': 'test-policy',
+        'per_bucket_lossless': per_bucket,
+        'aggregate_lossless': aggregate,
+        'aggregate_sizes': {
+            'market_buckets_union': sizes[0], 'jc_other_union': sizes[1],
+        },
+        'rows': list(rows),
+        'structural_buckets': list(structural),
+        'structural_rows': [
+            {'bucket': b, 'jc': 0.0, 'market': None, 'delta': None, 'reason': '构造'}
+            for b in structural
+        ],
+        'other_delta': other_delta,
+        'warnings': [],
+    }}
+
+
+def test_same_caliber_section_delta_is_percentage_points() -> None:
+    """`jc=5.00% / market=3.00%` 的桶，Δ 必须是 `+2.00pp`，不是 `+0.02pp`。
+
+    修前：`_num` 直接格式化 0..1 的分数，同一行变成
+    `竞彩 5.00% 市场 3.00% Δ+0.02pp` —— 三个数字互相矛盾，差 100 倍。
+
+    反证：把 `_pp(row.get('delta'))` 改回 `_num(row.get('delta'))`
+    → `assert 'Δ+2.00pp' in line` 变红。
+    """
+    rows = [{'bucket': '1:0', 'jc': 0.05, 'market': 0.03, 'delta': 0.02}]
+    matrix = _caliber_matrix(rows, other_delta=0.01)
+    text = '\n'.join(bd.DeepSeekAnalyzer._format_same_caliber_lines(matrix))
+
+    # 先核数据值，再核文本：断言必须是「同一份数据 → 正确文本」。
+    assert rows[0]['delta'] == pytest.approx(0.02)
+    line = next(ln for ln in text.splitlines() if '1:0' in ln)
+    assert 'Δ+2.00pp' in line, line
+    assert 'Δ+0.02pp' not in line, line
+    assert '5.00%' in line and '3.00%' in line, line
+
+
+def test_same_caliber_section_other_total_is_percentage_points() -> None:
+    """25 项盘面（无结构性桶）走得到 other_delta 数字分支，也必须乘 100。
+
+    这是唯一覆盖 `other_delta` 数字分支的用例：26 项盘面必有结构性桶，
+    `other_delta` 恒 None，那条分支在 26 项下是死代码。
+
+    反证：把 `_pp(other_delta)` 改回 `_num(other_delta)`（或加 `or 0`）
+    → `assert 'Δ+1.50pp' in line` 变红。
+    """
+    rows = [{'bucket': '1:0', 'jc': 0.05, 'market': 0.04, 'delta': 0.01}]
+    matrix = _caliber_matrix(rows, other_delta=0.015, sizes=(225, 225))
+    assert matrix['same_caliber']['structural_buckets'] == []
+    text = '\n'.join(bd.DeepSeekAnalyzer._format_same_caliber_lines(matrix))
+
+    line = next(ln for ln in text.splitlines() if '「其他」合计' in ln)
+    assert 'Δ+1.50pp' in line, line
+    assert '不可比' not in line, line
+    assert 'Δ+0.01pp' not in line, line
+
+
+def test_same_caliber_rendered_pp_matches_the_data_fraction() -> None:
+    """通用不变量：渲染出的每个 `Δ±x.xxpp` 都必须等于对应 delta × 100。
+
+    只断一个数字挡不住「下次换个桶又错」。这里按桶名找回源数据逐行核对，
+    容差 0.011（两位小数的舍入上限）。
+
+    反证：任何一处渲染改回不乘 100 → 本断言变红。
+    """
+    rows = [
+        {'bucket': '1:0', 'jc': 0.05, 'market': 0.03, 'delta': 0.02},
+        {'bucket': '2:0', 'jc': 0.10, 'market': 0.075, 'delta': 0.025},
+        {'bucket': '3:1', 'jc': 0.04, 'market': 0.041, 'delta': -0.001},
+        {'bucket': '任何其他', 'jc': 0.0123, 'market': 0.0456, 'delta': -0.0333},
+    ]
+    matrix = _caliber_matrix(rows, other_delta=0.0175)
+    text = '\n'.join(bd.DeepSeekAnalyzer._format_same_caliber_lines(matrix))
+    by_bucket = {r['bucket']: r['delta'] for r in rows}
+
+    checked = 0
+    for line in text.splitlines():
+        match = re.search(r'Δ([+-]\d+\.\d{2})pp', line)
+        if not match:
+            continue
+        rendered = float(match.group(1))
+        for bucket, delta in by_bucket.items():
+            if bucket in line:
+                assert abs(rendered - delta * 100) < 0.011, (bucket, rendered, delta * 100)
+                checked += 1
+                break
+        else:
+            # 「其他」合计行：与 other_delta 对账
+            if '「其他」合计' in line:
+                assert abs(rendered - 0.0175 * 100) < 0.011, (rendered, 'other_delta')
+                checked += 1
+    assert checked >= 5, f'只核到 {checked} 行，通用不变量没覆盖全'
+
+
+def test_same_caliber_pp_matches_the_cli_renderer() -> None:
+    """同一份数据，CLI 渲染器与 TG 段落必须给出同一个 Δ（防两套单位）。
+
+    反证：让任一侧不乘 100 → 两侧读数差 100 倍，本断言变红。
+    """
+    import score_books as sb
+
+    jc = {k: 20.0 for k in sb.JC_31_KEYS}
+    mk = {k: 21.0 for k in sb.MARKET_25_KEYS}
+    analysis = sb.analyze_residuals(jc, mk, book_size=25)
+    cli_line = next(
+        ln for ln in sb.format_analysis_text(analysis).splitlines() if '「其他」合计' in ln
+    )
+    cli_value = float(re.search(r'Δ([+-]\d+\.\d{2})pp', cli_line).group(1))
+
+    tier_a = analysis['tier_a']
+    matrix = _caliber_matrix(
+        [{'bucket': '1:0', 'jc': 0.05, 'market': 0.04, 'delta': 0.01}],
+        other_delta=tier_a['other_delta'],
+        sizes=(225, 225),
+    )
+    tg_line = next(
+        ln for ln in bd.DeepSeekAnalyzer._format_same_caliber_lines(matrix)
+        if '「其他」合计' in ln
+    )
+    tg_value = float(re.search(r'Δ([+-]\d+\.\d{2})pp', tg_line).group(1))
+    assert tg_value == pytest.approx(cli_value, abs=0.011), (cli_line, tg_line)
+
+
+def test_same_caliber_aggregate_sizes_are_counts_not_fractions() -> None:
+    """并集尺寸是**计数**，不许乘 100（234 不能变成 23400）。
+
+    这是 `_pp` 的边界：同一函数里既有分数也有计数，逐条判定后才能说「统一乘 100」。
+    反证：把 `_num(sizes.get(...), '.0f')` 改成 `_pp(...)` → 本断言变红。
+    """
+    matrix = _caliber_matrix(
+        [{'bucket': '1:0', 'jc': 0.05, 'market': 0.04, 'delta': 0.01}],
+        other_delta=0.015, sizes=(234, 234),
+    )
+    text = '\n'.join(bd.DeepSeekAnalyzer._format_same_caliber_lines(matrix))
+    line = next(ln for ln in text.splitlines() if '无损性' in ln)
+    assert '234' in line, line
+    assert '23400' not in line, line
+
+
+def test_same_caliber_other_branch_reachable_on_25_item_book() -> None:
+    """25 项盘面必须真的走到 other_delta 数字分支（26 项下它是死代码）。
+
+    这条保证上面那条「other total 乘 100」的用例不是靠构造 dict 蒙过去的，
+    而是走真实 `analyze_residuals(book_size=25)` → `same_caliber` 的路径。
+    """
+    import score_books as sb
+
+    jc = {k: 20.0 for k in sb.JC_31_KEYS}
+    mk = {k: 21.0 for k in sb.MARKET_25_KEYS}
+    analysis = sb.analyze_residuals(jc, mk, book_size=25)
+    tier_a = analysis['tier_a']
+    assert tier_a['structural_rows'] == []
+    assert tier_a['other_delta'] is not None
+
+    matrix = _caliber_matrix(
+        tier_a['rows'], other_delta=tier_a['other_delta'], sizes=(225, 225),
+    )
+    text = '\n'.join(bd.DeepSeekAnalyzer._format_same_caliber_lines(matrix))
+    line = next(ln for ln in text.splitlines() if '「其他」合计' in ln)
+    rendered = float(re.search(r'Δ([+-]\d+\.\d{2})pp', line).group(1))
+    assert abs(rendered - tier_a['other_delta'] * 100) < 0.011, (line, tier_a['other_delta'])
+
+    # 26 项下同一字段恒为 None —— 这正是为什么必须有这条 25 项的用例
+    analysis26 = sb.analyze_residuals(jc, {k: 20.0 for k in sb.MARKET_26_KEYS})
+    assert analysis26['tier_a']['other_delta'] is None
