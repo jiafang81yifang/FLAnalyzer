@@ -30,7 +30,7 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # e35dc19 = 0球~7+ 均赔/比分表(tg_goal_table 内嵌) 接进 TG 报告与网页等宽块
-$PinCommit = 'e3000c59994ad147208d21040878bf7873c4cedb'
+$PinCommit = '7b8b2adcf1383d688d036cac564bc93c627a0823'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
