@@ -533,6 +533,70 @@ class DeepSeekAnalyzer:
             }
         return {'provenance': {}, 'source': None}
 
+    # 冻结 λ 在记录 / 研判包 / 校准载荷里出现过的每一个键，按「离冻结点由近及远」排列。
+    # 读侧只能通过 `frozen_lambda_of` 取，不再各自拼 `rec.get(...) or rec.get(...)`：
+    # 拼漏一个键，31 表就会整列 theory 为空，日志还只说「理论概率缺31项」。
+    FROZEN_LAMBDA_KEYS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ('lam_h', 'lam_a'),
+        ('lam_home', 'lam_away'),
+        ('lambda_home', 'lambda_away'),
+        ('fused_lambda_h', 'fused_lambda_a'),
+        ('base_home_lambda', 'base_away_lambda'),
+    )
+
+    @staticmethod
+    def frozen_lambda_of(*sources: Any) -> dict[str, Any]:
+        """从记录/研判包里取冻结 λ，并点名它来自哪个键。
+
+        返回值：
+          home / away   float 或 None（真的没有就 None，**绝不补默认值**）
+          home_key / away_key  命中的键名，'' 表示没有
+          source       命中的容器（'record' / 'payload' / 'calibration' …）
+          complete      两侧都拿到正数
+
+        取值顺序：先按 `FROZEN_LAMBDA_KEYS` 逐对取同一容器里的主客值（成对命中才收，
+        避免把主场 λ 和历史客场 λ 拼成一对），再退到 `lambda_calibration.final`。
+        """
+        out: dict[str, Any] = {
+            'home': None, 'away': None,
+            'home_key': '', 'away_key': '', 'source': '', 'complete': False,
+        }
+
+        def _pos(value: Any) -> float | None:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if math.isfinite(number) and number > 0 else None
+
+        for idx, holder in enumerate(sources or ()):
+            if not isinstance(holder, dict):
+                continue
+            name = str(holder.get('__source__') or ('record' if idx == 0 else f'source{idx}'))
+            for home_key, away_key in DeepSeekAnalyzer.FROZEN_LAMBDA_KEYS:
+                home, away = _pos(holder.get(home_key)), _pos(holder.get(away_key))
+                if home is None and away is None:
+                    continue
+                out['home'], out['away'] = home, away
+                out['home_key'] = home_key if home is not None else ''
+                out['away_key'] = away_key if away is not None else ''
+                out['source'] = name
+                out['complete'] = home is not None and away is not None
+                return out
+            # 校准载荷：{"available": True, "final": {"home": .., "away": ..}}
+            calib = holder.get('lambda_calibration')
+            if isinstance(calib, dict):
+                final = calib.get('final') if isinstance(calib.get('final'), dict) else {}
+                home, away = _pos(final.get('home')), _pos(final.get('away'))
+                if home is not None or away is not None:
+                    out['home'], out['away'] = home, away
+                    out['home_key'] = 'lambda_calibration.final.home' if home is not None else ''
+                    out['away_key'] = 'lambda_calibration.final.away' if away is not None else ''
+                    out['source'] = f'{name}.lambda_calibration'
+                    out['complete'] = home is not None and away is not None
+                    return out
+        return out
+
     @staticmethod
     def _collect_legal_cs_market_odds(source: Any, rows: Any) -> dict[str, float]:
         """收集合法比分赔率：市均优先，竞彩官方31比分补缺。
@@ -707,12 +771,16 @@ class DeepSeekAnalyzer:
         # 理论概率：用已冻结的 λ 泊松分布补齐（λ 冻结是既定事实，不是编造）。
         lam_h = _f(kwargs.get('lam_home'))
         lam_a = _f(kwargs.get('lam_away'))
+        _lambda_prov_raw = kwargs.get('lambda_provenance')
+        _lambda_prov: dict[str, Any] = _lambda_prov_raw if isinstance(_lambda_prov_raw, dict) else {}
+        _theory_filled = False
         if lam_h and lam_a and lam_h > 0 and lam_a > 0:
             try:
                 probs = _poisson_score_probs(lam_h, lam_a)
             except Exception:  # noqa: BLE001 - λ 不可用时保持 theory 为空
                 probs = {}
             if probs:
+                _theory_filled = True
                 for option in JCZQ_ALL_OPTIONS:
                     row = by_score.setdefault(option, {'score': option})
                     if _f(row.get('theory') or row.get('theory_prob')) is None:
@@ -813,6 +881,13 @@ class DeepSeekAnalyzer:
             'cs31_extras': _extras,
             'cs31_complete': bool(full_rows) and all(r.get('formed') for r in full_rows),
             'system_prejudge': {},
+            # 这一表的 theory 到底来自哪。λ 缺失时调用点要能点名「冻结 λ 未形成」，
+            # 而不是只打一张 31 项的裸缺表。
+            'lambda_provenance': dict(_lambda_prov) if _lambda_prov else {},
+            'lambda_source_key': str(_lambda_prov.get('home_key') or ''),
+            'lambda_away_key': str(_lambda_prov.get('away_key') or ''),
+            'lambda_source': str(_lambda_prov.get('source') or ''),
+            'theory_filled_from_lambda': bool(_theory_filled),
             'home': str(kwargs.get('home') or ''),
             'away': str(kwargs.get('away') or ''),
             'match_name': str(kwargs.get('match_name') or ''),
@@ -826,6 +901,10 @@ class DeepSeekAnalyzer:
               'missing_theory': [...], 'missing_market': [...]}。
         `missing` 是给日志用的短名单（只写前若干项 + 计数），不含换行。
         缺表/缺字段只回报不缺数据，绝不抛异常——阶段2靠它决定是折入补齐还是照常分析。
+
+        `kwargs['sources']` 可给出每个数据源实际有多少项（如
+        `{'market_page': 22, 'jc_score_odds': 0, 'frozen_lambda': None}`）；
+        缺失项会带上「哪个源没给」，日志不再只出现一张裸列表。
         """
         clean = [r for r in (rows or []) if isinstance(r, dict)]
         present = {_norm_score(r.get('score') or r.get('name') or r.get('cs') or '') for r in clean}
@@ -861,6 +940,34 @@ class DeepSeekAnalyzer:
         if missing_market:
             missing.append('市场概率缺' + str(len(missing_market)) + '项(' + '/'.join(missing_market) + ')')
         complete = not missing
+        # 逐项点名「这一项缺，是因为哪个源没给」。
+        # 只写真实拿到的源计数，缺哪个源就点哪个源，绝不编出「源说有」。
+        _src_raw = kwargs.get('sources')
+        src_map: dict[str, Any] = _src_raw if isinstance(_src_raw, dict) else {}
+        missing_sources: dict[str, str] = {}
+        if missing_theory:
+            _lam = src_map.get('frozen_lambda')
+            _why = (
+                '冻结λ未形成（上游拒绝补默认进球期望）'
+                if _lam in (None, 0)
+                else f'冻结λ={_lam} 但泊松未覆盖'
+            )
+            for option in missing_theory:
+                missing_sources[option] = _why
+        if missing_market:
+            _page_n = src_map.get('market_page')
+            _jc_n = src_map.get('jc_score_odds')
+            _bits = []
+            if not _page_n:
+                _bits.append('市均0项')
+            if not _jc_n:
+                _bits.append('竞彩31比分0项')
+            _why_mkt = (
+                '市均与竞彩31比分都没给这一项' if _bits
+                else f'市均{_page_n}项/竞彩31比分{_jc_n}项都不含这一项'
+            )
+            for option in missing_market:
+                missing_sources.setdefault(option, _why_mkt)
         return {
             'complete': complete,
             'missing': missing,
@@ -869,6 +976,7 @@ class DeepSeekAnalyzer:
             'missing_rows': missing_rows,
             'missing_theory': missing_theory,
             'missing_market': missing_market,
+            'missing_sources': missing_sources,
         }
 
     @staticmethod
@@ -1199,9 +1307,113 @@ class DeepSeekAnalyzer:
     def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return dict(payload) if isinstance(payload, dict) else {}
 
+    # 六盘口：与 app `_ensure_mobile_six` 的 `_core_ok` 同口径。
+    # 顺序即报告展示顺序；第二项是它在六盘口包里的键名。
+    SIX_MARKET_BOARDS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ('亚盘让球', 'asian_handicap'),
+        ('大小球', 'ou_line'),
+        ('胜平负', 'odds_1x2'),
+        ('竞彩让球', 'jc_handicap'),
+        ('总进球', 'total_goals_odds'),
+        ('半全场', 'htft_odds'),
+    )
+    # 报告外壳：没有这一段就不是「DeepSeek 标准研判报告」。
+    JUDGMENT_SHELL_MARKER: ClassVar[str] = 'DeepSeek 数据分析研判报告'
+
     @staticmethod
-    def ensure_judgment_standard_sections(text: Any) -> str:
-        return str(text or '')
+    def six_market_gaps(source: Any) -> list[str]:
+        """列出源里真实缺的六盘口项（中文名）。
+
+        **判「有」不能用 `not value`**：0.0 是平手盘 / 大小球 0 线，是真实盘口。
+        空串、空容器、None 才算缺。
+        """
+        src: dict[str, Any] = source if isinstance(source, dict) else {}
+
+        def _present(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (dict, list, tuple, set)):
+                return bool(value)
+            return True
+
+        gaps: list[str] = []
+        for label, key in DeepSeekAnalyzer.SIX_MARKET_BOARDS:
+            if not _present(src.get(key)):
+                gaps.append(label)
+        return gaps
+
+    @staticmethod
+    def ensure_judgment_standard_sections(
+        text: Any,
+        payload: Any = None,
+        jc_vs_hot_tg_lines: Any = None,
+        wdl_matrix_tg_lines: Any = None,
+        theo_mkt_31_tg_lines: Any = None,
+        mkt_over_theo_tg_lines: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """发报前硬闸：缺六盘口或缺 DeepSeek 外壳时给出明确的拒发标记。
+
+        返回 dict（不是直通的 str）：
+          text            规整后的正文（未拒发时调用点直接用它）
+          ok              是否可以发
+          reject          是否必须拒发
+          reject_reason   一句话原因，调用点原样打进日志
+          missing_boards  缺的六盘口项（中文名）
+          missing_sections 缺的报告段
+          section_status  各段是否在场
+
+        历史上这里是 `return str(text or '')`：既不是门禁，签名也只收一个位置参数。
+        app 用五个关键字参数调用它 → `TypeError` 被 `except` 吞掉 → 下一行
+        `_gate.get('text')` 也永远不会执行。那道「质量门硬拦」一次都没真正跑过。
+        """
+        body = str(text or '')
+        pay: dict[str, Any] = payload if isinstance(payload, dict) else {}
+
+        board_src: dict[str, Any] = {}
+        board = pay.get('cross_market_board')
+        if isinstance(board, dict) and isinstance(board.get('six_market_mobile'), dict):
+            board_src = board['six_market_mobile']
+        if not board_src and isinstance(pay.get('six_market_mobile'), dict):
+            board_src = pay['six_market_mobile']
+        if not board_src:
+            # 兜底：研判包顶层也可能直接放盘口标量。
+            board_src = pay
+        missing_boards = DeepSeekAnalyzer.six_market_gaps(board_src)
+
+        section_status = {
+            'deepseek_shell': bool(body) and DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER in body,
+            'six_market': not missing_boards,
+        }
+        missing_sections: list[str] = []
+        if not section_status['deepseek_shell']:
+            missing_sections.append(DeepSeekAnalyzer.JUDGMENT_SHELL_MARKER)
+
+        reasons: list[str] = []
+        if missing_boards:
+            reasons.append('缺六盘口(' + '/'.join(missing_boards) + ')')
+        if missing_sections:
+            reasons.append('缺DeepSeek外壳(' + '/'.join(missing_sections) + ')')
+        reject = bool(reasons)
+        return {
+            'text': body,
+            'ok': not reject,
+            'reject': reject,
+            'reject_reason': '；'.join(reasons),
+            'missing_boards': missing_boards,
+            'missing_sections': missing_sections,
+            'section_status': section_status,
+            # 调用方传进来的段：这里只回报「有没有给」，不在这里重渲染。
+            'passed_sections': {
+                'jc_vs_hot_tg_lines': bool(jc_vs_hot_tg_lines),
+                'wdl_matrix_tg_lines': bool(wdl_matrix_tg_lines),
+                'theo_mkt_31_tg_lines': bool(theo_mkt_31_tg_lines),
+                'mkt_over_theo_tg_lines': bool(mkt_over_theo_tg_lines),
+            },
+        }
 
     @staticmethod
     def evaluate_result_in_hot_top8(info: Any) -> dict[str, Any]:

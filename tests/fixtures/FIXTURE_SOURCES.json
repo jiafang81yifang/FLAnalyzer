@@ -91,8 +91,9 @@
     "url": "https://m.okooo.com/jczq/",
     "status": 200,
     "bytes": 207365,
-    "encoding": "gbk (meta charset=GBK)",
+    "encoding": "gb18030 (meta charset=GBK; the page contains bytes outside strict gbk, so decode as its superset)",
     "captured": "2026-11-26",
-    "used_by": "test_jczq_list_* (23 cards, 23 MatchIDs, 31 JC score odds each, full DOM selectors)"
+    "note": "23 jsMatchItem rows, `var oddsData` at byte 174385. Three matches verified end-to-end: 1328189 (orderid 5006), 1328592 (5007), 1328914 (5003) each parse to 31/31 including the nine 市均-uncoverable options. This is the page that stays reachable while /match/cs.php, /match/odds.php and /match/history.php answer 405 from the Aliyun WAF.",
+    "used_by": "test_jczq_list_* (23 cards, 23 MatchIDs, 31 JC score odds each, full DOM selectors) and test_jczq_list_fixture_* (oddsData -> parse_jczq_score_odds -> 31/31) plus the 31-pool self-heal tests"
   }
 }
