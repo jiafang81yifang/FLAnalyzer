@@ -248,6 +248,12 @@ class _ChannelAbsSummaryShape:
     loss_count: int
     min_channel: str
     channel_spread: float
+    # 矩阵模块在分叉后补了「有价行数」三项和「最小通道只是部分比较」标记。
+    # 这里刻意保持逐字复刻（含默认值），让下面的形状断言在真实类再次漂移时变红。
+    win_priced_count: int = 0
+    draw_priced_count: int = 0
+    loss_priced_count: int = 0
+    min_channel_partial: bool = False
 
 
 _SUMMARY_VALUES = {'win': 0.3462, 'draw': 0.9, 'loss': 1.1769}
@@ -287,6 +293,7 @@ def test_c3_accepts_dataclasses_asdict_output() -> None:
     assert set(payload) == {
         'win_mean_abs_delta', 'draw_mean_abs_delta', 'loss_mean_abs_delta',
         'win_count', 'draw_count', 'loss_count', 'min_channel', 'channel_spread',
+        'win_priced_count', 'draw_priced_count', 'loss_priced_count', 'min_channel_partial',
     }
     assert g.home_away_abs_ratio(payload) == pytest.approx(_EXPECTED_HOME_AWAY, rel=1e-12)
 
@@ -378,6 +385,7 @@ def test_c3_local_dataclass_shape_matches_real_channel_abs_summary() -> None:
     assert real_fields == [
         'win_mean_abs_delta', 'draw_mean_abs_delta', 'loss_mean_abs_delta',
         'win_count', 'draw_count', 'loss_count', 'min_channel', 'channel_spread',
+        'win_priced_count', 'draw_priced_count', 'loss_priced_count', 'min_channel_partial',
     ]
 
 
