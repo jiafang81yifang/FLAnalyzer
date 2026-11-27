@@ -86,5 +86,14 @@
     "encoding": "gb18030",
     "captured": "2026-11-25",
     "used_by": "31-merge tests: 25 score columns (22 on-grid + 4-3/3-4/4-4 off-grid), gb18030"
+  },
+  "okooo_jczq_list_20261126.html": {
+    "url": "https://m.okooo.com/jczq/",
+    "status": 200,
+    "bytes": 207365,
+    "encoding": "gb18030",
+    "captured": "2026-11-26",
+    "note": "23 jsMatchItem rows, `var oddsData` at byte 174385. Three matches verified end-to-end: 1328189 (orderid 5006), 1328592 (5007), 1328914 (5003) each parse to 31/31 including the nine 市均-uncoverable options. This is the page that stays reachable while /match/cs.php, /match/odds.php and /match/history.php answer 405 from the Aliyun WAF.",
+    "used_by": "test_jczq_list_fixture_* (oddsData -> parse_jczq_score_odds -> 31/31) and the 31-pool self-heal tests"
   }
 }

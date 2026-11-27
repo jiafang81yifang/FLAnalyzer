@@ -781,6 +781,51 @@ def fetch_jczq31(match_id: Any, proxies: Any = None, session: Any = None) -> dic
     }
 
 
+def _jc31_side_channel(
+    match_id: Any, proxies: Any = None, session: Any = None,
+) -> dict[str, Any]:
+    """市均不可用时，仍然单独把竞彩 31 比分赔率抓回来（独立真实来源）。
+
+    「市均页被 WAF 拦」与「竞彩31拿不到」是两件事：前者只说明市均这 22 项没有，
+    后者才说明那 9 个市均覆盖不到的选项也没了。以前两者混在一个返回值里，
+    市均一失败就整包返回 unavailable，竞彩31 一次都没抓过——
+    「已尝试重抓。抓全前不做系统分析」因此可以无限循环。
+
+    这里只回填 jc31 相关键；市均相关键一个都不伪造。
+    """
+    mid = str(match_id or '').strip()
+    if not mid:
+        return {}
+    try:
+        res = fetch_jczq31(mid, proxies=proxies, session=session)
+    except Exception as exc:  # noqa: BLE001 - 竞彩31抓取失败不影响市均侧的结论
+        print(f"   ⚠️ [竞彩31比分] 单独抓取异常: {type(exc).__name__}: {exc}")
+        return {'jc_score_fetch_reason': f'{type(exc).__name__}: {exc}'[:200]}
+    report_raw = res.get('report')
+    report: dict[str, Any] = report_raw if isinstance(report_raw, dict) else {}
+    odds_raw = res.get('odds')
+    odds: dict[str, Any] = odds_raw if isinstance(odds_raw, dict) else {}
+    out: dict[str, Any] = {
+        'jc_score_fetch_reason': (
+            f"available n={len(odds)} stage={res.get('stage') or '-'} "
+            f"orderid={res.get('orderid') or '-'} "
+            f"status={report.get('status')} bytes={report.get('bytes')} "
+            f"blocked={bool(report.get('blocked'))} cached={bool(report.get('cached'))}"
+        ),
+    }
+    if odds:
+        out['jc_score_odds'] = dict(odds)
+        out['jc_score_source'] = '手机竞足→更多玩法→胜平负比分'
+        out['jc_score_orderid'] = res.get('orderid') or ''
+        out['correct_score_jc_official'] = dict(odds)
+    if not res.get('available'):
+        out['jc_score_block_reason'] = (
+            f"oddsData 未取到本场31项 stage={res.get('stage') or '-'} "
+            f"n={len(odds)} orderid={res.get('orderid') or '-'}"
+        )
+    return out
+
+
 def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: Any = None, **kwargs: Any) -> dict[str, Any]:
     """抓澳客波胆（比分）市均。
 
@@ -838,6 +883,10 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
             html = fetch.get('html')
             break
     if not html:
+        # 波胆页被拦（/cs/ 与 /match/cs.php 在这台机器上是阿里云 WAF 405）时，
+        # 以前整包直接报不可用返回，连竞彩31都没抓——于是「重新抓全」永远补不上
+        # 那 9 个市均覆盖不到的选项，31 表也就永远缺 9 项。
+        # 市均确实没有，如实报 unavailable；但竞彩31是另一个真实来源，必须照抓。
         return _unavailable(
             'external_okooo_mobile_cs_fetch_failed',
             match_id=str(match_id or ''),
@@ -845,6 +894,7 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
             fetch_urls=list(urls),
             parse_stage='fetch_failed',
             attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
+            **_jc31_side_channel(match_id, proxies=proxies, session=session),
         )
     parsed = _parse_cs_datatable(html)
     stage = str(parsed.get('stage') or 'ok')
@@ -860,6 +910,7 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
             ),
             fetch_urls=list(urls),
             parse_stage=stage,
+            **_jc31_side_channel(match_id, proxies=proxies, session=session),
         )
     # 桌面 /cs/ 波胆页是 27 家公司的合法市均，不是被禁的「桌面分析页/pool31」。
     # 通道标签用 okooo_cs（法律闸门已有 okooo_cs_books_avg 分支），
