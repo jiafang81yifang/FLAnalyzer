@@ -391,7 +391,7 @@ def _next_referer(referers: list[str], current: str) -> str | None:
 # 缓存版本：打包格式一变就 +1，旧包一律拒绝并重抓。
 # 没有版本的缓存会让「任何跑过旧版本的机器」永久看不到之后的修复——
 # 用户的 channel=desktop_cs / books=25 / jc=0 正是旧包被当成新数据。
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
 _ACCEPTED_CS_CHANNELS = {'mobile', 'okooo_cs'}
 
 
@@ -406,14 +406,28 @@ def _cache_stamp(pack: dict[str, Any]) -> dict[str, Any]:
 def _cache_reject_reason(cache: Path, data: Any, *, require_31: bool = False) -> str:
     """判断一个缓存包还能不能用。返回拒绝原因，'' 表示可用。
 
-    三条硬规则：
+    四条硬规则：
       * cache_schema 必须是当前版本（旧包 = 旧解析逻辑的产物）；
+      * 六盘口包必须带 schema 3 引入的四个竞彩盘口字段，
+        否则是「用旧解析器写的包」——它永远不会有 jc_handicap /
+        total_goals_odds / htft_odds，继续复用等于让新解析器一次都不跑；
       * correct_score_channel 必须是现在真正会写出的通道
         （desktop_cs 是旧标签，出现即说明是旧包）；
       * 若要求 31 全表，包里必须有合并后的 31 项（cs31_complete / 31 个键）。
     """
     if not isinstance(data, dict) or not data:
         return 'cache_empty'
+    # 六盘口包专用判据放在版本号之前：旧解析器写的 six 包与当前版本号只差一个数字，
+    # 报「cache_schema_old」看不出是解析器换过，报「cache_schema_board_parser」
+    # 才能让用户知道该重抓。cs 包（带 correct_score_page_avg）不适用这条。
+    _is_six_pack = (
+        'correct_score_page_avg' not in data
+        and any(k in data for k in ('boards_hit', 'source_report', 'fetch_urls'))
+    )
+    if _is_six_pack and not any(
+        k in data for k in ('jc_list_boards', 'total_goals_odds', 'htft_odds', 'jc_handicap')
+    ):
+        return 'cache_schema_board_parser'
     if int(data.get('cache_schema') or 0) != CACHE_SCHEMA:
         return 'cache_schema_old'
     if 'correct_score_channel' in data:
@@ -953,13 +967,13 @@ def parse_jczq_list_boards(html: Any, match_id: Any) -> dict[str, Any]:
         value = _num_of(block.get(code))
         return value if value is not None and value > 1 else None
 
-    # 胜平负
-    wdl_raw = odds_list.get('SportteryWDL') or {}
+    # 胜平负 ← SportteryNWDL（16/15/14）+ 平手块。见上方编码表的三条证据。
+    straight_raw = odds_list.get('SportteryNWDL') or {}
     wdl: dict[str, Any] = {'odds_1x2': {}, 'stage': 'block_absent'}
-    if isinstance(wdl_raw, dict) and wdl_raw:
+    if isinstance(straight_raw, dict) and straight_raw:
         odds = {}
-        for code, side in _JCZQ_WDL_CODES:
-            value = _price(wdl_raw, code)
+        for code, side in _JCZQ_STRAIGHT_CODES:
+            value = _price(straight_raw, code)
             if value is not None:
                 odds[side] = value
         if len(odds) == 3:
@@ -970,23 +984,23 @@ def parse_jczq_list_boards(html: Any, match_id: Any) -> dict[str, Any]:
                 },
                 'stage': 'ok',
                 'source': 'jczq_list_oddsData',
-                'source_block': 'SportteryWDL',
-                'source_url': 'https://m.okooo.com/jczq/#oddsData.OddsList.SportteryWDL',
+                'source_block': 'SportteryNWDL',
+                'source_url': 'https://m.okooo.com/jczq/#oddsData.OddsList.SportteryNWDL',
             })
         else:
             wdl['stage'] = f'odds_incomplete_{len(odds)}_of_3'
     out['blocks']['胜平负'] = wdl
 
-    # 竞彩让球胜平负 + Boundary 让球数
-    nwdl_raw = odds_list.get('SportteryNWDL') or {}
+    # 竞彩让球胜平负 ← SportteryWDL（13/11/10）+ Boundary 让球数
+    handicap_raw = odds_list.get('SportteryWDL') or {}
     _boundary_raw = slot.get('Boundary')
     boundary: dict[str, Any] = _boundary_raw if isinstance(_boundary_raw, dict) else {}
     jc_line = _jc_line_of_boundary(boundary.get('SportteryWDL'))
     nwdl: dict[str, Any] = {'odds': {}, 'line': jc_line, 'stage': 'block_absent'}
-    if isinstance(nwdl_raw, dict) and nwdl_raw:
+    if isinstance(handicap_raw, dict) and handicap_raw:
         odds = {}
-        for code, side in _JCZQ_NWDL_CODES:
-            value = _price(nwdl_raw, code)
+        for code, side in _JCZQ_HANDICAP_CODES:
+            value = _price(handicap_raw, code)
             if value is not None:
                 odds[side] = value
         if len(odds) == 3 and jc_line is not None:
@@ -994,7 +1008,7 @@ def parse_jczq_list_boards(html: Any, match_id: Any) -> dict[str, Any]:
                 'odds': {**odds, 'Home': odds['home'], 'Draw': odds['draw'], 'Away': odds['away']},
                 'stage': 'ok',
                 'source': 'jczq_list_oddsData',
-                'source_block': 'SportteryNWDL+Boundary.SportteryWDL',
+                'source_block': 'SportteryWDL+Boundary.SportteryWDL',
             })
         elif len(odds) == 3:
             # 赔率齐但让球数读不出来：不能把三项赔率挂到错误的盘口上，整块不用。
@@ -2491,13 +2505,22 @@ JCZQ_SCORE_OPTIONS = tuple(score for _code, score in _JCZQ_SCORE_CODES)
 # 另外四块在本仓库零命中——而它们正是胜平负/竞彩让球/总进球/半全场的真实来源，
 # 且与比分块同页同一次请求，不依赖任何会被 WAF 拦的桌面端点。
 #
-# 编码来自页面自带的 optionConfig 表（`tests/fixtures/okooo_jczq_list_20261126.html`，
-# 同一页 `<script>` 里紧跟在 oddsData 之后），并用同一页渲染出来的行赔率逐条核对：
-# 行内先显示竞彩让球 `胜 5.80 平 4.90 负 1.31`，再显示胜平负 `胜 2.72 平 3.60 负 2.03`；
-# 21/21 场比赛的 `NWDL 16/15/14` 与 `WDL 13/11/10` 分别逐位相等。
-# 注意 10 是**客胜**、13 是**主胜**，与比分块「先主队」的顺序相反，不能类推。
-_JCZQ_WDL_CODES: tuple[tuple[str, str], ...] = (('13', 'home'), ('11', 'draw'), ('10', 'away'))
-_JCZQ_NWDL_CODES: tuple[tuple[str, str], ...] = (('16', 'home'), ('15', 'draw'), ('14', 'away'))
+# 哪一块是哪个市场，三条独立证据（都来自 tests/fixtures/okooo_jczq_list_20261126.html）：
+#   1. 渲染行里 `betway="0"` 的 rangqiu 标签是 `rangqiu grayd` 且值 `0`（平手，即胜平负），
+#      那一块的三元组等于 NWDL 的 16/15/14；`betway="1"` 的标签是
+#      `rangqiu fontgreen ctrl_special data-type="rangfen" data-v="+1"`（让分），
+#      那一块的三元组等于 WDL 的 13/11/10。
+#   2. optionConfig：group '0' → mix 16/15/14 + ltype SportteryNWDL；
+#      group '1' → mix 13/11/10 + ltype SportteryWDL，且带 `special: true`（让分那一组）。
+#   3. Result 作 oracle：4 场直盘与让球盘赛果不同的比赛（4005/4007/4009/4011）里，
+#      Result.SportteryWDL 4/4 等于让球盘赛果，Result.SportteryNWDL 4/4 等于直盘赛果。
+# 价格相关性同样印证：Boundary 与 WDL 主胜赔率负相关（-0.70，让球线对冲了实力），
+# 与 NWDL 主胜赔率正相关（+0.82，直盘随实力走）。
+#
+# 所以：NWDL(16/15/14) = 胜平负；WDL(13/11/10) + Boundary = 竞彩让球。
+# 两块内部都是 10=客胜、13/16=主胜（与比分块「先主队」一致，但**块与块的顺序相反**）。
+_JCZQ_STRAIGHT_CODES: tuple[tuple[str, str], ...] = (('16', 'home'), ('15', 'draw'), ('14', 'away'))
+_JCZQ_HANDICAP_CODES: tuple[tuple[str, str], ...] = (('13', 'home'), ('11', 'draw'), ('10', 'away'))
 _JCZQ_TOTAL_GOALS_CODES: tuple[tuple[str, str], ...] = (
     ('00', '0'), ('01', '1'), ('02', '2'), ('03', '3'),
     ('04', '4'), ('05', '5'), ('06', '6'), ('07', '7+'),
