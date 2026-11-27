@@ -66,6 +66,15 @@ PURGED = (
     'build_synthetic_market_data_from_500',
     # orphaned by deleting the unreachable legacy TG report builder
     'TelegramReportGenerator',
+    # the europa topology chain: the tables had no reader, so the whole write-only path
+    # (startup table creation included) went with it
+    'europa_db_lock',
+    'init_europa_topology_db',
+    'ingest_event_to_europa_db',
+    'build_topology_json_payload',
+    'EUROPA_TOPOLOGY_DB_FILE',
+    # the only two users of these were the unread daily-learning files
+    'REPORTS_DIR',
 )
 
 

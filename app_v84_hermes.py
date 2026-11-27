@@ -844,9 +844,7 @@ RULES_FILE = "brain_rules.txt"
 GAME_THEORY_FILE = "game_theory_report.txt"
 HIT_HISTORY_FILE = "hit_history.json"  # 近7日命中率历史
 FEATURE_DB_FILE = "feature_store.db"  # 特征库SQLite数据库文件
-EUROPA_TOPOLOGY_DB_FILE = "europa_topology.db"  # 欧罗巴无特征拓扑数据库文件
 MODELS_DIR = "models"  # 机器学习模型缓存目录
-REPORTS_DIR = "reports"  # 每日学习报告本地保存目录
 VENTROPY_PARAM_FILE = os.path.join(MODELS_DIR, "ventropy_team_parameters.json")
 VENTROPY_RISK_AVERSION = max(0.0, min(1.0, float(os.getenv("VENTROPY_RISK_AVERSION", "0.50"))))
 VENTROPY_MONTE_CARLO_SIMS = 10000
@@ -5612,183 +5610,6 @@ def update_feature_result_in_db(fixture_id, actual_score, status='completed', so
             return False
         finally:
             conn.close()
-
-
-# ================= 【欧罗巴无特征拓扑数据库】 =================
-europa_db_lock = threading.Lock()  # 欧罗巴拓扑DB写锁
-
-
-def init_europa_topology_db(db_path=None):
-    """初始化欧罗巴无特征拓扑数据库（建表+索引）。
-    在应用启动时调用一次，确保四张表存在。
-    """
-    if db_path is None:
-        db_path = os.path.join(os.path.dirname(os.path.abspath(HISTORY_FILE)), EUROPA_TOPOLOGY_DB_FILE)
-    try:
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS event_manifold (
-                event_id TEXT PRIMARY KEY,
-                entity_pos_id TEXT NOT NULL,
-                entity_neg_id TEXT NOT NULL,
-                timestamp DATETIME NOT NULL,
-                structural_leverage REAL NOT NULL,
-                motivation_divergence REAL DEFAULT 0.0,
-                exhaustion_penalty REAL DEFAULT 0.0
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS tensor_field_snapshot (
-                event_id TEXT PRIMARY KEY,
-                axis_pos_intrinsic_mass REAL,
-                axis_pos_market_mass REAL,
-                axis_neutral_deviation REAL,
-                axis_neg_resistance REAL,
-                FOREIGN KEY (event_id) REFERENCES event_manifold(event_id)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS topology_node_state (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id TEXT NOT NULL,
-                node_coordinate TEXT NOT NULL,
-                intrinsic_potential REAL NOT NULL,
-                market_conversion REAL NOT NULL,
-                topological_deviation REAL NOT NULL,
-                institutional_resistance REAL NOT NULL,
-                node_tags TEXT,
-                FOREIGN KEY (event_id) REFERENCES event_manifold(event_id)
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_node ON topology_node_state(event_id, node_coordinate)")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS liquidity_ledger (
-                event_id TEXT PRIMARY KEY,
-                density_index REAL NOT NULL,
-                clearing_spread REAL NOT NULL,
-                true_risk_axis TEXT,
-                FOREIGN KEY (event_id) REFERENCES event_manifold(event_id)
-            )
-        """)
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        print(f"   ⚠️ [欧罗巴拓扑DB] 初始化异常: {e}")
-        return False
-
-
-def ingest_event_to_europa_db(event_data, db_path=None):
-    """将单场拓扑数据写入欧罗巴无特征数据库（四张表）。
-    event_data: build_topology_json_payload 输出的 JSON 结构字典。
-    """
-    if not event_data or not isinstance(event_data, dict):
-        return False
-    if db_path is None:
-        db_path = os.path.join(os.path.dirname(os.path.abspath(HISTORY_FILE)), EUROPA_TOPOLOGY_DB_FILE)
-    try:
-        meta = event_data.get('event_metadata', {})
-        tensor = event_data.get('macro_tensor_summary', {})
-        nodes = event_data.get('topology_matrix_15pool', [])
-        ledger = event_data.get('liquidity_ledger', {})
-
-        event_id = meta.get('event_id', '')
-        if not event_id:
-            return False
-
-        # 解析 structural_leverage 为数值（从字符串如 "pos_minus_0.5" 提取）
-        sl_raw = str(meta.get('structural_leverage', 'level_0'))
-        try:
-            if 'minus' in sl_raw:
-                sl_val = -float(sl_raw.split('minus_')[-1])
-            elif 'plus' in sl_raw:
-                sl_val = float(sl_raw.split('plus_')[-1])
-            else:
-                sl_val = 0.0
-        except (ValueError, IndexError):
-            sl_val = 0.0
-
-        with europa_db_lock:
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-            try:
-                # 1. event_manifold
-                conn.execute(
-                    "INSERT OR REPLACE INTO event_manifold "
-                    "(event_id, entity_pos_id, entity_neg_id, timestamp, structural_leverage, motivation_divergence, exhaustion_penalty) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (event_id, meta.get('entity_pos', 'Entity_Alpha'),
-                     meta.get('entity_neg', 'Entity_Beta'),
-                     meta.get('timestamp', datetime.now().isoformat()),
-                     sl_val,
-                     float(meta.get('motivation_divergence', 0.0)),
-                     float(meta.get('exhaustion_penalty', 0.0)))
-                )
-
-                # 2. tensor_field_snapshot
-                dir_bias = tensor.get('directional_bias', {})
-                axis_pos = dir_bias.get('axis_positive', {})
-                axis_neu = dir_bias.get('axis_neutral', {})
-                dir_bias.get('axis_negative', {})
-                conn.execute(
-                    "INSERT OR REPLACE INTO tensor_field_snapshot "
-                    "(event_id, axis_pos_intrinsic_mass, axis_pos_market_mass, axis_neutral_deviation, axis_neg_resistance) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (event_id,
-                     float(axis_pos.get('intrinsic', 0.0)),
-                     float(axis_pos.get('market', 0.0)),
-                     float(axis_neu.get('intrinsic', 0.0)) - float(axis_neu.get('market', 0.0)),
-                     float(tensor.get('average_resistance', 1.0)))
-                )
-
-                # 3. topology_node_state（先删旧数据再插入）
-                conn.execute("DELETE FROM topology_node_state WHERE event_id = ?", (event_id,))
-                for node in nodes:
-                    tags_str = json.dumps(node.get('tags', []), ensure_ascii=False) if node.get('tags') else ''
-                    conn.execute(
-                        "INSERT INTO topology_node_state "
-                        "(event_id, node_coordinate, intrinsic_potential, market_conversion, topological_deviation, institutional_resistance, node_tags) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (event_id, node.get('node_coordinate', '[0,0]'),
-                         float(node.get('intrinsic_potential', 0.0)),
-                         float(node.get('market_conversion', 0.0)),
-                         float(node.get('topological_deviation', 0.0)),
-                         float(node.get('institutional_resistance', 0.0)),
-                         tags_str)
-                    )
-
-                # 4. liquidity_ledger
-                conn.execute(
-                    "INSERT OR REPLACE INTO liquidity_ledger "
-                    "(event_id, density_index, clearing_spread, true_risk_axis) "
-                    "VALUES (?, ?, ?, ?)",
-                    (event_id,
-                     float(ledger.get('density_index', 0.0)),
-                     float(ledger.get('spread_tension', 0.0)),
-                     str(ledger.get('true_risk_axis', '')))
-                )
-
-                conn.commit()
-                return True
-            except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                print(f"   ⚠️ [欧罗巴拓扑DB] 写入异常: {e}")
-                return False
-            finally:
-                conn.close()
-    except Exception as e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        print(f"   ⚠️ [欧罗巴拓扑DB] 连接异常: {e}")
-        return False
-
-# ================= 【欧罗巴无特征拓扑数据库 END】 =================
-
-# 【欧罗巴拓扑DB】启动时初始化数据库表结构。无界面模式不碰 session_state。
-try:
-    if _CLI_HEADLESS:
-        init_europa_topology_db()
-    elif 'EUROPA_TOPOLOGY_DB_INITED' not in st.session_state:
-        init_europa_topology_db()
-        st.session_state['EUROPA_TOPOLOGY_DB_INITED'] = True
-except Exception as _europa_init_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-    print(f"   ⚠️ [欧罗巴拓扑DB] 启动初始化异常(已降级): {_europa_init_err}")
 
 
 def parse_fallback_time(time_str):
@@ -29122,324 +28943,6 @@ def format_betfair_for_tg(bf_data):
 # ================= 【必发交易盈亏数据抓取 END】 =================
 
 
-# ================= 【空间拓扑与流动性账本 JSON 投喂协议】 =================
-def build_topology_json_payload(match_name, home_team, away_team, asian_handicap,
-                                 prob_dict, odds_correct_score, pool15_enriched,
-                                 betfair_data, fixture_id=""):
-    """将比赛数据映射为去特征化的空间拓扑与流动性账本 JSON 结构。
-
-    该函数将传统中文文本表格格式的数据，转换为去特征化的 JSON 结构，
-    用于投喂 DeepSeek 研判。
-
-    映射规则:
-        - home_team -> "Entity_Alpha", away_team -> "Entity_Beta"
-        - asian_handicap: 主让X球 -> "pos_minus_X", 主受X球 -> "pos_plus_X", 平手 -> "level_0"
-        - 比分坐标: "1-0" -> "[1, 0]", "胜其它" -> "[5, 0]", "平其它" -> "[4, 4]", "负其它" -> "[0, 5]"
-
-    Returns:
-        dict: 空间拓扑与流动性账本 JSON payload，异常时返回 None
-    """
-    from datetime import datetime as _dt
-
-    try:
-        # ---- 辅助：亚盘映射 ----
-        def _map_asian_handicap(ah_str):
-            """将亚盘让球文本映射为去特征化标识"""
-            if not ah_str:
-                return "level_0"
-            ah_str = str(ah_str).strip()
-            # 平手
-            if ah_str in ('0', '平手', '0.0', 'level'):
-                return "level_0"
-            # 尝试提取数值
-            import re as _re
-            # 主让X球: 负数或含"让"字
-            if '让' in ah_str or '主让' in ah_str:
-                nums = _re.findall(r'[\d.]+', ah_str)
-                if nums:
-                    return f"pos_minus_{nums[0]}"
-                return "pos_minus_1.0"
-            # 主受X球: 正数或含"受"字
-            if '受' in ah_str or '主受' in ah_str:
-                nums = _re.findall(r'[\d.]+', ah_str)
-                if nums:
-                    return f"pos_plus_{nums[0]}"
-                return "pos_plus_1.0"
-            # 纯数值判断
-            try:
-                val = float(ah_str)
-                if val < 0:
-                    return f"pos_minus_{abs(val)}"
-                elif val > 0:
-                    return f"pos_plus_{val}"
-                else:
-                    return "level_0"
-            except (ValueError, TypeError):
-                return f"pos_minus_{ah_str}"
-
-        # ---- 辅助：比分转坐标 ----
-        def _score_to_coordinate(score_str):
-            """将比分字符串转换为节点坐标"""
-            score_str = str(score_str).strip()
-            if '其它' in score_str:
-                if '胜' in score_str:
-                    return "[5, 0]"
-                elif '平' in score_str:
-                    return "[4, 4]"
-                else:
-                    return "[0, 5]"
-            try:
-                h, a = parse_score(score_str)
-
-                return f"[{h}, {a}]"
-            except (ValueError, IndexError):
-                return "[0, 0]"
-
-        # ---- 辅助：IBI 动态打标 ----
-        def _compute_tags(ibi, theory_pct, topo_dev, is_max_theory=False):
-            """根据 IBI/理论概率/拓扑偏差计算动态标签"""
-            tags = []
-            if ibi < 0.5:
-                tags.append("absolute_zero_anchor")
-                if is_max_theory:
-                    tags.append("max_suppression")
-            if ibi > 3.0:
-                tags.append("abnormal_spike")
-                if theory_pct < 3.0:
-                    tags.append("liquidity_trap")
-            if 0.8 <= ibi <= 1.2:
-                tags.append("equilibrium_node")
-            if topo_dev > 0.05:
-                tags.append("market_inflation")
-            if topo_dev < -0.10:
-                tags.append("deep_compression")
-            return tags
-
-        # ---- 辅助：方向状态判定 ----
-        def _axis_status(intrinsic, market):
-            """判定 compressed/inflated/neutral"""
-            if market < intrinsic - 0.001:
-                return "compressed"
-            elif market > intrinsic + 0.001:
-                return "inflated"
-            else:
-                return "neutral"
-
-        # ---- 辅助：从 betfair_data 兼容取值 ----
-        def _bf_pick(bf, *keys):
-            """兼容多种字段命名取浮点值"""
-            if not bf or not isinstance(bf, dict):
-                return 0.0
-            for k in keys:
-                v = bf.get(k)
-                if v is not None:
-                    try:
-                        return float(v)
-                    except (TypeError, ValueError):
-                        continue
-            return 0.0
-
-        # ==== 1. event_metadata ====
-        event_metadata = {
-            "event_id": f"SEQ_{fixture_id}" if fixture_id else f"SEQ_{hash(match_name) % 100000:05d}",
-            "entity_pos": "Entity_Alpha",
-            "entity_neg": "Entity_Beta",
-            "timestamp": _dt.now().isoformat(timespec='seconds'),
-            "structural_leverage": _map_asian_handicap(asian_handicap),
-        }
-
-        # ==== 2. 构建15池数据并计算 macro_tensor_summary ====
-        pool15_data = pool15_enriched if pool15_enriched else []
-
-        # 计算方向汇总
-        intrinsic_home, intrinsic_draw, intrinsic_away = 0.0, 0.0, 0.0
-        market_home, market_draw, market_away = 0.0, 0.0, 0.0
-
-        # 从 prob_dict 和 odds_correct_score 计算全局方向概率
-        if prob_dict:
-            for sc, p in prob_dict.items():
-                sc_str = str(sc).strip()
-                p_val = float(p) * 100 if float(p) <= 1.0 else float(p)
-                if '其它' in sc_str:
-                    if '胜' in sc_str:
-                        intrinsic_home += p_val
-                    elif '平' in sc_str:
-                        intrinsic_draw += p_val
-                    else:
-                        intrinsic_away += p_val
-                elif '-' in sc_str or ':' in sc_str:
-                    try:
-                        h, a = parse_score(sc_str)
-                        if h is None or a is None:
-                            continue
-
-                        if h > a:
-                            intrinsic_home += p_val
-                        elif h == a:
-                            intrinsic_draw += p_val
-                        else:
-                            intrinsic_away += p_val
-                    except (ValueError, IndexError):
-                        pass
-
-        # 从赔率反推市场方向概率
-        if odds_correct_score:
-            _total_inv = sum(1.0 / float(v) for v in odds_correct_score.values()
-                            if isinstance(v, (int, float)) and float(v) > 0)
-            if _total_inv > 0:
-                for sc, odds_v in odds_correct_score.items():
-                    sc_str = str(sc).strip()
-                    try:
-                        mp = (1.0 / float(odds_v)) / _total_inv * 100 if float(odds_v) > 0 else 0.0
-                    except (ValueError, TypeError, ZeroDivisionError):
-                        continue
-                    if '其它' in sc_str or 'Other' in sc_str:
-                        if '胜' in sc_str or 'W' in sc_str:
-                            market_home += mp
-                        elif '平' in sc_str or 'D' in sc_str:
-                            market_draw += mp
-                        else:
-                            market_away += mp
-                    elif '-' in sc_str or ':' in sc_str:
-                        try:
-                            h, a = parse_score(sc_str)
-                            if h is None or a is None:
-                                continue
-
-                            if h > a:
-                                market_home += mp
-                            elif h == a:
-                                market_draw += mp
-                            else:
-                                market_away += mp
-                        except (ValueError, IndexError):
-                            pass
-
-        intrinsic_total = intrinsic_home + intrinsic_draw + intrinsic_away
-        market_total = market_home + market_draw + market_away
-
-        # 计算平均阻力（IBI均值）
-        ibi_values = [float(it.get('ibi', 0) or 0) for it in pool15_data if float(it.get('ibi', 0) or 0) > 0]
-        avg_resistance = (sum(ibi_values) / len(ibi_values)) if ibi_values else 1.0
-
-        macro_tensor_summary = {
-            "intrinsic_total_mass": round(intrinsic_total, 4),
-            "market_total_mass": round(market_total, 4),
-            "average_resistance": round(avg_resistance, 4),
-            "directional_bias": {
-                "axis_positive": {
-                    "intrinsic": round(intrinsic_home, 4),
-                    "market": round(market_home, 4),
-                    "status": _axis_status(intrinsic_home, market_home)
-                },
-                "axis_neutral": {
-                    "intrinsic": round(intrinsic_draw, 4),
-                    "market": round(market_draw, 4),
-                    "status": _axis_status(intrinsic_draw, market_draw)
-                },
-                "axis_negative": {
-                    "intrinsic": round(intrinsic_away, 4),
-                    "market": round(market_away, 4),
-                    "status": _axis_status(intrinsic_away, market_away)
-                }
-            }
-        }
-
-        # ==== 3. topology_matrix_15pool ====
-        # 找出15池中理论概率最高的比分（用于 max_suppression 标签）
-        max_theory_score = ""
-        max_theory_val = -1.0
-        for it in pool15_data:
-            th = float(it.get('theory', 0) or 0)
-            if th > max_theory_val:
-                max_theory_val = th
-                max_theory_score = str(it.get('score', ''))
-
-        topology_matrix = []
-        for it in pool15_data:
-            try:
-                sc = str(it.get('score', '')).strip()
-                theory = float(it.get('theory', 0) or 0)
-                market = float(it.get('market', 0) or 0)
-                ibi = float(it.get('ibi', 0) or 0)
-                delta = float(it.get('delta', 0) or 0)
-
-                # topological_deviation = (market - theory) / 100 归一化为小数
-                topo_dev = delta / 100.0 if abs(delta) > 0.001 else 0.0
-
-                # institutional_resistance = IBI
-                is_max_th = (sc == max_theory_score)
-                tags = _compute_tags(ibi, theory, topo_dev, is_max_theory=is_max_th)
-
-                topology_matrix.append({
-                    "node_coordinate": _score_to_coordinate(sc),
-                    "intrinsic_potential": round(theory, 4),
-                    "market_conversion": round(market, 4),
-                    "topological_deviation": round(topo_dev, 4),
-                    "institutional_resistance": round(ibi, 4),
-                    "tags": tags
-                })
-            except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-                print(f"   ⚠️ [异常已捕获·continue降级 L22430] {_silent_err}")
-                continue
-
-        # ==== 4. liquidity_ledger ====
-        bf = betfair_data if isinstance(betfair_data, dict) and betfair_data.get('available') else {}
-
-        volume = _bf_pick(bf, 'volume', 'bf_volume')
-        h_pnl = _bf_pick(bf, 'home_profit_loss', 'home_profit', 'home_pnl')
-        d_pnl = _bf_pick(bf, 'draw_profit_loss', 'draw_profit', 'draw_pnl')
-        a_pnl = _bf_pick(bf, 'away_profit_loss', 'away_profit', 'away_pnl')
-
-        # spread_tension = abs(最大亏损) + 最大盈利
-        pnl_list = [h_pnl, d_pnl, a_pnl]
-        max_loss = min(pnl_list) if pnl_list else 0.0
-        max_profit = max(pnl_list) if pnl_list else 0.0
-        spread_tension = abs(max_loss) + max_profit
-
-        # true_risk_axis 映射
-        _axis_map = {'home': 'axis_positive', 'draw': 'axis_neutral', 'away': 'axis_negative'}
-        # 从 betfair_data 中获取 true_direction
-        raw_true_dir = ''
-        if bf:
-            raw_true_dir = bf.get('squeeze_true_direction', '') or bf.get('true_direction', '')
-        if not raw_true_dir and pnl_list and min(pnl_list) < -20:
-            # 降级：最大亏损方向
-            min_idx = pnl_list.index(min(pnl_list))
-            raw_true_dir = ['home', 'draw', 'away'][min_idx]
-        true_risk_axis = _axis_map.get(raw_true_dir, 'axis_positive')
-
-        liquidity_ledger = {
-            "medium_source": "primary_dark_pool",
-            "density_index": round(volume, 2),
-            "clearing_exposure": {
-                "axis_positive_pnl": round(h_pnl, 2),
-                "axis_neutral_pnl": round(d_pnl, 2),
-                "axis_negative_pnl": round(a_pnl, 2)
-            },
-            "spread_tension": round(spread_tension, 2),
-            "true_risk_axis": true_risk_axis
-        }
-
-        # ==== 组装最终 payload ====
-        payload = {
-            "event_metadata": event_metadata,
-            "macro_tensor_summary": macro_tensor_summary,
-            "topology_matrix_15pool": topology_matrix,
-            "liquidity_ledger": liquidity_ledger,
-        }
-
-        return payload
-
-    except Exception as _build_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-        import traceback
-        print(f"   ⚠️ [空间拓扑JSON] 构建异常(已降级): {_build_err}")
-        traceback.print_exc()
-        return None
-
-# ================= 【空间拓扑与流动性账本 JSON 投喂协议 END】 =================
-
-
 def get_official_matches():
     """获取今日在售竞彩：仅澳客网 jingcai 列表；禁止 500/欧洲库进阶段1。"""
     print("\n[赛事获取] 澳客竞彩在售名单（OKOOO-only）...")
@@ -41199,23 +40702,8 @@ Top5比分及概率：
         except Exception as _ds_imm_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             print(f"   ⚠️ [DeepSeek即时] 异常(已降级): {_ds_imm_err}")
 
-        # 【欧罗巴拓扑数据库】写入当前场次拓扑快照
-        try:
-            _europa_payload = build_topology_json_payload(
-                match_name=cn_name,
-                home_team=cn_name.split(' vs ')[0].strip() if ' vs ' in cn_name else cn_name.split('vs')[0].strip() if 'vs' in cn_name else cn_name,
-                away_team=cn_name.split(' vs ')[1].strip() if ' vs ' in cn_name else (cn_name.split('vs')[1].strip() if 'vs' in cn_name else ''),
-                asian_handicap=standardize_ah_line(asian_handicap) if 'asian_handicap' in locals() else None,
-                prob_dict=prob_dict if 'prob_dict' in locals() else {},
-                odds_correct_score=odds_correct_score if 'odds_correct_score' in locals() else {},
-                pool15_enriched=_gemini_pool15_enriched if '_gemini_pool15_enriched' in locals() and _gemini_pool15_enriched else [],
-                betfair_data=betfair_data if 'betfair_data' in locals() and isinstance(betfair_data, dict) else {},
-                fixture_id=str(fid),
-            )
-            if _europa_payload:
-                ingest_event_to_europa_db(_europa_payload)
-        except Exception as _edb_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   ⚠️ [欧罗巴拓扑DB] 写入异常(已降级): {_edb_err}")
+        # 【欧罗巴拓扑快照】曾在此构建 build_topology_json_payload 并写入 europa_topology.db。
+        # 四张表全仓没有任何 SELECT（读者已在 legacy purge 里删除），只写不读，故整条链删除。
 
         # 保存数据（即使save失败也不影响已发送的TG报告）
         try:
@@ -41225,34 +40713,8 @@ Top5比分及概率：
         except Exception as save_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
             print(f"   ⚠️ [数据保存异常] {save_err}（TG报告已发送，不影响推送）")
 
-        # 【自动特征采集】将本场144维特征向量保存到增量训练集
-        try:
-            _ml_features_file = os.path.join(MODELS_DIR, "incremental_features.json")
-            _ml_features = load_json(_ml_features_file) if os.path.exists(_ml_features_file) else []
-            # 【Bug修复】'dict' object has no attribute 'append' 根因：load_json 在文件
-            # 损坏/解析失败时默认返回 {}（dict），而此处需要 list 才能 .append。
-            # 增加类型守卫：非 list 时重置为空列表（dict 若有历史数据则取其 values 兜底）
-            if isinstance(_ml_features, dict):
-                _ml_features = list(_ml_features.values()) if _ml_features else []
-            elif not isinstance(_ml_features, list):
-                _ml_features = []
-            _feature_sample = {
-                'fid': str(fid),
-                'time': datetime.now().strftime('%Y-%m-%d %H:%M'),
-                'lambda_home': float(lam_h_dyn) if 'lam_h_dyn' in locals() and lam_h_dyn is not None else None,
-                'lambda_away': float(lam_a_dyn) if 'lam_a_dyn' in locals() and lam_a_dyn is not None else None,
-                'asian_handicap': standardize_ah_line(float(asian_handicap)) if 'asian_handicap' in locals() and asian_handicap is not None else None,
-                'ou_line': float(ou_line) if 'ou_line' in locals() and ou_line is not None else None,
-                'first_score': history[str(fid)].get('predicted_score'),
-                'second_score': history[str(fid)].get('second_score'),
-            }
-            _ml_features.append(_feature_sample)
-            # 只保留最近500条
-            if len(_ml_features) > 500:
-                _ml_features = _ml_features[-500:]
-            save_json(_ml_features_file, _ml_features)
-        except Exception as _silent_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   ⚠️ [异常已捕获·pass降级 L30853] {_silent_err}")
+        # 【自动特征采集】曾把 144 维特征样本追加进 models/incremental_features.json（上限 500 条）。
+        # 全仓只有这一个写点、没有任何读取，训练走 history/feature_store，故写点连同样本组装一起删除。
 
         # 优先返回 DeepSeek 终裁①（emit 已回写 history）；否则回落模型首选项
         try:
@@ -44106,7 +43568,7 @@ def daily_result_learning_report():
       Step2 用更新后的历史数据强制重训泊松回归模型，保存 models/poisson_regression.pkl。
       Step3 生成学习报告：每场预测vs实际、T/M/Δ/IBI、所在分差组的 avg_T/avg_M/avg_IBI/avg_Δ、
             数据趋势（命中/未命中模式识别）、每场改进方案（信号被忽略/误判反推）。
-      Step4 本地保存 reports/daily_learning_YYYY-MM-DD.txt + Telegram 纯文本推送。
+      Step4 Telegram 纯文本推送（不再落盘 reports/daily_learning_*.txt，那份文件零回读）。
 
     全程 try/except 降级保护；"其它"类虚拟比分安全处理；并发重入由 daily_learn_lock 守护。
     返回报告文本字符串（失败时返回错误说明字符串）。
@@ -44529,15 +43991,9 @@ def daily_result_learning_report():
         _lines.append("报告结束｜复盘正文由研判撰写")
         _report_text = "\n".join(_lines)
 
-        # ===== Step4: 本地保存 + Telegram 推送 =====
-        try:
-            os.makedirs(REPORTS_DIR, exist_ok=True)
-            _report_path = os.path.join(REPORTS_DIR, f"daily_learning_{_report_date}.txt")
-            with open(_report_path, "w", encoding="utf-8") as _f:
-                _f.write(_report_text)
-            print(f"   💾 [每日学习] 报告已保存: {_report_path}")
-        except Exception as _e:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
-            print(f"   ⚠️ [每日学习] 本地报告保存失败: {_e}")
+        # ===== Step4: Telegram 推送 =====
+        # 曾在此把同一份 _report_text 落盘成 reports/daily_learning_<date>.txt；
+        # 全仓没有任何回读点（reports/ 下只有 six_market_contradictions 与 okooo_cache 有读者），内容就在下面的 TG 正文里。
 
         try:
             # 纯文本发送（parse_mode=None），send_tg 内部自动分段
@@ -44664,16 +44120,7 @@ def deepseek_flash_run_learning_report():
         )
     except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
         pass
-    try:
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        _p = os.path.join(
-            REPORTS_DIR,
-            f"daily_learning_ds_{(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')}.txt",
-        )
-        with open(_p, 'w', encoding='utf-8') as _f:
-            _f.write(full)
-    except Exception:  # noqa: BLE001,S110 - intentional degraded-mode guard or structure-preserving fallback  # nosec B110  # intentional degraded-mode pass fallback
-        pass
+    # 曾把 full 再落盘成 reports/daily_learning_ds_<date>.txt；零回读，正文已在上面的 TG 推送里。
     return full
 
 

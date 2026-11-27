@@ -35,6 +35,7 @@ import contextlib
 import importlib
 import io
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +113,195 @@ def test_review_leaves_the_working_directory_untouched_but_still_returns_the_cod
         f'along with the file write; got {code!r}'
     )
     assert '真实正文' in report, 'the report text itself must survive too'
+
+
+def _fresh_app(monkeypatch, workdir: Path, state: Path):
+    """Import the app for real, from `workdir`, with `state` as its data directory.
+
+    The writes being guarded resolve their path from the *process working directory* or
+    from a module constant, so a cached module would prove nothing: the import has to
+    happen inside the empty directory we then inspect. Network and sleeping are the only
+    things stubbed — nothing that writes is patched, because a patched write cannot fail
+    the guard.
+
+    `MODELS_DIR` is redirected by the caller before this runs, so the feature store (a
+    real, reader-backed database that is expected to be created) is not mistaken for
+    debris in the program directory.
+    """
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv('BLADE_HEADLESS', '1')
+
+    import requests
+
+    def _offline(*_a, **_k):
+        raise requests.ConnectionError('offline guard: no network in this test')
+
+    class _OfflineSession:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def get(self, *_a, **_k):
+            _offline()
+
+        def post(self, *_a, **_k):
+            _offline()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(requests, 'get', _offline)
+    monkeypatch.setattr(requests, 'post', _offline)
+    monkeypatch.setattr(requests, 'Session', _OfflineSession)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+
+    spec = importlib.util.spec_from_file_location('_zero_reader_writes_app', ROOT / 'app_v84_hermes.py')
+    app = importlib.util.module_from_spec(spec)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        spec.loader.exec_module(app)
+
+    for name in ('HISTORY_FILE', 'HIT_HISTORY_FILE', 'RULES_FILE', 'GAME_THEORY_FILE'):
+        monkeypatch.setattr(app, name, str(state / Path(getattr(app, name)).name))
+    monkeypatch.setattr(app, 'safe_api_get', lambda *a, **k: None)
+    monkeypatch.setattr(app, 'send_tg', lambda *a, **k: False)
+    return app
+
+
+def _leftovers(workdir: Path) -> list[str]:
+    return sorted(str(p.relative_to(workdir)) for p in workdir.rglob('*'))
+
+
+def test_import_leaves_no_europa_topology_db(monkeypatch, tmp_path) -> None:
+    """Importing the app must not create `europa_topology.db` in the working directory.
+
+    Nothing ever read its four tables: the only SQL against `event_manifold`,
+    `tensor_field_snapshot`, `topology_node_state` and `liquidity_ledger` was
+    INSERT/DELETE, and `build_topology_json_payload`'s output went straight into
+    `ingest_event_to_europa_db` and nowhere else. With the module-level
+    `init_europa_topology_db()` call gone, importing the app is a pure read of the tree.
+
+    `rglob('*')` rather than a filename glob, for the reason the review guard gives:
+    moving the same SQLite file somewhere else in the tree is not a fix. The feature
+    store is a real reader-backed state file and is redirected out of the way here so it
+    cannot mask an `europa_topology.db` that came back.
+    """
+    install_dir = tmp_path / 'install_dir'
+    install_dir.mkdir()
+    state = tmp_path / 'state'
+    state.mkdir()
+    monkeypatch.setenv('MODELS_DIR', str(tmp_path / 'models'))
+
+    _fresh_app(monkeypatch, install_dir, state)
+    leftovers = _leftovers(install_dir)
+    assert not any('europa_topology' in name for name in leftovers), (
+        f'import still builds europa_topology.db: {leftovers} — nothing reads its tables'
+    )
+    assert leftovers == [], (
+        'importing the app wrote into the program directory: '
+        f'{leftovers} — a headless import has no business touching the tree'
+    )
+
+
+def test_the_completed_match_path_leaves_the_working_directory_untouched(monkeypatch, tmp_path) -> None:
+    """`analyze_match` must not drop `models/incremental_features.json` either.
+
+    That file had exactly one mention in the whole repo — the write itself — plus the
+    read-modify-write that fed it. Nothing trained from it (`train_daily_poisson` reads
+    `HISTORY_FILE`, the ML bundle reads `models/blade_ml_bundle.pkl`), so the sample
+    assembly went with it.
+
+    The guard runs the real `analyze_match` (network and sleeping stubbed, nothing else)
+    from the empty working directory it was just imported into, and compares the whole
+    tree to the snapshot taken *after* import: the import's own artefacts are therefore
+    not part of the claim, and the claim is exactly "this call writes nothing new".
+
+    `<workdir>/models` is created empty first, and deliberately not `MODELS_DIR`: the old
+    writer joined the module constant `"models"` onto the process cwd and called
+    `save_json` without creating the parent, so without that directory the write would
+    have failed for the wrong reason and the guard would have passed against the bug.
+    """
+    install_dir = tmp_path / 'install_dir'
+    install_dir.mkdir()
+    (install_dir / 'models').mkdir()
+    state = tmp_path / 'state'
+    state.mkdir()
+    models = tmp_path / 'models'
+    models.mkdir()
+    monkeypatch.setenv('MODELS_DIR', str(models))
+
+    app = _fresh_app(monkeypatch, install_dir, state)
+    assert app.MODELS_DIR == 'models', (
+        'this guard depends on the writer resolving models/ against the cwd'
+    )
+    before = _leftovers(install_dir)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        app.analyze_match({'id': 'GUARD_FID', 'cn_name': 'Guard 主队 vs Guard 客队', 'league': '测试'})
+
+    created = sorted(set(_leftovers(install_dir)) - set(before))
+    assert not [name for name in created if 'incremental_features' in name], (
+        f'the completed-match path wrote the incremental sample file again: {created}'
+    )
+    assert not list(models.rglob('incremental_features.json')), (
+        'the sample file moved under MODELS_DIR instead of being deleted'
+    )
+    assert created == [], (
+        'the completed-match path wrote into the program directory: '
+        f'{created} — history and the feature store live outside it'
+    )
+
+
+def test_daily_learning_report_keeps_the_telegram_body_but_writes_no_file(monkeypatch, tmp_path) -> None:
+    """The daily report must still reach Telegram, and must not also land on disk.
+
+    `daily_result_learning_report` wrote `reports/daily_learning_<date>.txt` and
+    `deepseek_flash_run_learning_report` wrote `reports/daily_learning_ds_<date>.txt`.
+    Neither is read anywhere (`reports/` only has writers), and the same text is already
+    pushed to Telegram — so the file write is the only thing that goes.
+
+    Both halves are pinned: an empty working directory stays empty (a revived write
+    fails here even if it picks a new filename), and the Telegram body handed to
+    `send_tg` still contains the per-match section, which is what the file duplicated.
+    """
+    install_dir = tmp_path / 'install_dir'
+    install_dir.mkdir()
+    state = tmp_path / 'state'
+    state.mkdir()
+    monkeypatch.setenv('MODELS_DIR', str(tmp_path / 'models'))
+
+    app = _fresh_app(monkeypatch, install_dir, state)
+    yesterday = (app.datetime.now() - app.timedelta(days=1)).strftime('%Y-%m-%d 20:00')
+    with (state / 'match_history.json').open('w', encoding='utf-8') as fh:
+        app.json.dump(
+            {'GUARD_FID': {
+                'match': 'GUARD_MARKER_主队 vs GUARD_MARKER_客队',
+                'time': yesterday,
+                'actual_score': '2-1',
+                'predicted_score': '2-1',
+                'second_score': '1-0',
+                'league': '测试',
+            }},
+            fh,
+            ensure_ascii=False,
+        )
+    sent: list[str] = []
+    monkeypatch.setattr(app, 'send_tg', lambda text, **kwargs: sent.append(str(text)))
+
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        report = app.daily_result_learning_report()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        app.deepseek_flash_run_learning_report()
+
+    leftovers = _leftovers(install_dir)
+    assert leftovers == [], (
+        'the daily learning report wrote into the program directory: '
+        f'{leftovers} — the body belongs in the Telegram message'
+    )
+    assert sent, 'the daily report no longer pushes anything to Telegram'
+    assert 'GUARD_MARKER_主队' in sent[0], (
+        'the Telegram body lost the per-match section the file used to duplicate; '
+        f'got {sent[0][:200]!r}'
+    )
+    assert '【第三步：逐场预测与实际赛果' in sent[0], 'the report body itself must survive'
+    assert 'GUARD_MARKER_主队' in report, 'the returned report text must survive too'
 
 
 def test_market_heat_table_name_is_importable_where_it_is_used() -> None:
