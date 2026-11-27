@@ -30,7 +30,7 @@ try {
 # 注意：这个 commit 必须同时包含 app_v84_hermes.py 和 configure_blade_quant.ps1。
 # 改这个值必须同时更新两份文件都来自同一个 commit，否则刷新会装到不一致的组合。
 # d470f7d = 铁律 A–F 净化 + 用户两条裁决（多场汇总只作风险提示、_to_float 无默认值）
-$PinCommit = 'd470f7d1cc758dd7d41df7a5db7d0c968fc2e7aa'
+$PinCommit = '972613caf00a282e6149eeec2884a15b2689d2f0'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
