@@ -1034,24 +1034,71 @@ def audit_configure_wizard(audit: Audit, root: Path) -> None:
         audit.record('installer:hints-configure-script',
                      'configure_blade_quant.ps1' in installer_text)
         audit.record('installer:runs-check-summary', '--check' in installer_text)
-        # The installer ships app_v84_hermes.py plus the wizard and nothing else by
-        # default, so any standalone tool must be named in its download list. Without
-        # this, okooo_jczq_scraper.py would exist only in the repository while the
-        # user's machine had no copy of it — and importing it would fail outright.
-        audit.record(
-            'installer:downloads-scraper',
-            'okooo_jczq_scraper.py' in installer_text,
-            'standalone scraper is not shipped to the user',
-        )
-        audit.record(
+        audit_installer_ships_scraper(audit, installer_text)
+
+
+
+def _installer_download_call(installer_text: str, variable: str) -> int:
+    """Index of the `Get-RemoteArtifact -FileName <variable>` call, or -1.
+
+    Anchored on the *call*, not on the file name appearing anywhere: an earlier
+    version of this check matched the bare string `okooo_jczq_scraper.py`, so
+    deleting the download and leaving the `$ScraperName = '...'` assignment plus a
+    Chinese comment still passed while users could no longer receive the file.
+    """
+    pattern = (
+        r'Get-RemoteArtifact\s+-FileName\s+\$' + re.escape(variable) + r'\b'
+    )
+    found = re.search(pattern, installer_text)
+    return found.start() if found else -1
+
+
+def _installer_assignment(installer_text: str, variable: str, filename: str) -> int:
+    """Index of `$<variable> = '<filename>'`, or -1."""
+    pattern = (
+        r'^\s*\$' + re.escape(variable) + r"\s*=\s*'" + re.escape(filename) + r"'\s*$"
+    )
+    found = re.search(pattern, installer_text, re.MULTILINE)
+    return found.start() if found else -1
+
+
+def audit_installer_ships_scraper(audit: Audit, installer_text: str) -> None:
+    """The installer must actually download the standalone scraper and its module.
+
+    The installer ships app_v84_hermes.py and the wizard only, so on a user's
+    machine `okooo_mobile_cs` otherwise resolves to the embedded copy — which does
+    not expose the private symbols the scraper binds at import time. Both files
+    must therefore be fetched by a real call, after their name variables are set.
+    """
+    required = (
+        ('ScraperName', 'okooo_jczq_scraper.py', 'installer:downloads-scraper'),
+        (
+            'ScraperDepName', 'okooo_mobile_cs.py',
             'installer:downloads-scraper-dependency',
-            "'okooo_mobile_cs.py'" in installer_text,
+        ),
+    )
+    for variable, filename, label in required:
+        assignment = _installer_assignment(installer_text, variable, filename)
+        audit.record(
+            f'{label}:assigned',
+            assignment >= 0,
+            f'${variable} is not assigned {filename!r}',
+        )
+        call = _installer_download_call(installer_text, variable)
+        audit.record(
+            f'{label}:downloaded',
+            call >= 0,
             (
-                'the scraper imports okooo_mobile_cs private symbols at module level; '
-                'the embedded copy alone is not enough'
+                f'no `Get-RemoteArtifact -FileName ${variable}` call: the file is '
+                'named but never fetched, so users never receive it'
             ),
         )
-
+        if assignment >= 0 and call >= 0:
+            audit.record(
+                f'{label}:assignment-precedes-download',
+                assignment < call,
+                f'${variable} is assigned after it is downloaded',
+            )
 
 
 def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:

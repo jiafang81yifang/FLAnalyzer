@@ -336,6 +336,13 @@ Write-Ok "$ConfigName ($cfgKb KB)"
 Write-Step "下载独立抓取器"
 # 抓取器是给用户手动跑的 CLI（python okooo_jczq_scraper.py --html ...）。
 # 它依赖同目录下真实的 okooo_mobile_cs.py，所以两个文件都要落盘。
+#
+# 覆盖语义：这两个文件**每次安装/刷新都无条件覆盖**（Save-RemoteFile 用
+# [System.IO.File]::Create，会截断重写）。理由：抓取器在模块级绑定
+# okooo_mobile_cs 的私有符号（_http_attempt 等），用户本地若残留一个改过或
+# 旧版的同名文件，抓取器会在 import 阶段直接崩，而且失败原因看起来像代码 bug。
+# 程序化依赖不做「保留用户改动」——要改请改仓库或另存副本，不要改这两个文件。
+# config.env / knowledge_base 是用户数据，走的是「已存在就不动」的相反语义。
 if (-not (Get-RemoteArtifact -FileName $ScraperName -OutFile $ScraperFile)) {
     Fail "下载 okooo_jczq_scraper.py 失败。请检查网络，或打开 Clash 后重跑这条命令。"
 }
