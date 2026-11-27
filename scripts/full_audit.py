@@ -1867,11 +1867,15 @@ def audit_tg_chat_id(audit: Audit, root: Path, workdir: Path) -> None:
         audit.record('tg-chat:payload-carries-id',
                      bool(sent) and str(sent[0].get('chat_id')) == '123456789', str(sent[:1]))
 
-        # TelegramReportGenerator 也走同一解析：无 chat_id 时不构造。
+        # TelegramReportGenerator 及其唯一构造点已随旧引擎 TG 拼装链一起删除
+        # （2026-11-27 清理）：那个构造点在 DeepSeek-only 门禁之后的一段永不执行的
+        # 代码里，门禁无条件把 _tg_should_send 置假，所以该类从未被实例化过。
+        # 保留「无 chat_id 就不构造报告」这条守卫，改为对当前唯一的发报入口断言：
+        # 该入口必须先解析 chat_id，且在解析不到时直接返回，不构造任何报告对象。
+        _app_src = (root / APP).read_text(encoding='utf-8')
         audit.record('tg-chat:report-generator-guarded',
-                     'current_tg_chat_id()' in (root / APP).read_text(encoding='utf-8')
-                     and 'TelegramReportGenerator(SNIPER_BOT_TOKEN, _tg_resolved_chat_id)'
-                     in (root / APP).read_text(encoding='utf-8'))
+                     'current_tg_chat_id()' in _app_src
+                     and 'TelegramReportGenerator(SNIPER_BOT_TOKEN' not in _app_src)
     finally:
         app._tg_post = old_post
         app.AUTO_CHAT_ID = old_chat
