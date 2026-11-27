@@ -184,19 +184,52 @@ def test_unnamed_continuation_lines_are_never_dropped(deliver: list[str]) -> Non
 
 
 # --------------------------------------------------------------------------- #
-# 5. 兄弟函数仍是恒等（另一个工人正在为它们写改名提案）
+# 5. 纯文本阶段绝不注入 HTML 标签（真正的不变量）
 # --------------------------------------------------------------------------- #
-def test_sibling_identity_functions_stay_identity() -> None:
-    """`strip_tg_english` / `pin_match_title_first` 等仍是恒等，别顺手改。
+def test_plaintext_stage_never_injects_html_markup() -> None:
+    """`send_tg` 的 `parse_mode=None` 那条路径不允许出现标签。
 
-    其中一条发送路径是 `parse_mode=None`：让它们注入 HTML 会把标签漏成字面量。
+    这里**不再**要求兄弟函数恒等。那 11 个函数要么已经真的实现（纯文本操作，
+    例如 `pin_match_title_first` 只重排行序），要么连同调用点一起删掉了
+    （理由见 `tests/test_identity_helpers.py` 与 internal 报告）。
+
+    真正的不变量是：从纯文本进来、走这条非 HTML 的发送路径，出去时不许
+    多出任何标签。旧文档串担心的正是「让它们注入 HTML 会把标签漏成字面量」，
+    这条断言把那件事直接钉住，而不是靠「函数必须什么都不做」。
     """
     sample = '🧠【DeepSeek 数据分析研判报告】\n  正文 2-1'
-    assert DA.pin_match_title_first(sample) == sample
-    assert DA.strip_tg_english(sample) == sample
-    assert DA.sanitize_six_market_tg_text(sample) == sample
-    for name in ('mark_selected_scores_deep_yellow', 'mark_landing_direction_green',
-                 'mark_locked_direction_yellow', 'mark_prob_ou_wdl_red'):
-        fn = getattr(DA, name, None)
-        assert fn is not None, name
-        assert fn(sample) == sample, name
+    for name in dir(DA):
+        if not name.startswith(('strip_', 'pin_', 'sanitize_', 'align_', 'mark_', 'restrict_')):
+            continue
+        fn = getattr(DA, name)
+        if not callable(fn):
+            continue
+        out = fn(sample)
+        if not isinstance(out, str):
+            continue
+        for tag in ('<b>', '</b>', '<u>', '</u>', '<i>', '</i>', '<font', '</font>'):
+            assert tag not in out, f'{name} 往纯文本里注入了 {tag}'
+
+
+def test_plain_text_send_path_keeps_the_body_and_adds_no_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实 `send_tg` 的纯文本路径：标签不许出现，正文逐字保留。"""
+    sent: list[str] = []
+    monkeypatch.setattr(app, 'SNIPER_BOT_TOKEN', '123456789:' + 'A' * 30)
+    monkeypatch.setattr(app, 'AUTO_CHAT_ID', '-1001234567890')
+    monkeypatch.setattr(app, 'TG_PROXIES', None)
+    monkeypatch.setattr(app, '_TG_CHAT_CAPTURE_STATE',
+                        {'captured': '-1001234567890', 'printed': ''})
+    monkeypatch.setattr(app, '_tg_post',
+                        lambda url, payload: sent.append(str(payload.get('text') or '')) or True)
+    app.reset_tg_delivery_state()
+    try:
+        body = '🧠【DeepSeek 数据分析研判报告】\n  正文 2-1 ①比分 2-1 ②比分 1-0'
+        assert app.send_tg(body, parse_mode=None) is True
+        delivered = '\n'.join(sent)
+        for tag in ('<b>', '</b>', '<u>', '</u>', '<font', '</font>'):
+            assert tag not in delivered, delivered
+        assert '2-1' in delivered and '正文' in delivered, delivered
+    finally:
+        app.reset_tg_delivery_state()
