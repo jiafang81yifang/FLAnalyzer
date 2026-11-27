@@ -951,26 +951,107 @@ def test_real_record_markdown_and_telegram_are_well_formed() -> None:
 # --------------------------------------------------------------------------- #
 # heat_seats 访问器：三种情形各一条
 # --------------------------------------------------------------------------- #
-def test_heat_seats_present_score_is_one() -> None:
+def test_heat_seats_follow_rank_not_presence() -> None:
+    """真实抓包：heat_seats 按排名位次给席，不是「是否在榜」。
+
+    presence 口径下 31 项全是 1（ranking 有 31 行），这一列等于没有信息。
+    位次口径下前 8 名依次 8..1 席，第 9 名及以后 0 席。
+    """
     rec = _real_rec()
     seats = sm._matrix_heat_seats_from_rec(rec)
     assert len(seats) == 31
-    # 该抓包的 ranking 覆盖 31 项，每项恰好出现一次
-    assert set(seats.values()) == {1}
+    ranking = [r['score'] for r in rec['score_market_heat']['ranking']]
+    assert len(ranking) == 31, '真实抓包的 ranking 必须覆盖 31 项（这正是 presence 退化 的原因）'
+
+    # 前 8 名：8,7,6,5,4,3,2,1
+    for position, score in enumerate(ranking[:8], start=1):
+        assert seats[score] == 9 - position, (score, position, seats[score])
+    # 第 9 名及以后：0
+    for score in ranking[8:]:
+        assert seats[score] == 0, (score, seats[score])
+    assert sum(seats.values()) == 36          # 8+7+...+1
+    assert sorted(set(seats.values())) == [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
 
-def test_heat_seats_absent_score_is_zero_without_fusing() -> None:
-    """ranking 只保留一项：出现的是 1，其余 30 项是 0，且不熔断。"""
+def test_real_record_heat_seats_has_at_least_two_distinct_values() -> None:
+    """要求：真实抓包上 heat_seats 至少 2 个不同取值（presence 口径只有 1 个）。"""
+    rec = _real_rec()
+    bundle = sm.build_matrices_from_rec(rec)
+    values = {r.heat_seats for r in bundle.matrix_31}
+    assert len(values) >= 2, f'heat_seats 退化成单值 {values}'
+    assert values != {1}, 'heat_seats 恒为 1 说明退回 presence 口径'
+    assert max(values) == sm.TOP_HEAT_SEATS
+
+
+def test_rank9_and_beyond_get_zero_seats() -> None:
+    """第 9 名恰好 0 席——边界，不是 1 也不是负数。"""
+    rec = _real_rec()
+    rec['score_market_heat'] = {
+        'ranking': [{'score': s} for s in sm.THIRTY_ONE_SCORES]
+    }
+    seats = sm._matrix_heat_seats_from_rec(rec)
+    for position, score in enumerate(sm.THIRTY_ONE_SCORES, start=1):
+        expect = 9 - position if position <= 8 else 0
+        assert seats[score] == expect, (position, score, seats[score])
+    assert seats[sm.THIRTY_ONE_SCORES[8]] == 0   # 第 9 名
+    assert seats[sm.THIRTY_ONE_SCORES[30]] == 0  # 第 31 名
+
+
+def test_ranked_score_absent_from_list_gets_zero_without_fusing() -> None:
+    """榜单只列一项：第 1 名 8 席，其余 30 项 0 席，且不熔断。"""
     rec = _real_rec()
     rec['score_market_heat'] = {'available': True, 'ranking': [{'score': '1-0', 'odds': 17.0, 'heat': 0.0588}]}
     seats = sm._matrix_heat_seats_from_rec(rec)
-    assert seats['1-0'] == 1
+    assert seats['1-0'] == 8
     assert seats['2-0'] == 0
     assert seats['负其它'] == 0
-    assert sum(seats.values()) == 1
-    # 0 是真实观测（该比分没进热度榜），不是兜底
+    assert sum(seats.values()) == 8
+    # 0 是真实观测（第 9 名及以后），不是兜底
     bundle = sm.build_matrices_from_rec(rec)
-    assert sum(r.heat_seats for r in bundle.matrix_31) == 1
+    assert sum(r.heat_seats for r in bundle.matrix_31) == 8
+
+
+def test_core_heat_ratio_is_structurally_binary_but_seats_carry_the_signal() -> None:
+    """core_heat_ratio 在现有 15 池定义下**必然**只取 0.0/1.0——这不是热度口径问题。
+
+    5 个核心比分（1-0/2-0/0-1/0-2/1-1）各自独占一个单比分池，
+    所以任何一个池要么整池是核心（ratio=1.0），要么整池无核心（ratio=0.0），
+    要么整池零热度（ratio=None）。把 heat_seats 从 presence 改成位次**改变不了**
+    这一点——它只改变分子的数值，不改变「池里有没有核心」这个二分。
+
+    真正的信息量落在 core_heat_seats / total_heat_seats 这两个**整数**上：
+    位次口径下它们不再等于 1 和池内项数，取值有分布。
+    """
+    # 结构前提：每个核心比分都独占单比分池
+    core = sm.CORE_PROTECTED_SET
+    core_pools = [
+        (pid, scores) for pid, _n, scores in sm.TACTICAL_POOL_DEFINITIONS
+        if any(sc in core for sc in scores)
+    ]
+    assert len(core_pools) == 5
+    assert all(len(scores) == 1 for _pid, scores in core_pools)
+    assert not any(
+        any(sc in core for sc in scores) and len(scores) > 1
+        for _pid, _n, scores in sm.TACTICAL_POOL_DEFINITIONS
+    )
+
+    rec = _real_rec()
+    bundle = sm.build_matrices_from_rec(rec)
+    ratios = {p.core_heat_ratio for p in bundle.matrix_tactical_pools if p.core_heat_ratio is not None}
+    assert ratios <= {0.0, 1.0}, ratios          # 恒二值，已固化
+    # 位次口径下，携带信息的是席位整数，不是这个比值
+    assert len({p.core_heat_seats for p in bundle.matrix_tactical_pools}) >= 2
+    assert sorted({p.core_heat_seats for p in bundle.matrix_tactical_pools}) == [0, 4, 6, 7, 8]
+
+
+def test_fixed_heat_seats_stop_equalling_pool_size() -> None:
+    """位次口径下 total_heat_seats 不再恒等于池内项数（presence 口径的退化特征）。"""
+    rec = _real_rec()
+    bundle = sm.build_matrices_from_rec(rec)
+    assert any(
+        p.total_heat_seats != len(p.scores) for p in bundle.matrix_tactical_pools
+    ), 'total_heat_seats 全部等于池内项数，说明退回了 presence 口径'
+    assert sum(p.total_heat_seats for p in bundle.matrix_tactical_pools) == 36
 
 
 def test_heat_seats_missing_heat_block_fuses_not_zero() -> None:
@@ -989,14 +1070,16 @@ def test_heat_seats_empty_ranking_fuses_not_zero() -> None:
         sm._matrix_heat_seats_from_rec(rec)
 
 
-def test_heat_seats_counts_repeats_rather_than_clamping() -> None:
-    """同一比分在 ranking 里出现两次就是 2——不写死成布尔量。"""
+def test_duplicate_ranked_score_takes_its_best_position() -> None:
+    """同一比分在榜单出现两次：只能坐一个席位，取最靠前的位次。"""
     rec = _real_rec()
-    rec['score_market_heat'] = {'ranking': [{'score': '1-0'}, {'score': '1-0'}, {'score': '2-1'}]}
+    rec['score_market_heat'] = {
+        'ranking': [{'score': '2-0'}, {'score': '1-0'}, {'score': '1-0'}]
+    }
     seats = sm._matrix_heat_seats_from_rec(rec)
-    assert seats['1-0'] == 2
-    assert seats['2-1'] == 1
-    assert sum(seats.values()) == 3
+    assert seats['2-0'] == 8     # 第 1 名
+    assert seats['1-0'] == 7     # 第 2 名（不是第 3 名的 6，也不累加成 13）
+    assert seats['0-0'] == 0
 
 
 # --------------------------------------------------------------------------- #

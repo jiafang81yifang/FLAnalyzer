@@ -989,40 +989,61 @@ def _heat_ranking_records(rec: Mapping[str, Any] | None) -> list[Mapping[str, An
 
 
 def _matrix_heat_seats_from_rec(rec: Mapping[str, Any] | None) -> dict[str, int]:
-    """把 score_market_heat.ranking 的「出现与否」映射成 31 项 heat_seats。
+    """按**排名位次**把 score_market_heat.ranking 映射成 31 项 heat_seats。
 
-    口径（**唯一定义点，只此一处可改**）：某比分出现在
-    ``rec['score_market_heat']['ranking']`` 里 = ``1``，没出现 = ``0``。
+    口径（**唯一定义点，只此一处可改**）：
+    某比分在 ``rec['score_market_heat']['ranking']`` 里的位次 ``rank``（1-based，
+    最热为 1）→ ``heat_seats = TOP_HEAT_SEATS + 1 - rank``，即前 8 名依次
+    8/7/6/5/4/3/2/1 席；**第 9 名及以后为 0 席**；不在榜单里的比分为 0 席。
 
-    这是**热度榜单出现次数**，不是注单数、不是席位金额、不是下注人数。
-    ``build_score_market_heat_ranking`` 按比分去重（``seen`` 集合），所以
-    「出现次数」在真实数据上恒为 0/1，这里如实按计数累计——哪天上游允许
-    同一比分多行，计数会自动跟着变成 2、3，不需要改这里。
+    为什么不用「是否出现」：``build_score_market_heat_ranking`` 按赔率排序返回
+    **全部** 31 项，所以「出现与否」对每一项都为真，``heat_seats`` 恒等于 1、
+    ``core_heat_ratio`` 恒等于 0.0/1.0、``total_heat_seats`` 恒等于池内项数——
+    这一列等于没有信息。实测（1347776）：
 
-    定义尚未经用户裁决（契约 §6.1 记录在案）。改口径只能改这一个函数，
-    并在 TG 段脚注同步改文案；矩阵本体不感知 heat_seats 从哪来。
+        ranking rows: 31
+        distinct heat_seats: [1]
+        distinct core_heat_ratio: [0.0, 1.0]
+        total_heat_seats == pool size: True (all 15 pools)
+
+    改用位次后，这四项才有区分度：池内热度合计不再等于项数，核心热度占比
+    才有值域分布。
+
+    这是**热度榜前 N 名的席位**，不是注单数、不是席位金额、不是下注人数。
+    定义**待用户裁决**（契约 §6.1）；改口径只能改这一个函数，并同步改
+    ``HEAT_SEATS_DEFINITION_NOTE`` 的脚注文案。
 
     ``score_market_heat`` 缺失、不是字典、``ranking`` 不是列表或为空 —— 一律
     抛 MatrixIntegrityError，**绝不返回全 0**：没有热度榜单就是没有这一维数据，
     拿 0 顶上去会让 core_heat_ratio 看起来像「算过」。
+
+    榜单里同一比分出现多次时取**最靠前**（最小）的位次：一个比分只能坐一个席位。
     """
     record = rec if isinstance(rec, Mapping) else {}
     heat = record.get(MATRIX_HEAT_KEY)
     if not isinstance(heat, Mapping):
         raise MatrixIntegrityError(
-            f"[矩阵熔断] 热度席位缺失：记录无 {MATRIX_HEAT_KEY}（无法按热度榜单出现次数取 heat_seats）"
+            f"[矩阵熔断] 热度席位缺失：记录无 {MATRIX_HEAT_KEY}"
+            "（无法按热度榜单排名位次取 heat_seats）"
         )
     rows = _heat_ranking_records(record)
     if not rows:
         raise MatrixIntegrityError(
             f"[矩阵熔断] 热度席位缺失：{MATRIX_HEAT_KEY}.ranking 为空"
         )
-    counts: dict[str, int] = {}
-    for row in rows:
+    best_rank: dict[str, int] = {}
+    for position, row in enumerate(rows, start=1):
         score = str(row.get('score') or '').replace(':', '-').strip()
-        if score:
-            counts[score] = counts.get(score, 0) + 1
-    return {score: counts.get(score, 0) for score in THIRTY_ONE_SCORES}
+        if not score:
+            continue
+        if score not in best_rank or position < best_rank[score]:
+            best_rank[score] = position
+    return {
+        score: (TOP_HEAT_SEATS + 1 - best_rank[score])
+        if best_rank.get(score, 0) and best_rank[score] <= TOP_HEAT_SEATS
+        else 0
+        for score in THIRTY_ONE_SCORES
+    }
 
 
 def market_odds_from_rec(rec: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1101,9 +1122,17 @@ def build_matrices_from_rec(
 
 
 HEAT_SEATS_DEFINITION_NOTE = (
-    "热度席位=该比分在 score_market_heat.ranking 的出现次数（真实数据上为 0/1）；"
+    "热度席位=该比分在热度榜的排名位次，前8名依次8..1席，第9名及以后0席；"
     "定义待用户裁决，仅一处可改"
 )
+
+TOP_HEAT_SEATS = 8
+"""热度榜前几名有席位：第 1 名 8 席递减到第 8 名 1 席，第 9 名及以后 0 席。
+
+用户原话是「热度席位」，最自然的解释是「热度榜前 8 的席位」，而不是
+「是否出现在榜上」——后者在真实数据上对 31 项全部为真，等于没有定义。
+定义**待用户裁决**；要改只改这里与 ``_matrix_heat_seats_from_rec``。
+"""
 
 GOAL_MATRIX_TOP_N = 16
 """市均前 16：按真实市均赔率升序（赔率最低 = 最被看好）取前 16 项。"""
