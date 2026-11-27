@@ -12,7 +12,11 @@ FLAnalyzer · blade-quant 一键安装 / 一键刷新（Windows PowerShell）
 只更新程序和启动脚本，config.env 一个字节都不碰。
 
 用法（复制整行到 PowerShell，回车即可）：
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/cursor/fix-runtime-issues-84a8/install_blade_quant.ps1 | iex"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/jiafang81yifang/FLAnalyzer/master/install_blade_quant.ps1 | iex"
+
+注意：这条 URL 里的分支必须是默认分支（master），不能是任何 cursor/* 分支。
+复制提示的人拿到的必须是主线上这个安装器；若指向某个功能分支，用户会被静默装回
+该分支上的旧 $PinCommit 与旧程序。full_audit 的 hint:default-branch 会盯着这一点。
 
 可传参数指定安装目录（默认 C:\DevProjects\blade-quant，没有 C:\DevProjects 则用 用户目录\blade-quant）：
   & { $env:BLADE_INSTALL_DIR='D:\blade-quant'; irm <上面的URL> | iex }
@@ -32,7 +36,7 @@ try {
 # 33e1a64 = 31池统一100%基准(jc%去水) + TG读ds_payload内包 + 市热超理论/heat按序输出
 # 0725f23 = 冻结λ落到记录(31表theory不再整列空) + 市均页405时竞彩31仍抓/自愈补齐那9项
 # daa0ad1 = 发报质量门真的会拦(缺六盘口/缺DeepSeek外壳拒发) + 空HTML不再顶掉整份正文
-$PinCommit = 'f4773f2f8dd957a657435aa5c4fd888c7eabe91d'
+$PinCommit = '8da5f4212059c9671c0706c6086440ffc88acaaf'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
