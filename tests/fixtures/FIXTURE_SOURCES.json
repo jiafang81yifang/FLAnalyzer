@@ -86,5 +86,13 @@
     "encoding": "gb18030",
     "captured": "2026-11-25",
     "used_by": "31-merge tests: 25 score columns (22 on-grid + 4-3/3-4/4-4 off-grid), gb18030"
+  },
+  "okooo_jczq_list_20261126.html": {
+    "url": "https://m.okooo.com/jczq/",
+    "status": 200,
+    "bytes": 207365,
+    "encoding": "gbk (meta charset=GBK)",
+    "captured": "2026-11-26",
+    "used_by": "test_jczq_list_* (23 cards, 23 MatchIDs, 31 JC score odds each, full DOM selectors)"
   }
 }

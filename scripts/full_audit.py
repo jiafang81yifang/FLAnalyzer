@@ -119,8 +119,56 @@ def audit_syntax(audit: Audit, root: Path) -> None:
             audit.record(f'syntax:{name}', True)
 
 
+def _embedded_sources(block: str) -> dict[str, str]:
+    """Pull the `_sources = {...}` JSON object out of the embedded block.
+
+    The block is generated as `_sources = ` followed by a json.dumps payload. Brace
+    matching (string-aware) is used rather than a regex so a `}` inside a module
+    body cannot truncate the parse.
+    """
+    anchor = '_sources = '
+    start = block.find(anchor)
+    if start < 0:
+        return {}
+    start += len(anchor)
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(block)):
+        char = block[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = json.loads(block[start:index + 1])
+                except (ValueError, TypeError):
+                    return {}
+                return {k: v for k, v in data.items() if isinstance(v, str)}
+    return {}
+
+
 def audit_embedded_block(audit: Audit, root: Path) -> None:
-    """The single-file build must contain every sibling module and be in sync."""
+    """The single-file build must contain every sibling module and be in sync.
+
+    The sync check compares each module's **full text** (not a fingerprint of its
+    first line). Comparing only the first line let a 5254-byte drift in
+    okooo_mobile_cs pass: the docstring was untouched while the body had changed,
+    so a stale embedded copy shipped and importing the new scraper on a user's
+    machine raised AttributeError. Whole-body equality is the only check that
+    catches that class of bug.
+    """
     text = (root / APP).read_text(encoding='utf-8')
     start = '# >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>'
     end = '# <<< FLANALYZER_EMBEDDED_RUNTIME_MODULES <<<'
@@ -128,27 +176,38 @@ def audit_embedded_block(audit: Audit, root: Path) -> None:
     if start not in text or end not in text:
         return
     block = text.split(start, 1)[1].split(end, 1)[0]
+    embedded = _embedded_sources(block)
+    audit.record(
+        'embed:sources-parseable',
+        bool(embedded),
+        'could not parse the embedded _sources payload',
+    )
     for module in MODULES:
         source = (root / f'{module}.py')
         if not source.exists():
             audit.record(f'embed:{module}', False, 'sibling module missing')
             continue
-        # The block stores sources as a JSON object, so each module's body appears
-        # escaped. Compare a stable fingerprint instead of raw text.
-        marker = f'"{module}"'
-        audit.record(f'embed:{module}', marker in block, 'module not referenced in embedded payload')
-        first_line = source.read_text(encoding='utf-8').lstrip().splitlines()[0]
-        # 构建器用 ensure_ascii=False 写出内嵌块，非 ASCII 首行（中文 docstring）
-        # 在块里是原样 UTF-8；两种转义形式都接受，避免只有 ASCII 首行才能过检。
-        escaped_forms = {
-            json.dumps(first_line)[1:-1],
-            json.dumps(first_line, ensure_ascii=False)[1:-1],
-        }
+        audit.record(f'embed:{module}', module in embedded, 'module not referenced in embedded payload')
+        disk_text = source.read_text(encoding='utf-8')
+        embedded_text = embedded.get(module, '')
+        if embedded_text == disk_text:
+            audit.record(f'embed-in-sync:{module}', True)
+            continue
         audit.record(
             f'embed-in-sync:{module}',
-            any(form in block for form in escaped_forms),
-            'embedded copy is stale; run scripts/build_single_file.py',
+            False,
+            (
+                'embedded copy is stale; run scripts/build_single_file.py '
+                f'(embedded {len(embedded_text)} chars vs disk {len(disk_text)} chars, '
+                f'diff {len(disk_text) - len(embedded_text):+d})'
+            ),
         )
+    extra = sorted(set(embedded) - set(MODULES))
+    audit.record(
+        'embed:no-unknown-modules',
+        not extra,
+        f'embedded payload carries unregistered modules: {extra}',
+    )
 
 
 def audit_module_api(audit: Audit, root: Path) -> None:
@@ -1000,7 +1059,71 @@ def audit_configure_wizard(audit: Audit, root: Path) -> None:
         audit.record('installer:hints-configure-script',
                      'configure_blade_quant.ps1' in installer_text)
         audit.record('installer:runs-check-summary', '--check' in installer_text)
+        audit_installer_ships_scraper(audit, installer_text)
 
+
+
+def _installer_download_call(installer_text: str, variable: str) -> int:
+    """Index of the `Get-RemoteArtifact -FileName <variable>` call, or -1.
+
+    Anchored on the *call*, not on the file name appearing anywhere: an earlier
+    version of this check matched the bare string `okooo_jczq_scraper.py`, so
+    deleting the download and leaving the `$ScraperName = '...'` assignment plus a
+    Chinese comment still passed while users could no longer receive the file.
+    """
+    pattern = (
+        r'Get-RemoteArtifact\s+-FileName\s+\$' + re.escape(variable) + r'\b'
+    )
+    found = re.search(pattern, installer_text)
+    return found.start() if found else -1
+
+
+def _installer_assignment(installer_text: str, variable: str, filename: str) -> int:
+    """Index of `$<variable> = '<filename>'`, or -1."""
+    pattern = (
+        r'^\s*\$' + re.escape(variable) + r"\s*=\s*'" + re.escape(filename) + r"'\s*$"
+    )
+    found = re.search(pattern, installer_text, re.MULTILINE)
+    return found.start() if found else -1
+
+
+def audit_installer_ships_scraper(audit: Audit, installer_text: str) -> None:
+    """The installer must actually download the standalone scraper and its module.
+
+    The installer ships app_v84_hermes.py and the wizard only, so on a user's
+    machine `okooo_mobile_cs` otherwise resolves to the embedded copy — which does
+    not expose the private symbols the scraper binds at import time. Both files
+    must therefore be fetched by a real call, after their name variables are set.
+    """
+    required = (
+        ('ScraperName', 'okooo_jczq_scraper.py', 'installer:downloads-scraper'),
+        (
+            'ScraperDepName', 'okooo_mobile_cs.py',
+            'installer:downloads-scraper-dependency',
+        ),
+    )
+    for variable, filename, label in required:
+        assignment = _installer_assignment(installer_text, variable, filename)
+        audit.record(
+            f'{label}:assigned',
+            assignment >= 0,
+            f'${variable} is not assigned {filename!r}',
+        )
+        call = _installer_download_call(installer_text, variable)
+        audit.record(
+            f'{label}:downloaded',
+            call >= 0,
+            (
+                f'no `Get-RemoteArtifact -FileName ${variable}` call: the file is '
+                'named but never fetched, so users never receive it'
+            ),
+        )
+        if assignment >= 0 and call >= 0:
+            audit.record(
+                f'{label}:assignment-precedes-download',
+                assignment < call,
+                f'${variable} is assigned after it is downloaded',
+            )
 
 
 def audit_lambda_guard(audit: Audit, root: Path, workdir: Path) -> None:
