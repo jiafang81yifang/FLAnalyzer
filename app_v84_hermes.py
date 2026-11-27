@@ -3929,9 +3929,21 @@ def apply_ghost_node_injection(pool15_enriched, full_31_pool, fissure_payload, h
             if lock_direction not in ('胜', '平', '负'):
                 lock_direction = ''
             if lock_direction:
+                # `_classify_score_wdl` returns (normalised_score, direction) once the
+                # direction-consistency work lands; on this branch alone it still returns
+                # the bare direction string. Read the direction defensively so the lock
+                # filters correctly under either contract — comparing the whole return
+                # value silently matches nothing as soon as it becomes a tuple, which
+                # makes the lock keep every ghost instead of dropping the wrong ones.
+                def _ghost_direction(ghost):
+                    raw = DeepSeekAnalyzer._classify_score_wdl(str(ghost.get('score') or ''))
+                    if isinstance(raw, (tuple, list)):
+                        return raw[1] if len(raw) > 1 else ''
+                    return str(raw or '')
+
                 kept = [
                     ghost for ghost in injected
-                    if DeepSeekAnalyzer._classify_score_wdl(str(ghost.get('score') or '')) == lock_direction
+                    if _ghost_direction(ghost) == lock_direction
                 ]
                 dropped = [
                     str(ghost.get('score') or '')
