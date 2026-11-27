@@ -393,7 +393,7 @@ def _odd_value(raw: Any) -> float | None:
             return None
     try:
         number = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) and number > 1 else None
 

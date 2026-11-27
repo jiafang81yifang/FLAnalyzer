@@ -1603,7 +1603,7 @@ class ScoreOddsAnalyzer:
                 min_depth = 0.03
         try:
             self.min_depth = float(min_depth)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             self.min_depth = 0.03
 
     @staticmethod
@@ -1663,7 +1663,7 @@ class ScoreOddsAnalyzer:
         try:
             market_f = float(market)
             dev = float(deviation)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
         if text in {'0-0', '1-1', '2-2', '3-3'}:
             return True
@@ -1694,7 +1694,7 @@ class ScoreOddsAnalyzer:
             try:
                 market = float(row.get('market_avg'))
                 lottery = float(row.get('lottery_odds'))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if market <= 1.0 or lottery <= 1.0:
                 continue
@@ -2600,7 +2600,7 @@ def _frozen_lambda_of(rec, payload=None):
     def _pos(value):
         try:
             number = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         return number if number > 0 else None
 
@@ -2962,7 +2962,7 @@ class UnifiedFootballMappingEngine:
         try:
             lam_h = float(lam_h)
             lam_a = float(lam_a)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         if not (math.isfinite(lam_h) and math.isfinite(lam_a)) or lam_h <= 0 or lam_a <= 0:
             return None
@@ -3132,7 +3132,7 @@ class CoreQuantEngine:
         try:
             lam_h = float(lam_h)
             lam_a = float(lam_a)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {}
         if not (math.isfinite(lam_h) and math.isfinite(lam_a)) or lam_h <= 0 or lam_a <= 0:
             return {}
@@ -3140,7 +3140,7 @@ class CoreQuantEngine:
         lam_a = max(0.05, lam_a)
         try:
             rho = max(0.0, min(float(rho), min(lam_h, lam_a) * 0.5))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             rho = 0.0
 
         lam_h_ind = max(0.01, lam_h - rho)
@@ -3299,7 +3299,7 @@ class UltimateScoreMatrixDetector:
                     o = float(odds)
                     if o > 1.0:
                         inv_map[str(score).replace(':', '-').strip()] = 1.0 / o
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
 
             total_inv = sum(inv_map.values())
@@ -3337,7 +3337,7 @@ class UltimateScoreMatrixDetector:
                     _pv = float(v)
                     if _sc and _pv >= 0:
                         p_theory[_sc] = _pv
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
 
             if not p_theory:
@@ -3649,7 +3649,7 @@ class TensorGravityReversalEngine:
                 theory = float(item.get('theory', item.get('theory_prob', 0.0)) or 0.0)
                 market = float(item.get('market', item.get('market_prob', 0.0)) or 0.0)
                 ibi = float(item.get('ibi', 0.0) or 0.0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 # A non-numeric field is a data-integrity problem. It is marked
                 # explicitly on the row rather than silently dropping the row,
                 # so the report stays complete and the defect stays visible.
@@ -3887,7 +3887,7 @@ class TailEndGhostNodeInjector:
             try:
                 theory = float(theory_raw)
                 float(delta_raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 skipped.append({'score': score, 'index': idx, 'reason': 'non_numeric_theory_or_delta'})
                 continue
             if score not in jczq_options:
@@ -5477,7 +5477,7 @@ class MathUtils:
         for value in values:
             try:
                 number = float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(number) and number > 0:
                 cleaned.append(number)
@@ -6974,7 +6974,7 @@ class DeviationDrivenEngine:
             if context and context.get('ou_line') not in (None, ''):
                 try:
                     _ou_line_ctx = float(context.get('ou_line'))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     _ou_line_ctx = None
             if goal_sum is not None and first_option and '-' in first_option and _ou_line_ctx is not None:
                 ou_pred = ou_verdict_from_score_safe(first_option, _ou_line_ctx)
@@ -8515,7 +8515,7 @@ class FootballGameTheoryEngine:
                 }
             expected_total = float(home_lambda) + float(away_lambda)
             market_over_line = float(market_over_line)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {
                 "model": "Prisoners_Dilemma",
                 "triggered": False,
@@ -8587,7 +8587,7 @@ class FootballGameTheoryEngine:
         """
         try:
             total_firepower = float(home_lambda) + float(away_lambda)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {
                 "model": "Cournot_Competition",
                 "total_expected_output": None,
@@ -9539,7 +9539,7 @@ def _ur_float(value: Any, default: float = 0.0) -> float:
     """把任意输入压成有限浮点，NaN/inf/垃圾值统一回退 default。"""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return number if math.isfinite(number) else default
 
@@ -10554,7 +10554,7 @@ def calc_poisson_prob(lam_h, lam_a, max_goals=8, rho=-0.05, matrix_context=None,
     try:
         lam_h = float(lam_h)
         lam_a = float(lam_a)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return {}
     if not (math.isfinite(lam_h) and math.isfinite(lam_a)) or lam_h <= 0 or lam_a <= 0:
         return {}
@@ -10728,7 +10728,7 @@ def generate_31pool_theory_vs_market_chart(match_data):
                 _nk = str(_k).replace(':', '-').strip()
                 try:
                     _fv = float(_v)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if _fv > 1.0:
                     _odds_norm[_nk] = _fv
@@ -10939,7 +10939,7 @@ class ScoreNode:
         if ou_line is not None:
             try:
                 _line = float(ou_line)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 _line = None
         if _line is not None:
             _settle = OverUnderEngine.settle_ou_bet(self.total_goals, _line)
@@ -11105,7 +11105,7 @@ def _ou_line_lambda_floor(market_ou_line):
     import math
     try:
         line = float(market_ou_line)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if line < 3.0 or line > 8.0:
         return None
@@ -11171,7 +11171,7 @@ def calibrate_lambda_with_market_line(lambda_home, lambda_away, market_ou_line):
     try:
         lam_h = float(lambda_home)
         lam_a = float(lambda_away)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return lambda_home, lambda_away
     floor_total = _ou_line_lambda_floor(market_ou_line)
     if floor_total is None:
@@ -11187,7 +11187,7 @@ def apply_lambda_offset_compensation(lambda_val, offset, lo=0.1, hi=6.0):
     """
     try:
         return max(float(lo), min(float(hi), float(lambda_val) + float(offset or 0.0)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return lambda_val
 
 
@@ -11573,7 +11573,7 @@ def apply_generalized_dna_correction(lambda_h, lambda_a, ev_data, trajectory_ou)
         if lambda_h is None or lambda_a is None:
             return lambda_h, lambda_a
         return float(lambda_h), float(lambda_a)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return lambda_h, lambda_a
 
 
@@ -11876,7 +11876,7 @@ class AsianHandicapEngine:
         """
         try:
             self.handicap_line = float(asian_handicap) if asian_handicap is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             self.handicap_line = None
         self.prob_dict = prob_dict or {}
         self.diff_matrix = diff_matrix or {}
@@ -11946,7 +11946,7 @@ class AsianHandicapEngine:
             h = int(home_goals)
             a = int(away_goals)
             line = float(handicap_line)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {
                 'result': 'unknown', 'result_cn': '无法结算',
                 'multiplier': 0.0, 'handicap_type': None, 'virtual_margin': None
@@ -12413,7 +12413,7 @@ class AsianHandicapEngine:
         """
         try:
             _ah = float(handicap_line) if handicap_line is not None else 0.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _ah = 0.0
 
         result = {'home_win': 0.0, 'home_half_win': 0.0, 'draw': 0.0,
@@ -12629,7 +12629,7 @@ class JingCaiHandicapEngine:
         """从亚盘推导竞彩让球数（降级方案）。整数盘直接用，半球/季度取最近整数。"""
         try:
             ah = float(asian_handicap)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         if abs(ah) < 0.01:
             return 0
@@ -14508,7 +14508,7 @@ def total_goals_aggregator(score_matrix, ou_line=None, ou_odds=None):
     if ou_line is not None:
         try:
             _line = float(ou_line)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _line = None
     nodes = score_matrix.get_all_nodes() if score_matrix else []
     if _line is None:
@@ -15420,7 +15420,7 @@ class AdvancedGameModel(CoreQuantEngine):
                 return float(default)
             ratio = float(value) / cls.LEAGUE_GOAL_BASELINE
             return max(0.55, min(1.80, ratio))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return float(default)
 
     def calculate_dynamic_lambdas(self, home_team, away_team, base_home_lambda,
@@ -15632,7 +15632,7 @@ class AdvancedGameModel(CoreQuantEngine):
                     value = record.get('ventropy_entropy_delta')
                 try:
                     value = coerce_float(value)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if math.isfinite(value):
                     values.append(value)
@@ -15652,7 +15652,7 @@ class AdvancedGameModel(CoreQuantEngine):
         for value in (entropy_history or []):
             try:
                 number = float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(number):
                 history.append(number)
@@ -16931,7 +16931,7 @@ def _pool31_aggregate(raw_probs):
         key = str(score or '').replace('：', '-').replace(':', '-').strip()
         try:
             value = float(prob or 0.0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if key in jc_set:
             out[key] = out.get(key, 0.0) + value
@@ -16977,7 +16977,7 @@ def build_pool31_option_rows(
     if lam_home is not None and lam_away is not None:
         try:
             _lh, _la = float(lam_home), float(lam_away)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _lh = _la = 0.0
     if _lh > 0 and _la > 0:
         try:
@@ -17002,7 +17002,7 @@ def build_pool31_option_rows(
                 value = info.get('prob', 0) if isinstance(info, dict) else (info or 0)
                 try:
                     raw[str(score)] = float(value or 0.0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
         theory_src = _pool31_aggregate(raw)
         theory_from = 'ranked_pool_aggregate'
@@ -17061,7 +17061,7 @@ def build_pool31_option_rows(
         _raw = (odds_correct_score or {}).get(_off)
         try:
             _v = float(_raw) if _raw is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _v = None
         if _v and _v > 1:
             others_folded.setdefault(_bucket, {})[_off] = _v
@@ -19144,7 +19144,7 @@ class BetfairSqueezeAnalyzer:
                 if _v is not None:
                     try:
                         return float(_v)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         continue
             return 0.0
 
@@ -19227,32 +19227,32 @@ class BetfairSqueezeAnalyzer:
                                 if _k in _o:
                                     try:
                                         return coerce_float(_o[_k])
-                                    except (TypeError, ValueError):
+                                    except (TypeError, ValueError, OverflowError):
                                         continue
                         _sp = _slice.get('price')
                         try:
                             return coerce_float(_sp) if _sp is not None else None
-                        except (TypeError, ValueError):
+                        except (TypeError, ValueError, OverflowError):
                             return None
                     _p_prev = _pick_price(_first)
                     _p_curr = _pick_price(_last)
                     try:
                         _v_prev = coerce_float(_first.get('volume')) if _first.get('volume') is not None else None
                         _v_curr = coerce_float(_last.get('volume')) if _last.get('volume') is not None else None
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         _v_prev = _v_curr = None
             # 退化：6小时切片直接传参
             if _p_prev is None or _p_curr is None:
                 try:
                     _p_prev = float(prev_price) if prev_price is not None else None
                     _p_curr = float(curr_price) if curr_price is not None else None
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     _p_prev = _p_curr = None
             if _v_prev is None or _v_curr is None:
                 try:
                     _v_prev = float(prev_volume) if prev_volume is not None else None
                     _v_curr = float(curr_volume) if curr_volume is not None else None
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     _v_prev = _v_curr = None
 
             if _p_prev is None or _p_curr is None or _v_prev is None or _v_curr is None:
@@ -21817,7 +21817,7 @@ class MLEBivariatePoissonEngine:
         """
         try:
             hcap = float(handicap)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         frac = abs(hcap * 4) % 2
         if abs(frac - 1.0) < 1e-9:  # 四分之一盘: x.25 / x.75
@@ -21847,7 +21847,7 @@ class MLEBivariatePoissonEngine:
         """大球概率（总进球 > line；对整数盘/四分之一盘同样按去push口径处理）。"""
         try:
             ln = float(line)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         frac = abs(ln * 4) % 2
         if abs(frac - 1.0) < 1e-9:  # 四分之一盘
@@ -21900,7 +21900,7 @@ class MLEBivariatePoissonEngine:
         ah_line = None
         try:
             ah_line = float(asian_handicap) if asian_handicap is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             ah_line = None
         if p_ah is not None and ah_line is not None:
             targets.append(('ah', (ah_line, p_ah[0]), 1.5))
@@ -21908,7 +21908,7 @@ class MLEBivariatePoissonEngine:
         ou_ln = None
         try:
             ou_ln = standardize_ou_line(float(ou_line)) if ou_line is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             ou_ln = None
         if ou_ln is not None:
             if p_ou is not None:
@@ -22102,7 +22102,7 @@ class KLDivergenceAnomalyDetector:
             if d:
                 try:
                     agg[d] += float(p)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
         total = sum(agg.values())
         if total > 0:
@@ -22125,7 +22125,7 @@ class KLDivergenceAnomalyDetector:
                 if v is not None:
                     try:
                         return float(v)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         continue
             return None
         vols = {
@@ -22215,7 +22215,7 @@ class KLDivergenceAnomalyDetector:
                     if v is not None:
                         try:
                             return float(v)
-                        except (TypeError, ValueError):
+                        except (TypeError, ValueError, OverflowError):
                             continue
                 return 0.0
             volume = _pick('volume', 'bf_volume')
@@ -23402,7 +23402,7 @@ class AsianHandicapPricer:
         try:
             net_odds = float(decimal_odds) - 1.0
             handicap = float(handicap)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         expected_value = 0.0
         cluster_scores = set()
@@ -23625,7 +23625,7 @@ def _one_lambda_ready(value):
     """单侧 λ 是否已形成（有限正数）。"""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
     return math.isfinite(number) and number > 0
 
@@ -23670,7 +23670,7 @@ def _safe_lambda(value, default=0.0):
     """λ 的数值安全转换：None/NaN/非数一律回落到 default（仅用于展示/门控）。"""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return float(default)
     return number if math.isfinite(number) else float(default)
 
@@ -23679,7 +23679,7 @@ def _safe_odds(value, default=None):
     """赔率安全转换：非正数或不可转换时返回 default，避免 None 参与比较。"""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if not math.isfinite(number) or number <= 0:
         return default
@@ -27215,7 +27215,7 @@ def _record_jc_handicap(rec):
             continue
         try:
             val = float(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if abs(val - round(val)) > 1e-6 or abs(val) > 5:
             continue
@@ -27246,7 +27246,7 @@ def _admit_mobile_line(rec, line_key, channel_key, lo, hi, quarter=False):
         return None
     try:
         val = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isfinite(val):
         return None
@@ -27625,7 +27625,20 @@ def _ensure_mobile_six(rec, mid, force=False):
             print(f"   ⚠️ [手机六盘口] 补抓失败: {_e}")
         return False
     _six_mark_collected(rec, mid)
-    rec['six_market_mobile'] = pack
+    if isinstance(pack, dict) and pack:
+        _prev_six = rec.get('six_market_mobile')
+        if isinstance(_prev_six, dict) and _prev_six:
+            _prev_missing = list(_prev_six.get('missing') or [])
+            _merged_six = {**_prev_six, **pack}
+            _merged_six['missing'] = [
+                k for k in (_merged_six.get('missing') or [])
+                if k in _prev_missing or not _merged_six.get(k)
+            ]
+            rec['six_market_mobile'] = _merged_six
+        else:
+            rec['six_market_mobile'] = pack
+    elif not isinstance(rec.get('six_market_mobile'), dict) or not rec.get('six_market_mobile'):
+        rec['six_market_mobile'] = pack or {}
     _attach_mobile_exchange_pnl(rec, mid)
     _attach_mobile_lineup_if_missing(rec, mid)
     _attach_mobile_ah_ou_books(rec, mid)
@@ -27796,8 +27809,16 @@ def enrich_history_okooo_cs_facts(rec, cn_name='', force_rescrape=False):
                 # 与 _merge_okooo_detail_into_rec 共用同一份键表：两处各留一份拷贝
                 # 必然漂移（这里曾漏掉 jc_score_odds/jc_score_source/jc_score_orderid）。
                 for _ck in _OKOOO_DETAIL_KEYS:
-                    if pack.get(_ck) not in (None, '', [], {}):
-                        rec[_ck] = pack.get(_ck)
+                    if pack.get(_ck) in (None, '', [], {}):
+                        continue
+                    if _ck == 'six_market_mobile':
+                        _prev_six = rec.get('six_market_mobile')
+                        _new_six = pack.get(_ck)
+                        if isinstance(_prev_six, dict) and _prev_six and isinstance(_new_six, dict):
+                            _filled = {k: v for k, v in _new_six.items() if v not in (None, '', [], {})}
+                            rec[_ck] = {**_prev_six, **_filled}
+                            continue
+                    rec[_ck] = pack.get(_ck)
                 if isinstance(pack.get('markets'), dict):
                     rec['okooo_markets'] = pack.get('markets')
                 _page = pack.get('correct_score_page_avg') or pack.get('correct_score_books_avg')
@@ -29472,7 +29493,7 @@ class MarketDefenseInsightAnalyzer:
                     value = coerce_float(row.get('odds', row.get('odd', row.get('value'))))
                     if key and value > 1.0:
                         market_odds[key] = value
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
         market_hot = [key for key, _ in sorted(market_odds.items(), key=lambda pair: pair[1])]
         market_ranks = {key: idx for idx, key in enumerate(market_hot, 1)}
@@ -29849,7 +29870,7 @@ def _compute_ibi_series_from_snapshot(snapshot, theory_probs=None):
                     _iv = 1.0 / float(_o)
                     _inv[_s] = _iv
                     _inv_sum += _iv
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
         if _inv_sum <= 0:
             return ibi_map
@@ -29866,7 +29887,7 @@ def _compute_ibi_series_from_snapshot(snapshot, theory_probs=None):
                         # 允许 theory 以百分数或小数传入，统一到 0~1
                         if _p_theory > 1.5:
                             _p_theory = _p_theory / 100.0
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     _p_theory = None
             if _p_theory and _p_theory > 0.001:
                 ibi_map[_s] = round(_p_mkt / _p_theory, 4)
@@ -30076,7 +30097,7 @@ def analyze_cross_market_hologram(odds_1x2_dict=None, asian_handicap=None,
                 _oh = float(odds_1x2_dict.get('Home') or odds_1x2_dict.get('home') or 0)
                 _od = float(odds_1x2_dict.get('Draw') or odds_1x2_dict.get('draw') or 0)
                 _oa = float(odds_1x2_dict.get('Away') or odds_1x2_dict.get('away') or 0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 _oh = _od = _oa = None
         if (not _oh or _oh <= 1.0) and euro_odds_500 and isinstance(euro_odds_500, (list, tuple)):
             # 用500网多家欧赔均值兜底
@@ -30111,7 +30132,7 @@ def analyze_cross_market_hologram(odds_1x2_dict=None, asian_handicap=None,
                 # ah=0→~0.42, ah=-0.5→~0.55, ah=-1.0→~0.66, ah=-1.5→~0.75, ah=-2→~0.83
                 _p_ah_home = 1.0 / (1.0 + math.exp(_ah * 1.05 + 0.32))
                 _p_ah_home = max(0.02, min(0.98, _p_ah_home))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 _p_ah_home = None
 
         # ---- 3) 概率离差 → 逻辑裂缝 ----
@@ -30228,7 +30249,7 @@ def analyze_micro_granularity_deception(pool15_enriched=None, asian_handicap=Non
             _ibi = _x.get('ibi')
             try:
                 _ibi = float(_ibi) if _ibi is not None else None
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 _ibi = None
             _map[_s] = {
                 'ibi': _ibi,
@@ -30246,7 +30267,7 @@ def analyze_micro_granularity_deception(pool15_enriched=None, asian_handicap=Non
         if asian_handicap is not None:
             try:
                 _ah_abs = abs(float(asian_handicap))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 _ah_abs = None
 
         # ===== A. 强弱悬殊局：奶酪陷阱 =====
@@ -30346,7 +30367,7 @@ def build_31pool_enriched_list(match_data):
     if lh is not None and la is not None:
         try:
             _lh, _la = float(lh), float(la)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _lh = _la = 0.0
     if _lh > 0 and _la > 0 and _poisson_score_probs is not None:
         try:
@@ -30359,7 +30380,7 @@ def build_31pool_enriched_list(match_data):
         for sc, p in (pd or {}).items():
             try:
                 raw[str(sc)] = float(p)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
         probs = _pool31_aggregate(raw) if raw else {}
     if not probs:
@@ -30404,7 +30425,7 @@ def _fixed_bonus_from_okooo_jc_official(
         )
         try:
             od = float(v)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if sc and od > 1:
             latest[sc] = round(od, 2)
@@ -31631,7 +31652,7 @@ def goal_table_payload(rec=None, payload=None):
                     continue
                 try:
                     number = float(raw)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if number > 1:
                     score_src.setdefault(str(score), number)
@@ -31937,7 +31958,7 @@ def collect_report_analysis_facts(scope):
     def num(value):
         try:
             return round(float(value), 3)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
 
     facts: dict[str, Any] = {'writes_first_score': False, 'copies_direction_lock': False}
@@ -32124,6 +32145,75 @@ def _pull_jczq31_into_record(rec, cn_name=''):
     return {'available': True, 'reason': '', 'n': len(odds), 'detail': detail}
 
 
+def _fold_record_boards_into_payload(payload, rec):
+    """把记录上现存的六盘口并进 payload。
+
+    bundle 里的六盘口是阶段1 重建时的快照，可能比记录旧。任何一次 payload
+    换新之后都必须重新并一次，否则质量门拿旧快照判「缺六盘口」，把一份数据
+    其实齐的报告拒掉——拒绝原因还会指错方向。
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if isinstance(rec, dict) and isinstance(rec.get('six_market_mobile'), dict) and rec['six_market_mobile']:
+        prev = payload.get('six_market_mobile')
+        payload['six_market_mobile'] = {
+            **(prev if isinstance(prev, dict) else {}),
+            **rec['six_market_mobile'],
+        }
+    return payload
+
+
+def _apply_rendered_pack_tables(ds_payload, bundle, pack) -> None:
+    """把新 pack 的两张表重新渲染进 payload 和 bundle。
+
+    31 表和市热超理论专表在 bundle 里是**已渲染好的行**，不是 pack 的视图。
+    换了 pack 却不重渲染，报告仍然发旧行——市热超理论专表整段消失。
+    """
+    analyzer = _ensure_deepseek_analyzer()
+    if analyzer is None or not isinstance(pack, dict) or not pack:
+        return
+    payload: dict[str, Any] = ds_payload if isinstance(ds_payload, dict) else {}
+    bund: dict[str, Any] = bundle if isinstance(bundle, dict) else {}
+    _inner_raw = bund.get('ds_payload')
+    inner: dict[str, Any] = _inner_raw if isinstance(_inner_raw, dict) else {}
+    try:
+        t31 = analyzer.format_theo_mkt_31_tg_lines(pack)
+        pos = analyzer.format_mkt_over_theo_tg_lines(pack)
+    except Exception as _render_err:  # noqa: BLE001 - 渲染失败不阻断发报
+        print(f"   ⚠️ [31全表] 补表后重渲染失败: {_render_err}")
+        return
+    if t31:
+        payload['theo_mkt_31_tg_lines'] = t31
+        inner['theo_mkt_31_tg_lines'] = t31
+        bund['theo_mkt_31_tg_lines'] = t31
+    if pos:
+        payload['mkt_over_theo_tg_lines'] = pos
+        inner['mkt_over_theo_tg_lines'] = pos
+        bund['mkt_over_theo_tg_lines'] = pos
+    payload['mkt_over_theo_count'] = int(pack.get('pos_count') or 0)
+
+
+def _record_tg_outcome(history, fid, *, sent, kind, rejected=''):
+    """把一次投递尝试的结论写进记录。
+
+    拒发和发不出去都必须留痕：只写原因而不写 `tg_sent`，下游就分不清
+    「拒发了」和「从没走过阶段2」。
+    """
+    if not (fid and isinstance(history, dict) and isinstance(history.get(fid), dict)):
+        return
+    rec = history[fid]
+    rec['tg_sent'] = bool(sent)
+    rec['tg_report_kind'] = kind
+    if sent:
+        rec['tg_sent_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if rejected:
+        rec['tg_not_sent_reason'] = str(rejected)[:400]
+    try:
+        save_json(HISTORY_FILE, history)
+    except Exception as _rec_save_err:  # noqa: BLE001 - 留痕失败不影响发报主流程
+        print(f"   ⚠️ [TG投递结论] 落盘失败: {_rec_save_err}")
+
+
 def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None, force_anti_homogen=None):  # pyright: ignore[reportGeneralTypeIssues] - Pyright complexity limit; keep stage-2 pipeline behavior intact.
     """阶段2轻量出口：读取/重建 pipeline_report_bundle，
     仅调用 deepseek-flash（DeepSeek-V4.1-Flash）研判并强制推送 TG（不再整场重抓/重算）。
@@ -32243,7 +32333,7 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
             print(_stage2_verdict_line(False, 'history 无可用精算结果，无法重建研判包', cn_name, fid))
             return None
 
-    _ds_payload = dict(bundle.get('ds_payload') or {})
+    _ds_payload = _fold_record_boards_into_payload(dict(bundle.get('ds_payload') or {}), rec)
     _stage2_analyzer = _ensure_deepseek_analyzer()
 
     def _cs31_audit_of(payload):
@@ -32318,7 +32408,12 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
             extra_market_odds=extra,
             market_provenance=_stage2_prov.get('provenance') or None,
             market_provenance_source=_stage2_prov.get('source') or '',
-            jc_score_odds=rec_obj.get('jc_score_odds') or payload.get('jc_score_odds') or {},
+            jc_score_odds=_merge_jc_odds_sources(
+                rec_obj.get('jc_score_odds'),
+                rec_obj.get('correct_score_jc_official'),
+                payload.get('jc_score_odds'),
+                payload.get('correct_score_jc_official'),
+            ),
             lam_home=_rb_lam.get('home'),
             lam_away=_rb_lam.get('away'),
             lambda_provenance=_rb_lam,
@@ -32384,6 +32479,7 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                 _cs31_audit = _cs31_audit_of(_ds_payload)
                 if _cs31_audit.get('complete'):
                     print(f"   ✅ [31全表] 本地折入补齐成功: {cn_name or fid}")
+                    _apply_rendered_pack_tables(_ds_payload, bundle, _pack_fix)
                 else:
                     # 折入后仍不齐：必须明说还缺什么，不能只因为「跑过一次折入」
                     # 就当成成功。此前这里无论结果如何都可能落进下方的成功行，
@@ -32409,7 +32505,8 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                 )
                 if isinstance(bundle, dict) and isinstance(bundle.get('ds_payload'), dict):
                     history[fid]['pipeline_report_bundle'] = bundle
-                    _ds_payload = dict(bundle.get('ds_payload') or {})
+                    _ds_payload = _fold_record_boards_into_payload(
+                        dict(bundle.get('ds_payload') or {}), rec)
                     # 关键：重抓后必须先用新数据把 31 全表重建出来再审计。
                     # 直接审计重建后仍为空的旧 pack，等于永远证明「缺 31 项」，
                     # 重试一次都不可能成功，比赛就被无声丢掉。
@@ -32417,6 +32514,9 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                     if _pack_after:
                         _ds_payload['theo_mkt_31_pack'] = _pack_after
                         history[fid]['pipeline_report_bundle']['ds_payload']['theo_mkt_31_pack'] = _pack_after
+                        _apply_rendered_pack_tables(
+                            _ds_payload, history[fid]['pipeline_report_bundle'], _pack_after,
+                        )
                     _cs31_audit = _cs31_audit_of(_ds_payload)
             try:
                 save_json(HISTORY_FILE, history)
@@ -32447,7 +32547,8 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
                     )
                     if isinstance(bundle, dict) and isinstance(bundle.get('ds_payload'), dict):
                         history[fid]['pipeline_report_bundle'] = bundle
-                        _ds_payload = dict(bundle.get('ds_payload') or {})
+                        _ds_payload = _fold_record_boards_into_payload(
+                            dict(bundle.get('ds_payload') or {}), rec)
                         _pack_jc = _rebuild_theo_mkt_pack(rec, _ds_payload, cn_name or fid)
                         if _pack_jc:
                             _ds_payload['theo_mkt_31_pack'] = _pack_jc
@@ -33338,7 +33439,7 @@ def _pct_text(value):
         if value is None or value == '':
             return ''
         return f'{float(value):.2f}%'
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return ''
 
 
@@ -33350,7 +33451,7 @@ def _lowest_odds_label(odds_map):
     for key, raw in odds_map.items():
         try:
             num = float(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if num <= 1:
             continue
@@ -33984,7 +34085,7 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                         for _ck, _cv in _cs_src.items():
                             try:
                                 _fv = float(_cv)
-                            except (TypeError, ValueError):
+                            except (TypeError, ValueError, OverflowError):
                                 continue
                             if _fv > 1.01:
                                 _filled_cs[str(_ck).replace(':', '-').strip()] = _fv
@@ -34334,7 +34435,7 @@ def analyze_match(m_obj, i=0, total=0, first_leg_score=None, all_first_scores=No
                 return None
             try:
                 return float(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
 
         _formed_lam_h = _formed_lambda(lam_h)
@@ -35546,7 +35647,7 @@ trap_signal: true/false（是否存在陷阱信号）
                         for _fund_k, _fund_v in _fund_json.items():
                             try:
                                 feature_vector[f'fund_{_fund_k}'] = float(_fund_v) if isinstance(_fund_v, (int, float, bool)) else (1.0 if str(_fund_v).strip() in ('true', 'True', '是', 'yes') else 0.0)
-                            except (TypeError, ValueError):
+                            except (TypeError, ValueError, OverflowError):
                                 continue
                         print(f"   🎯 [硬核基本面→ML特征] 已写入 {len(_fund_json)} 个 fund_ 特征（λ保持冻结）")
         except Exception as _fund_err:  # noqa: BLE001 - intentional degraded-mode guard or structure-preserving fallback
@@ -39136,7 +39237,7 @@ Top5比分及概率：
                 _hist_now = history.get(str(fid)) if isinstance(locals().get('history'), dict) else {}
                 try:
                     _game_n = int((_hist_now or {}).get('deepseek_game_signal_count') or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     _game_n = 0
                 _override_pool, _override_triggered, _override_log = override_model_convergence(
                     _override_pool, _override_static_score,
@@ -40939,7 +41040,7 @@ def _positive_mkt_gap_count(source):
             if gap_n_opt is None:
                 continue
             gap_n = gap_n_opt
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         token = str(row.get('score') or '').replace('：', '-').replace(':', '-').strip()
         if token and gap_n > 0:
@@ -40969,7 +41070,7 @@ def _positive_mkt_gap_count(source):
                     continue
                 if token and avg_num - jc_num > 0:
                     scores.add(token)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
     return len(scores)
 
@@ -41007,7 +41108,7 @@ def _direction_lock_ledger_line(info, index=None):
         lam_a = coerce_float(info.get('lambda_away') if info.get('lambda_away') not in (None, '') else info.get('lam_a'))
         ratio = round(lam_h / max(lam_a, 1e-9), 3)
         lam_text = f'{lam_h:.3f}/{lam_a:.3f}'
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         ratio = ''
         lam_text = '无'
     actual = str(info.get('actual_score') or '').replace(' (进行中)', '').strip()
@@ -41029,7 +41130,7 @@ def _direction_lock_ledger_line(info, index=None):
             top_text = str(top.get('score') or '')
             try:
                 top_text = f"{top_text}{coerce_float(top.get('drop_pct')):+.1f}%"
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 top_text = top_text or ''
         else:
             top_text = str(top or '')
@@ -41206,7 +41307,7 @@ def _ledger_skill_record(info, index=None):
     try:
         lam_h = coerce_float(info.get('lambda_home') if info.get('lambda_home') not in (None, '') else info.get('lam_h'))
         lam_a = coerce_float(info.get('lambda_away') if info.get('lambda_away') not in (None, '') else info.get('lam_a'))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         lam_h = None
         lam_a = None
     actual = str(info.get('actual_score') or '').replace(' (进行中)', '').strip() or None
@@ -44802,7 +44903,7 @@ def _ui_risk_badge(score) -> str:
     """风险色标：冷门分 ≥70 红、≥50 橙、其余灰。"""
     try:
         value = float(score or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         value = 0.0
     if value >= 70:
         fg, bg = '#B91C1C', '#FEE2E2'
@@ -44900,7 +45001,7 @@ def _ui_table_style(frame, confidence_col=None, risk_col=None):
     def _risk_color(value):
         try:
             number = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return ''
         if number >= 70:
             return 'background-color:#FEE2E2;color:#B91C1C;font-weight:600'
@@ -45272,7 +45373,7 @@ if not _CLI_HEADLESS:
         _conf = view.get('final_confidence')
         try:
             _conf_txt = f"{float(_conf) * 100:.1f}%" if _conf is not None else '未形成'
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             _conf_txt = '未形成'
         _c3.metric("置信度", _conf_txt)
         _c4.metric("主选① / 次选②", "{} / {}".format(view.get('primary') or '未形成', view.get('secondary') or '未形成'))
@@ -46378,7 +46479,7 @@ if not _CLI_HEADLESS:
                                                 continue
                                             try:
                                                 _prob_txt = f"{float(_score_prob):.2%}" if _score_prob not in (None, '') else '—'
-                                            except (TypeError, ValueError):
+                                            except (TypeError, ValueError, OverflowError):
                                                 _prob_txt = '—'
                                             _matrix_rows.append({
                                                 '融合比分': _score_name,
