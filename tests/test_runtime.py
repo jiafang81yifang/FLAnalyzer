@@ -188,6 +188,83 @@ def test_module_api_audit_has_zero_mismatches() -> None:
     assert audit_module.audit(ROOT) == []
 
 
+def test_send_tg_makes_no_request_without_chat_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """没有 chat_id 时一个 HTTP 请求都不能发，只留一行可操作提示。"""
+    sent: list[Any] = []
+    monkeypatch.setattr(app, '_tg_post', lambda url, payload: sent.append(payload) or True)
+    monkeypatch.setattr(app, 'SNIPER_BOT_TOKEN', '123456789:' + 'A' * 30)
+    monkeypatch.setattr(app, 'AUTO_CHAT_ID', '')
+    monkeypatch.setattr(app, '_TG_CHAT_CAPTURE_STATE', {'captured': '', 'printed': ''})
+    monkeypatch.setattr(app, 'resolve_tg_chat_id_path', lambda path=None: '/nonexistent/tg_chat_id.txt')
+    app.reset_tg_delivery_state()
+
+    app.send_tg('没有 chat_id 的消息')
+
+    assert sent == [], sent
+    assert app.tg_delivery_disabled() is True
+    app.reset_tg_delivery_state()
+
+
+def test_capture_tg_chat_id_persists_and_reloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """入站 chat.id 被采纳并落盘，下一次启动能从磁盘读回（含群聊负数）。"""
+    target = tmp_path / 'models' / 'data' / 'tg_chat_id.txt'
+    monkeypatch.setattr(app, 'resolve_tg_chat_id_path', lambda path=None: str(target))
+    monkeypatch.setattr(app, 'AUTO_CHAT_ID', '')
+    monkeypatch.setattr(app, '_TG_CHAT_CAPTURE_STATE', {'captured': '', 'printed': ''})
+
+    assert app.capture_tg_chat_id(123456789) == '123456789'
+    assert target.exists()
+    assert target.read_text(encoding='utf-8').strip() == '123456789'
+
+    # 群聊负数按字符串保存。
+    assert app.capture_tg_chat_id(-1001234567890) == '-1001234567890'
+    assert target.read_text(encoding='utf-8').strip() == '-1001234567890'
+
+    # 模拟重启：清空内存态，仅凭磁盘恢复。
+    monkeypatch.setattr(app, 'AUTO_CHAT_ID', '')
+    monkeypatch.setattr(app, '_TG_CHAT_CAPTURE_STATE', {'captured': '', 'printed': ''})
+    app._bootstrap_tg_chat_id()
+    assert app.AUTO_CHAT_ID == '-1001234567890'
+
+    # 非法输入不采纳。
+    assert app._normalize_chat_id('not-a-chat-id') == ''
+    assert app._normalize_chat_id('') == ''
+
+
+def test_permanent_telegram_error_skips_retry_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """400 chat_id is empty 是永久配置错误：一次即停，不走代理/直连/SSL 阶梯。"""
+    attempts: list[str] = []
+
+    class _Resp:
+        status_code = 400
+        text = '{"ok":false,"error_code":400,"description":"Bad Request: chat_id is empty"}'
+
+        def __init__(self):
+            self.headers: dict[str, str] = {}
+
+    class _Session:
+        def post(self, url, *args: Any, **kwargs: Any):
+            attempts.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(app, 'TG_PROXIES', None)
+    monkeypatch.setattr(app, '_TG_SESSION_DIRECT', _Session())
+    app.reset_tg_delivery_state()
+
+    result = app._tg_post('https://api.telegram.org/bottest/sendMessage', {'chat_id': '', 'text': 'x'})
+
+    assert result == 'PERMANENT'
+    assert len(attempts) == 1, attempts
+    assert app._tg_is_permanent_failure(401, '{"description":"Unauthorized"}') is True
+    assert app._tg_is_permanent_failure(403, '{"description":"Forbidden"}') is True
+    assert app._tg_is_permanent_failure(404, '{"description":"Not Found"}') is True
+    # can't parse entities 仍要回退纯文本，不算永久错误。
+    assert app._tg_is_permanent_failure(400, "Bad Request: can't parse entities") is False
+    # 网络错误不算永久错误，仍走重试阶梯。
+    assert app._tg_is_permanent_failure(500, 'server error') is False
+    app.reset_tg_delivery_state()
+
+
 def test_full_audit_harness_passes() -> None:
     proc = subprocess.run(
         [sys.executable, str(ROOT / 'scripts' / 'full_audit.py')],

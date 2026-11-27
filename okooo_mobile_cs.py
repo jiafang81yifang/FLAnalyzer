@@ -365,10 +365,23 @@ def save_six_market_contradictions(match_id_or_items: Any, items: Any = None) ->
 
 
 def load_six_market_contradictions(match_id: Any = None) -> list[Any]:
+    """读取某场的对账缺口文件。
+
+    文件不存在是正常空状态（本场还没写过缺口），不是错误：不打印告警，
+    直接返回空列表。只有真的读不动（权限/JSON 损坏）才留一行提示。
+    """
     path = _contradiction_store(match_id)
+    if not path.exists():
+        return []
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"   ⚠️ [澳客手机CS] 读取对账缺口失败: {type(exc).__name__}")
+    except FileNotFoundError:
+        # 探测与读取之间被删掉：同样是空状态，不吵。
+        return []
+    except json.JSONDecodeError as exc:
+        print(f"   ℹ️ [澳客手机CS] 对账缺口文件损坏，按空处理: {path.name} ({exc.msg})")
+        return []
+    except OSError as exc:
+        print(f"   ℹ️ [澳客手机CS] 对账缺口文件不可读，按空处理: {path.name} ({type(exc).__name__})")
         return []
     return data if isinstance(data, list) else []
