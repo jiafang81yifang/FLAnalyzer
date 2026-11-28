@@ -40,8 +40,34 @@ def _mutated_module(replacements: list[tuple[str, str]], name: str) -> types.Mod
     return module
 
 
+def _run_test_in(module: types.ModuleType, test_module: str, test_name: str) -> None:
+    """在被改坏的模块上跑 `tests/<test_module>.py` 里的某条测试。"""
+    import importlib.util as _ilu2
+
+    path = ROOT / 'tests' / f'{test_module}.py'
+    saved_mod = sys.modules.get('blade_deepseek_pipeline')
+    saved_test = sys.modules.pop(test_module, None)
+    sys.modules['blade_deepseek_pipeline'] = module
+    try:
+        spec = _ilu2.spec_from_file_location(test_module, path)
+        mod = _ilu2.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        assert mod.pipe is module, '测试没跑在被改坏的模块上，反证无效'
+        getattr(mod, test_name)()
+    finally:
+        sys.modules.pop(test_module, None)
+        if saved_test is not None:
+            sys.modules[test_module] = saved_test
+        if saved_mod is not None:
+            sys.modules['blade_deepseek_pipeline'] = saved_mod
+
+
 def _run_test(module: types.ModuleType, test_name: str) -> None:
-    """在被改坏的模块上跑一条测试；测试从 `tests/` 里取，只换掉 pipeline。"""
+    """在被改坏的模块上跑一条测试；测试从 `tests/` 里取，只换掉 pipeline。
+
+    任何异常都算「这条测试没有通过」——包括 `IndexError`：判据被反过来之后
+    段落的**行数**都变了，测试在取值时先崩掉，同样证明它抓得住这种改坏。
+    """
     import importlib.util as _ilu
 
     saved = sys.modules.get('blade_deepseek_pipeline')
@@ -51,8 +77,6 @@ def _run_test(module: types.ModuleType, test_name: str) -> None:
         spec = _ilu.spec_from_file_location('test_market_vs_jingcai_table', TESTS)
         mod = _ilu.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        # 测试模块在 import 时已把 `pipe` 绑到当前 sys.modules 里的那份，
-        # 这里再确认一次，免得它绑到真模块上（那这条反证就变成自比）。
         assert mod.pipe is module, '测试没跑在被改坏的模块上，反证无效'
         getattr(mod, test_name)()
     finally:
@@ -100,6 +124,7 @@ def test_flipped_short_predicate_turns_the_guards_red() -> None:
           "            elif diff > 0:\n                short.append(row)")],
         'mut_short_pred',
     )
+    # 判据反过来后整段退化成「未形成」或计数变成 市热 的那组，两种都算红。
     with pytest.raises(AssertionError):
         _run_test(module, 'test_star_short_matches_the_sample_count_line')
 
@@ -214,7 +239,11 @@ def test_divided_mean_turns_the_guard_red() -> None:
 # 10. 列宽算法改成 len（不区分中英宽度）
 # --------------------------------------------------------------------------- #
 def test_len_based_width_turns_the_alignment_guard_red() -> None:
-    """把 `_display_width` 换成 `len`（不区分中英宽度）→ 对齐必须红。"""
+    """把 `_display_width` 换成 `len`（不区分中英宽度）→ 对齐必须红。
+
+    对齐断言现在住在 `tests/test_matrix_alignment.py`，用**独立实现**的宽度，
+    所以换成 `len` 会真的把行宽算错、断言红。
+    """
     module = _mutated_module(
         [("    import unicodedata\n"
           "    return sum(2 if unicodedata.east_asian_width(ch) in 'WF' else 1 for ch in str(text or ''))",
@@ -222,16 +251,17 @@ def test_len_based_width_turns_the_alignment_guard_red() -> None:
         'mut_len_width',
     )
     with pytest.raises(AssertionError):
-        _run_test(module, 'test_goal_grid_is_visually_aligned')
+        _run_test_in(module, 'test_matrix_alignment', 'test_31_table_rows_are_equal_width')
 
 
 # --------------------------------------------------------------------------- #
 # 11. 形态编号写死成 3
 # --------------------------------------------------------------------------- #
 def test_hardcoded_shape_number_turns_the_guard_red() -> None:
+    """把形态编号写死成 3 → 渲染里出现 `形态3`，断言必须红。"""
     module = _mutated_module(
-        [("        if shape.get('form_no') is None:",
-          "        shape['form_no'] = 3\n        if shape.get('form_no') is None:")],
+        [("        form = '未判定' if shape.get('form_no') is None else str(shape['form_no'])",
+          "        form = '3'")],
         'mut_shape_no',
     )
     with pytest.raises(AssertionError):
@@ -243,9 +273,9 @@ def test_hardcoded_shape_number_turns_the_guard_red() -> None:
 # --------------------------------------------------------------------------- #
 def test_restored_top15_claim_turns_the_guard_red() -> None:
     module = _mutated_module(
-        [("            ' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负'))",
-          "            ' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负'))"
-          " + '｜市均最低前15'")],
+        [("        lines.append(' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负')))",
+          "        lines.append(' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负'))"
+          " + '｜市均最低前15')")],
         'mut_top15_claim',
     )
     with pytest.raises(AssertionError):

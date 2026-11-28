@@ -64,6 +64,129 @@ def _pad_right_display(text: Any, width: int) -> str:
     return raw + ' ' * pad
 
 
+#: 全仓唯一的表格列分隔符（半角 `|`）。
+#: 曾经 ★市短 / 市热 两段用的是全角 `│`，与 市均前15 的半角 `|` 混用，
+#: 同一份报告里两种宽度，列边界永远对不齐。现在只认这一个。
+GRID_SEP = '|'
+
+#: 空单元格标记。是「无」，不是 0，绝不填数值。
+GRID_EMPTY = '—'
+
+
+def _cell_fit(text: Any, width: int, align: str) -> str:
+    """把一格内容按显示宽度填到固定宽度。放不下就抛错，**绝不截断**。
+
+    `align` ∈ {'left', 'right', 'center'}。同一列的所有格必须用同一个值：
+    逐行换对齐就等于列边界在跳。
+    """
+    raw = str(text if text is not None else '')
+    pad = width - _display_width(raw)
+    if pad < 0:
+        raise ValueError(
+            f'单元格超宽 显示{_display_width(raw)}>{width}，拒绝截断: {raw!r}'
+        )
+    if align == 'right':
+        return ' ' * pad + raw
+    if align == 'left':
+        return raw + ' ' * pad
+    left = pad // 2
+    return ' ' * left + raw + ' ' * (pad - left)
+
+
+def _grid_widths(header: Any, rows: Any, min_widths: Any = None) -> list[int]:
+    """算出每列的显示宽度（整表最长格）。`build_grid_lines` 与调用方共用这一份。"""
+    head = [str(c) for c in header] if header is not None else None
+    body = [[str(c if c is not None else GRID_EMPTY) for c in row] for row in (rows or [])]
+    ncols = len(head) if head is not None else (len(body[0]) if body else 0)
+    widths: list[int] = []
+    for col in range(ncols):
+        longest = _display_width(head[col]) if head is not None else 0
+        for row in body:
+            longest = max(longest, _display_width(row[col]))
+        floor = int(min_widths[col]) if min_widths and col < len(min_widths) else 0
+        widths.append(max(longest, floor))
+    return widths
+
+
+def build_grid_lines(
+    header: Any,
+    rows: Any,
+    *,
+    aligns: Any = None,
+    min_widths: Any = None,
+) -> list[str]:
+    """把一张表渲染成**严格等宽网格**：每行显示宽度相同，`|` 竖直成线。
+
+    这是全仓所有矩阵段的唯一网格出口。手写 f-string 拼表必然在某个数据变长
+    （`8.05` → `108.05`）时错位，而那种错位在测试里很难被发现——所以宽度统一
+    在这里按整表最长格算一次。
+
+    参数
+    ----
+    header   列名 list；`None` 表示这张表没有列头行。
+    rows     逐行的 cell list；每行长度必须与表头一致（或与首行一致）。
+    aligns   每列对齐：'left'（文本）/ 'right'（数值）/ 'center'；默认居中。
+    min_widths 每列最小宽度，用来给窄列留出呼吸位，也让同一报告里多张表的
+              列宽可以对齐到同一套。
+
+    返回的行**都以 `|` 开头和结尾**，因此首尾竖线也在同一列上。
+    """
+    head = [str(c) for c in header] if header is not None else None
+    body = [[str(c if c is not None else GRID_EMPTY) for c in row] for row in (rows or [])]
+    if not body and head is None:
+        return []
+    ncols = len(head) if head is not None else len(body[0])
+    for idx, row in enumerate(body):
+        if len(row) != ncols:
+            raise ValueError(
+                f'第 {idx + 1} 行有 {len(row)} 格，表头是 {ncols} 格——列数必须一致'
+            )
+    widths = _grid_widths(head, body, min_widths)
+
+    align_list = list(aligns or [])
+    align_of = [
+        (align_list[col] if col < len(align_list) else 'center') for col in range(ncols)
+    ]
+
+    def _line(cells: Any) -> str:
+        return (
+            GRID_SEP
+            + GRID_SEP.join(
+                _cell_fit(cell, widths[col], align_of[col]) for col, cell in enumerate(cells)
+            )
+            + GRID_SEP
+        )
+
+    lines: list[str] = []
+    if head is not None:
+        lines.append(_line(head))
+    lines.extend(_line(row) for row in body)
+    return lines
+
+
+def grid_aligns_report(lines: Any) -> dict[str, Any]:
+    """自检：这张网格的每一行是否显示宽度一致、`|` 是否逐行同列。
+
+    渲染器在**返回前**调它，把「没对齐」变成一次显式失败，而不是悄悄发出去。
+    """
+    rows = [str(ln) for ln in (lines or []) if str(ln).strip()]
+    if not rows:
+        return {'aligned': False, 'reason': '空表'}
+    widths = {_display_width(ln) for ln in rows}
+    bounds = {
+        tuple(_display_width(ln[:i]) for i, ch in enumerate(ln) if ch == GRID_SEP)
+        for ln in rows
+    }
+    ok = len(widths) == 1 and len(bounds) == 1 and GRID_SEP in rows[0]
+    return {
+        'aligned': ok,
+        'width': widths.pop() if len(widths) == 1 else None,
+        'widths': sorted(widths),
+        'bounds': sorted(bounds)[:3] if not ok else None,
+        'rows': len(rows),
+    }
+
+
 def _goal_bucket_of(score: Any) -> str | None:
     """比分 -> '0球' … '6球' / '7+'；无法归类返回 None。"""
     text = _norm_score(score)
@@ -498,9 +621,12 @@ class DeepSeekAnalyzer:
             except (TypeError, ValueError, OverflowError):
                 return '-'
 
+        # 比分列宽 = 整表最宽比分的显示宽度；按固定 5 会在 `胜其它`(显示6) 上抛错，
+        # 而按 `len` 补则会让 1-0 与 胜其它 两行差 3 列。
+        score_w = max([_display_width(str(r.get('score') or '')) for r in rows] or [3])
         for r in rows:
             lines.append(
-                f"  {str(r.get('score', '?'))!s:<5} 市均{_pct_text(r.get('market_pct'))}% "
+                f"  {_cell_fit(r.get('score', '?'), score_w, 'left')} 市均{_pct_text(r.get('market_pct'))}% "
                 f"竞彩{_pct_text(r.get('jc_pct'))}% 差{_gap_text(r.get('gap_pct'))}pp"
             )
         counts = m.get('counts')
@@ -695,6 +821,8 @@ class DeepSeekAnalyzer:
             return [head, f"  未形成（{p.get('reason') or '没有市场高于理论的选项'}）"]
         lines = [head, f"  输入=31全表 项数={len(pos)}"]
         counts = {'胜': 0, '平': 0, '负': 0}
+        # 比分列宽按整表最宽比分算，不用 `{score:<5s}`（`胜其它` 显示宽度 6）。
+        score_w = max([_display_width(str(r.get('score') or '')) for r in pos] or [3])
         for r in pos:
             score = r.get('score')
             label = _score_wdl(score)
@@ -719,7 +847,7 @@ class DeepSeekAnalyzer:
             except (TypeError, ValueError, OverflowError):
                 delta_txt = '-'
             lines.append(
-                f"  {str(score)!s:<5} 市均{market_txt}% 理论{theory_txt}% Δ{delta_txt}"
+                f"  {_cell_fit(score, score_w, 'left')} 市均{market_txt}% 理论{theory_txt}% Δ{delta_txt}"
             )
         total = sum(counts.values()) or 1
         lines.append(
@@ -1395,6 +1523,9 @@ class DeepSeekAnalyzer:
         why_map: dict[str, str] = _why_raw if isinstance(_why_raw, dict) else {}
         counts: dict[str, int] = {}
         unaudited: list[str] = []
+        # 比分列宽 = 整表最宽比分的显示宽度（`胜其它` 是 6，`1-0` 是 3）。
+        # 先算一遍再逐行渲染，否则每行各按自己的宽度补，行宽就不齐了。
+        score_w = max([_display_width(str(r.get('score') or '')) for r in rows] or [3])
         for idx, row in enumerate(rows, 1):
             score = str(row.get('score') or '')
             market = _f(row.get('market'))
@@ -1440,8 +1571,11 @@ class DeepSeekAnalyzer:
             market_pct = f'{market:.1f}%' if market is not None else '-'
             jc_pct = f'{jc_pct_val:.1f}%' if jc_pct_val is not None else '-'
             delta = f'{market - theory:+.1f}' if (market is not None and theory is not None) else '-'
+            # 比分列按**显示宽度**补到「整表最宽比分」的宽度，不能用 `{score:<5s}`：
+            # `胜其它` 三个全角字 len=3、显示宽度 6，`1-0` len=3、宽度 3。
+            # 按 len 补，这两行就差 3 列，整张 31 表的行宽不再相等（实测 70/73）。
             lines.append(
-                f'  {idx:02d} {score:<5s} 市均{market_txt:>7s} {market_pct:>7s} '
+                f'  {idx:02d} {_cell_fit(score, score_w, "left")} 市均{market_txt:>7s} {market_pct:>7s} '
                 f'竞彩{jc_txt:>7s} {jc_pct:>7s} Δ{delta:>7s} {src}'
             )
         lines.append(
@@ -1571,22 +1705,29 @@ class DeepSeekAnalyzer:
             f' 口径：胜→平→负排序｜市均={market_label}｜共{len(computed)}项/{len(rows)}'
             f'｜源={source}｜通道={channel}｜市均−竞彩为负记市短'
         )
-        lines.append(' 向 比分 市均 竞彩 市-竞')
+        # 31 行走严格等宽网格。列头带单位（`赔率` / `差`），格子里只留数字。
+        # 「向」列删掉：三向已由 `——【胜】——` 这类分组标题表达，逐行再印一遍
+        # 是同一信息在同一张表里出现两次（简洁要求第 5/6 条）。
         short_items: list[str] = []
+        grid_rows: list[list[str]] = []
         for group in ('胜', '平', '负'):
-            lines.append(f' ——【{group}】——')
             for row in rows:
                 if row['wdl'] != group:
                     continue
                 if row['diff'] is None:
-                    lines.append(f" {group} {row['score']} — — Δ 不适用")
+                    grid_rows.append([str(row['score']), GRID_EMPTY, GRID_EMPTY, '不适用'])
                     continue
                 diff = row['diff']
-                lines.append(
-                    f" {group} {row['score']} {row['market']:.2f} {row['jc']:.2f} {diff:+.2f}"
-                )
+                grid_rows.append([
+                    str(row['score']), f"{row['market']:.2f}",
+                    f"{row['jc']:.2f}", f'{diff:+.2f}',
+                ])
                 if diff < 0:
                     short_items.append(str(row['score']))
+        cols = ['比分', '市均赔率', '竞彩赔率', '市-竞差']
+        lines.extend(build_grid_lines(
+            cols, grid_rows, aligns=['center', 'right', 'right', 'right'],
+        ))
         if short_items:
             lines.append(f' 市短共{len(short_items)}项：' + ' / '.join(short_items))
         else:
@@ -1700,56 +1841,44 @@ class DeepSeekAnalyzer:
 
         lines = [head]
         lines.extend(DeepSeekAnalyzer._team_pair_lines(kwargs.get('home'), kwargs.get('away')))
-        lines.append(
-            ' 计数：' + ' '.join(
-                f'{d}{len(by_dir[d])}/{totals[d]}' for d in ('胜', '平', '负')
-            )
-        )
-        lines.append(' 方向 │项数│均市-竞│比分')
         abs_means: dict[str, float] = {}
+        grid_rows: list[list[str]] = []
         for d in ('胜', '平', '负'):
             items = sorted(by_dir[d], key=lambda r: (r['diff'], JCZQ_ODDS_ORDER.index(r['score'])))
             if not items:
-                lines.append(f' 【{d}】│0 │— │（无）')
+                grid_rows.append([f'【{d}】', f'0/{totals[d]}', GRID_EMPTY, '（无）'])
                 continue
             mean = sum(r['diff'] for r in items) / len(items)
             abs_means[d] = round(abs(mean), 2)
-            cell = ' / '.join(f"{r['score']}@{r['market']:.2f}" for r in items)
-            lines.append(f' 【{d}】│{len(items)} │{mean:+.2f} │{cell}')
-        lines.append(' 口径：每个比分后为市均。三向都列出。')
+            # 项数列写成 `市短数/该向总数`，取代原来的「计数：胜9/13 …」整行——
+            # 同一组数字在同一段里不再出现两次。
+            # 比分列只列比分：赔率在 `市均***竞彩对比表` 里逐项给了。
+            grid_rows.append([
+                f'【{d}】', f'{len(items)}/{totals[d]}', f'{mean:+.2f}',
+                ' / '.join(str(r['score']) for r in items),
+            ])
+        lines.extend(build_grid_lines(
+            ['方向', '市短/总项', '均市-竞', '比分'], grid_rows,
+            aligns=['center', 'center', 'right', 'left'],
+        ))
         # 缺赔的比分不进统计、不进球列，但必须点名——否则读者无法区分
         # 「这一项不是市短」与「这一项根本没取到赔率」。
         missing = [r['score'] for r in rows if r['diff'] is None]
         if missing:
-            lines.append(
-                ' 缺赔：' + ' / '.join(f'{s}（市均/竞彩缺失）' for s in missing)
-            )
+            lines.append(' 缺赔：' + ' / '.join(str(s) for s in missing))
 
         shape = DeepSeekAnalyzer.decide_market_shape(abs_means, {d: len(by_dir[d]) for d in by_dir})
-        if shape.get('form_no') is None:
-            lines.append(' 形态：未判定（阈值未确认）')
-            if shape.get('form_name'):
-                lines.append(
-                    f" 形态判定（本仓库判据，编号未确认）：{shape['form_name']}"
-                    f"｜候选落点 {shape['hit_direction'] or '未判定'}"
-                )
-            lines.append(' 形态落点：未判定')
-        else:  # pragma: no cover - 编号体系确认后才会走到
-            lines.append(f" 形态：{shape['form_no']}：{shape['form_name']}")
-            lines.append(f" 形态落点：{shape['hit_direction']}")
-
         pair = DeepSeekAnalyzer.score_market_pairwise(abs_means)
         scores = pair['scores']
         top = max(scores.values()) if scores else 0
         leaders = [d for d, v in scores.items() if v == top]
         unique = len(leaders) == 1
-        # 「对抗」按市短项数的净位次取符号：项数最多的方向 +1，其余 −1。
-        # 这条规则**只能复现用户样本的 1/-1/-1**，它的依据是反向拟合，不是
-        # 推导出来的定义 —— 与第 8 条的两两比对是两把不同的尺子（一把比项数、
-        # 一把比均市-竞绝对值）。阈值与含义待用户确认。
+        # 「对抗」= 项数最多的方向 +1、其余 −1；与「两两比对得分」（比绝对值）
+        # 是两把尺子。该规则由用户样本 1/-1/-1 反推，依据见 internal 报告。
         count_max = max((len(by_dir[d]) for d in by_dir), default=0)
         confront = {
-            d: (1 if len(by_dir[d]) == count_max and count_max > 0 else -1) for d in ('胜', '平', '负')
+            d: (1 if len(by_dir[d]) == count_max and count_max > 0 else -1)
+            for d in ('胜', '平', '负')
         }
         ordered = sorted(
             ((d, abs_means[d]) for d in ('胜', '平', '负') if d in abs_means),
@@ -1762,53 +1891,40 @@ class DeepSeekAnalyzer:
             round(abs_means['胜'] / abs_means['负'], 2)
             if abs_means.get('胜') and abs_means.get('负') else None
         )
-        dominance = DeepSeekAnalyzer.MARKET_SHAPE_THRESHOLDS['dominance_ratio']
-        crush = ratio is not None and ratio >= dominance
+        # 表格之外只留**一行**解读（用户简洁要求第 7 条）。所有数字仍由数据算。
+        form = '未判定' if shape.get('form_no') is None else str(shape['form_no'])
         bits = [
-            ' 均市-竞绝对值：' + '，'.join(
+            f"形态{form}／落点{'未判定' if shape.get('form_no') is None else shape['hit_direction']}",
+            '绝对均市-竞 ' + '/'.join(
                 f'{d}{abs_means[d]:.2f}' for d in ('胜', '平', '负') if d in abs_means
-            ) + '。绝对值越小该方向越可能打出。',
+            ),
         ]
         if ratio is not None:
-            bits.append(
-                f'首位{first_dir}对次位比值{ratio:.2f}，'
-                + ('已达碾压，' if crush else '未到碾压，')
-                + ('' if crush else f'{ordered[1][0]}也可能打出。')
-            )
+            bits.append(f'首位{first_dir}对次位{ratio:.2f}')
         if win_loss_ratio is not None:
-            bits.append(
-                f'胜负绝对值比值{win_loss_ratio:.2f}，'
-                + ('一边倒。' if win_loss_ratio >= dominance else '属于均势。')
-            )
-        bits.append('只作对照，不改方向锁。')
-        bits.append('可能方向' + '/'.join(d for d, _v in ordered) + '。')
-        # 「对抗」= 项数最多的方向 +1、其余 −1。这与右边「两两比对得分」是两把
-        # 不同的尺子：得分比的是均市-竞绝对值，对抗比的是市短项数。
-        # 依据见 internal 报告（该规则由用户样本 1/-1/-1 反推得出，待确认）。
+            bits.append(f'胜负比{win_loss_ratio:.2f}')
         bits.append(
-            '两两比对得分'
-            + '/'.join(f'{d}{scores[d]:+d}' for d in ('胜', '平', '负') if d in scores)
-            + '，对抗'
-            + '/'.join(str(confront[d]) for d in ('胜', '平', '负'))
-            + '。'
+            '得分' + '/'.join(f'{d}{scores[d]:+d}' for d in ('胜', '平', '负') if d in scores)
+            + ' 对抗' + '/'.join(str(confront[d]) for d in ('胜', '平', '负'))
         )
         bits.append(
-            ('最高分唯一，对照落点' + leaders[0] + '。') if unique
-            else ('最高分并列（' + '/'.join(leaders) + '），对照落点未定。')
+            f'对照落点{leaders[0]}' if unique
+            else '对照落点未定（' + '/'.join(leaders) + '并列）'
         )
-        lines.append(''.join(bits))
+        bits.append('不改方向锁')
+        lines.append(' ' + '｜'.join(bits))
         return lines
 
     # ------------------------------------------------------------------ #
-    # 市热 / 市短 的唯一判据（★市短 与 市热 两段共用，不许各写一份）
+    # 市热 / 市短 的唯一判据（三段共用，不许各写一份）
     # ------------------------------------------------------------------ #
     @staticmethod
     def split_hot_short(rows: list[dict[str, Any]]) -> dict[str, Any]:
         """把 31 项按 `市均 − 竞彩` 的符号切成市热 / 市短 / 边界三组。
 
-        这是全仓库**唯一**一处「市热/市短」判定。★市短段与市热段都调它：
-        两处各自写一份 `diff > 0` / `diff < 0`，迟早在某一处漏掉 None
-        或把 0 算进去，同一场比赛就会有两个答案。
+        这是全仓库**唯一**一处「市热/市短」判定。★市短段、市热段、
+        冷门窗口段都调它：三处各自写一份 `diff > 0` / `diff < 0`，迟早在
+        某一处漏掉 None 或把 0 算进去，同一场比赛就会有两个答案。
 
         * 市热 = 差 > 0；
         * 市短 = 差 < 0；
@@ -1833,6 +1949,176 @@ class DeepSeekAnalyzer:
         return {'hot': hot, 'short': short, 'edge': edge, 'missing': missing}
 
     @staticmethod
+    def leading_direction(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """集合里项数最多的方向：`头向`。
+
+        并列最大时按固定优先级 胜>平>负 取一个，**但必须标「并列」**并且把
+        全部并列方向交出去——静默取第一个会让读者以为它是唯一领先。
+        """
+        counts = {d: 0 for d in ('胜', '平', '负')}
+        for row in items:
+            if row.get('wdl') in counts:
+                counts[row['wdl']] += 1
+        total = sum(counts.values())
+        top = max(counts.values()) if counts else 0
+        leaders = [d for d in ('胜', '平', '负') if counts[d] == top] if top else []
+        return {
+            'direction': leaders[0] if leaders else '',
+            'count': top,
+            'total': total,
+            'counts': counts,
+            'tied': len(leaders) > 1,
+            'leaders': leaders,
+        }
+
+    @staticmethod
+    def format_hot_short_distribution_tg_lines(pack: Any = None, **kwargs: Any) -> list[str]:
+        """`【市热·市短分布｜冷门窗口】`：两组比分、两个差集、冷门候选与解读。
+
+        两组都用 `split_hot_short` 的同一份判据；两个差集用集合运算，不是列表。
+        """
+        p = pack if isinstance(pack, dict) else {}
+        rows = DeepSeekAnalyzer._raw_odds_rows(p)
+        parts = DeepSeekAnalyzer.split_hot_short(rows)
+        hot, short, edge = parts['hot'], parts['short'], parts['edge']
+        head = '【市热·市短分布｜冷门窗口】'
+        if not hot and not short:
+            return [head, '  未形成（市热与市短均无项）']
+
+        hot_lead = DeepSeekAnalyzer.leading_direction(hot)
+        short_lead = DeepSeekAnalyzer.leading_direction(short)
+        hot_scores = {str(r['score']) for r in hot}
+        short_scores = {str(r['score']) for r in short}
+
+        def _counts_text(lead: dict[str, Any]) -> str:
+            return ' '.join(f'{d}{lead["counts"][d]}' for d in ('胜', '平', '负'))
+
+        def _head_text(lead: dict[str, Any]) -> str:
+            if not lead['direction']:
+                return '头向【无】（0/0）'
+            tie = f"，并列{'/'.join(lead['leaders'])}" if lead['tied'] else ''
+            return (
+                f'头向【{lead["direction"]}】（{lead["count"]}/{lead["total"]}{tie}）'
+            )
+
+        def _ordered(items: list[dict[str, Any]], *, descending: bool) -> list[str]:
+            """组内排序：市热按差降序、市短按差升序。两把尺子，不共用一个比较器。"""
+            by_dir: dict[str, list[dict[str, Any]]] = {d: [] for d in ('胜', '平', '负')}
+            for row in items:
+                if row.get('wdl') in by_dir:
+                    by_dir[row['wdl']].append(row)
+            out: list[str] = []
+            for d in ('胜', '平', '负'):
+                group = sorted(
+                    by_dir[d],
+                    key=lambda r: (
+                        -r['diff'] if descending else r['diff'],
+                        JCZQ_ODDS_ORDER.index(r['score']),
+                    ),
+                )
+                out.extend(str(r['score']) for r in group)
+            return out
+
+        hot_seq = _ordered(hot, descending=True)
+        short_seq = _ordered(short, descending=False)
+        only_hot = [s for s in hot_seq if s not in short_scores]
+        only_short = [s for s in short_seq if s not in hot_scores]
+
+        lines = [head]
+        lines.append(f' 市热({len(hot)})：{_counts_text(hot_lead)}｜{_head_text(hot_lead)}')
+        lines.append(' 市热比分：' + ('/'.join(hot_seq) if hot_seq else '无'))
+        lines.append(f' ★市短({len(short)})：{_counts_text(short_lead)}｜{_head_text(short_lead)}')
+        lines.append(' 市短比分：' + ('/'.join(short_seq) if short_seq else '无'))
+        # 差集只在与原集合**不同**时才印。市热/市短按定义就不相交，所以
+        # 「热而非短」通常等于「市热比分」全部、「短而非热」等于「市短比分」全部——
+        # 那两行在同一段里是把同一串比分印两遍（简洁要求第 6/8 条）。
+        # 只有在「某比分既热又短」（同源行被两边收下）时差集才真有新信息。
+        if only_hot != hot_seq:
+            lines.append(' 热而非短：' + ('/'.join(only_hot) if only_hot else '无'))
+        if only_short != short_seq:
+            lines.append(' 短而非热：' + ('/'.join(only_short) if only_short else '无'))
+
+        # 冷门候选 = 市短中「方向与市热头向**相反**」且不是「XX其它」汇总格的项。
+        #
+        # 口径说明（有据）：用户第 4 条正文写的是「方向 ≠ 市热头向」，但那个
+        # 写法在样本上会得到 10 项（负头向时 0-0/3-3 也算进来），而样本列的是
+        # 8 项，且样本末句明确写「只留与市热头向**相反**且市短」。以样本为准：
+        # 只保留**相反方向**（胜↔负），平向不算相反。剔除汇总格是第二条规则：
+        # 三个「其它」是 31 项里的兜底桶，不是一个可比分的冷门点位。
+        hot_dir = hot_lead['direction']
+        opposite = {'胜': '负', '负': '胜'}.get(hot_dir, '')
+        candidates = [
+            str(r['score']) for r in short
+            if opposite and r.get('wdl') == opposite and '其它' not in str(r['score'])
+        ]
+        candidates.sort(key=lambda s: JCZQ_ODDS_ORDER.index(s))
+        if candidates:
+            lines.append(' 冷门候选（非终裁）：' + '/'.join(candidates))
+        else:
+            lines.append(' 冷门候选：无（判据下无符合项）')
+
+        # 段内只留**一行**解读（简洁要求第 7 条），内容仍全部由数据算。
+        lines.append(
+            ' ' + DeepSeekAnalyzer._distribution_reading(
+                hot_lead, short_lead, only_hot, only_short, candidates, edge,
+            )
+        )
+        return lines
+
+    @staticmethod
+    def _distribution_reading(
+        hot_lead: dict[str, Any],
+        short_lead: dict[str, Any],
+        only_hot: list[str],
+        only_short: list[str],
+        candidates: list[str],
+        edge: list[dict[str, Any]],
+    ) -> str:
+        """把两个头向、两个差集、冷门候选写成一句由数据生成的中文解读。
+
+        每一处数字都从入参算，没有模板句子：换一份数据，这段文字就跟着变。
+        """
+        bits: list[str] = []
+        bits.append(
+            f'市热{hot_lead["total"]}项、头向'
+            + (f'【{hot_lead["direction"]}】（{hot_lead["count"]}/{hot_lead["total"]}）'
+               if hot_lead['direction'] else '【无】')
+        )
+        bits.append(
+            f'市短{short_lead["total"]}项、头向'
+            + (f'【{short_lead["direction"]}】（{short_lead["count"]}/{short_lead["total"]}）'
+               if short_lead['direction'] else '【无】')
+        )
+        mismatched = bool(hot_lead['direction']) and bool(short_lead['direction']) \
+            and hot_lead['direction'] != short_lead['direction']
+        bits.append('两市方向错位' if mismatched else '两市方向同向')
+        if len(short_lead['counts']) and len(hot_lead['counts']):
+            # 「只数」= 各自集合里各方向的项数比较，不是两集合总数比较。
+            short_more_dirs = [
+                d for d in ('胜', '平', '负')
+                if short_lead['counts'][d] > hot_lead['counts'][d]
+            ]
+            bits.append(
+                '市短项数多于市热的方面：' + ('/'.join(short_more_dirs) if short_more_dirs else '无')
+            )
+        bits.append(
+            f'短而非热{len(only_short)}项、热而非短{len(only_hot)}项，'
+            + (
+                '短而非热更多，优先选择短而非热比分'
+                if len(only_short) > len(only_hot)
+                else ('两者相等，无优先侧' if len(only_short) == len(only_hot)
+                      else '热而非短更多，短而非热不占优')
+            )
+        )
+        bits.append(
+            f'冷门候选{len(candidates)}项' if candidates else '冷门候选0项（判据下无符合项）'
+        )
+        if edge:
+            bits.append(f'差恰为0的{len(edge)}项不计入任一侧')
+        bits.append('本段只作对照，不改方向锁')
+        return '；'.join(bits) + '。'
+
+    @staticmethod
     def format_jingcai_hot_wdl_matrix_tg_lines(pack: Any = None, **kwargs: Any) -> list[str]:
         """`市热·胜平负比分矩阵`：市热项按胜平负分三行，比分列按**市均升序**。
 
@@ -1852,20 +2138,23 @@ class DeepSeekAnalyzer:
                 by_dir[row['wdl']].append(row)
         lines = [head]
         lines.extend(DeepSeekAnalyzer._team_pair_lines(kwargs.get('home'), kwargs.get('away')))
-        lines.append(
-            ' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负'))
-        )
-        lines.append(' 方向 │项数│比分 ')
+        lines.append(' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负')))
+        grid_rows: list[list[str]] = []
         for d in ('胜', '平', '负'):
             items = sorted(by_dir[d], key=lambda r: (r['market'], JCZQ_ODDS_ORDER.index(r['score'])))
             if not items:
-                lines.append(f' 【{d}】│0 │（无）')
+                grid_rows.append([f'【{d}】', '0', '（无）'])
                 continue
-            lines.append(
-                f' 【{d}】│{len(items)} │'
-                + ' / '.join(f"{r['score']}@{r['market']:.2f}" for r in items)
-                + ' '
-            )
+            grid_rows.append([
+                f'【{d}】', str(len(items)),
+                # 只列比分：赔率已在 `市均***竞彩对比表` 与 `市均前15` 网格里。
+                ' / '.join(str(r['score']) for r in items),
+            ])
+        # 与 ★市短 一样走同一个网格出口：列=方向/项数/比分。
+        lines.extend(build_grid_lines(
+            ['方向', '项数', '比分'], grid_rows,
+            aligns=['center', 'right', 'left'],
+        ))
         # 样本那句「计数为市均最低前15」与数据自相矛盾：真正市均最低的 15 项里
         # 只有 6 项是市热，而「胜其它/负其它」根本不在前 15 内。所以口径只写
         # 市热的定义与项数，不写「前15」。
@@ -1951,8 +2240,8 @@ class DeepSeekAnalyzer:
         if not built['available']:
             return [head, '  未形成（没有任何一项带市均原始赔率）']
 
-        # 列宽：两页共用一套，取全表最长单元格的显示宽度（至少 9），
-        # 这样同一页内所有行（含 `—` 占位）宽度一致、`|` 竖直对齐。
+        # 两页共用一套列宽：按**两页全部**格子里最长的那个算，这样第 1 页与
+        # 第 2 页的 `|` 落在同一组显示列上，滚动换页时列不会跳。
         longest = 0
         for page in built['pages']:
             for direction in ('胜', '平', '负'):
@@ -1963,8 +2252,11 @@ class DeepSeekAnalyzer:
                             _display_width(' / '.join(r['score'] for r in cell)),
                             _display_width('/'.join(f"{r['market']:.2f}" for r in cell)),
                         )
-        width = max(9, longest + 2)
-        prefix = 6
+        col_widths = [max(9, longest + 2)] * 4
+        head_width = max(9, _display_width('进球'), _display_width('均'))
+
+        def _row_label(label: str) -> str:
+            return _cell_fit(label, head_width, 'center')
 
         lines = [head]
         lines.extend(DeepSeekAnalyzer._team_pair_lines(kwargs.get('home'), kwargs.get('away')))
@@ -1972,76 +2264,71 @@ class DeepSeekAnalyzer:
             columns = page['columns']
             span = f"{columns[0].rstrip('球')}-{columns[-1]}"
             lines.append(f' 第{page["page_no"]}页 {span}')
-            lines.append(
-                _pad_right_display(' 进球', prefix) + '|'
-                + '|'.join(_fit_display(col, width) for col in columns) + '|'
-            )
-            lines.append(
-                _pad_right_display('  均', prefix) + '|'
-                + '|'.join(
-                    _fit_display('—' if mean is None else f'均{mean:.2f}', width)
-                    for mean in page['column_means']
-                ) + '|'
-            )
+            grid: list[list[str]] = [[
+                _row_label('进球'), *[str(c) for c in columns],
+            ], [
+                # `均` 行的单位已在行标签上，格子里只放数字。
+                _row_label('均'),
+                *[GRID_EMPTY if m is None else f'{m:.2f}' for m in page['column_means']],
+            ]]
             for direction in ('胜', '平', '负'):
-                score_cells: list[str] = []
-                odds_cells: list[str] = []
+                scores_row: list[str] = [_row_label(f'【{direction}】')]
+                odds_row: list[str] = [_row_label('')]
                 for cell in page['grid'][direction]:
                     if not cell:
-                        score_cells.append(_fit_display('—', width))
-                        odds_cells.append(' ' * width)
+                        scores_row.append(GRID_EMPTY)
+                        odds_row.append('')
                         continue
-                    score_cells.append(_fit_display(' / '.join(r['score'] for r in cell), width))
-                    odds_cells.append(
-                        _fit_display('/'.join(f"{r['market']:.2f}" for r in cell), width)
-                    )
-                lines.append(
-                    _pad_right_display(f'【{direction}】', prefix) + '|'
-                    + '|'.join(score_cells) + '|'
-                )
-                lines.append(_pad_right_display('', prefix) + '|' + '|'.join(odds_cells) + '|')
+                    scores_row.append(' / '.join(r['score'] for r in cell))
+                    odds_row.append('/'.join(f"{r['market']:.2f}" for r in cell))
+                grid.append(scores_row)
+                grid.append(odds_row)
+            out = build_grid_lines(
+                None, grid,
+                aligns=['center', 'center', 'center', 'center', 'center'],
+                min_widths=[head_width, *col_widths],
+            )
+            lines.extend(out)
+            report = grid_aligns_report(out)
+            if not report['aligned']:  # pragma: no cover - 结构守卫，正常不可达
+                raise ValueError(f'市均前15 第{page["page_no"]}页未对齐: {report}')
 
         selected = built['selected']
         counts = built['counts']
         total = len(selected)
-        lines.append(
-            f' 计数：胜{counts["胜"]} 平{counts["平"]} 负{counts["负"]}｜'
-            f'市均最低前{built["top_n"]}，入选{total}'
-        )
         if total:
             shares = {d: counts[d] * 100.0 / total for d in ('胜', '平', '负')}
             top_dir = max(shares, key=lambda k: (shares[k], k))
-            lines.append(
-                ' 胜平负占比：' + ' / '.join(f'{d}{shares[d]:.1f}%' for d in ('胜', '平', '负'))
-                + f'｜席位最多【{top_dir}】'
-            )
             low_n, high_n = built['low_count'], built['high_count']
             low_share = low_n * 100.0 / total
             high_share = high_n * 100.0 / total
             lead = '少球' if low_n >= high_n else '多球'
-            lines.append(
-                f' 进球判定：少球{low_n}席({low_share:.1f}%) / 多球{high_n}席({high_share:.1f}%)'
-                f'｜主导【{lead}】'
-            )
             lowest = built['lowest']
             bucket = _goal_bucket_of(lowest['score']) or '—'
-            lines.append(
-                f" 最低市均：{lowest['score']}@{lowest['market']:.2f}，{bucket}，{lowest['wdl']}。"
-            )
+            trend = ''
             if built['low_mean'] is not None and built['high_mean'] is not None:
-                trend = '进球增加则赔率抬高' if built['high_mean'] >= built['low_mean'] else '进球增加则赔率走低'
-                lines.append(
-                    f' 前{built["top_n"]}整体：{trend}。'
-                    f'少球均赔{built["low_mean"]:.2f}，多球均赔{built["high_mean"]:.2f}。'
+                trend = '，' + (
+                    f'少球均赔{built["low_mean"]:.2f} 多球均赔{built["high_mean"]:.2f}（'
+                    + ('进球增加则赔率抬高' if built['high_mean'] >= built['low_mean']
+                       else '进球增加则赔率走低') + '）'
                 )
+            # 表格之外只留**一行**汇总（简洁要求第 7 条）：用户点名的每个数字
+            # （计数、三向占比、少球/多球席位与均值、最低市均、入选数）都在这一行。
+            lines.append(
+                f' 计数 胜{counts["胜"]}/平{counts["平"]}/负{counts["负"]}（入选{total}/'
+                f'市均最低前{built["top_n"]}）｜'
+                f'占比 胜{shares["胜"]:.1f}%/平{shares["平"]:.1f}%/负{shares["负"]:.1f}%'
+                f'（最多【{top_dir}】）｜'
+                f'少球{low_n}席{low_share:.1f}% 多球{high_n}席{high_share:.1f}%'
+                f'（主导【{lead}】）｜'
+                f'最低市均 {lowest["score"]} {lowest["market"]:.2f}（{bucket}·{lowest["wdl"]}）'
+                + trend
+            )
+        # 口径 + 未判定项各一行，合起来不超过两行。
         lines.append(
-            f' 口径：市均从低到高取前{built["top_n"]}，含市短。三向都列出。'
-            '占比只作识别，不改方向锁。'
+            f' 口径：市均从低到高取前{built["top_n"]}（含市短），占比只作识别，不改方向锁。'
+            '胜穿透/负穿透/大球扎实核/少球扎实核：未判定（判据未确认）。'
         )
-        # 样本里的「胜穿透5 / 负穿透3 / 大球扎实核9 / 少球扎实核5」四项，
-        # 全仓库没有任何判据可复算（`穿透` / `扎实核` 这两个词一次都没出现过），
-        # 所以既不实现成固定文案，也不猜：如实标成未判定。
-        lines.append(' 穿透/扎实核：未判定（判据未确认）——胜穿透/负穿透/大球扎实核/少球扎实核 四项无判据')
         return lines
 
     @staticmethod
@@ -2271,6 +2558,17 @@ class DeepSeekAnalyzer:
             )
         sections.append('\n'.join(_hot_wdl))
 
+        # 3d) 【市热·市短分布｜冷门窗口】：市热/市短两组、两个真差集、冷门候选。
+        #     判据与 3b/3c 是同一份（`split_hot_short`），段与段之间不可能分叉。
+        _dist = _as_lines(kwargs.get('hot_short_distribution_tg_lines'))
+        if not _dist and isinstance(payload, dict):
+            _dist = _as_lines(payload.get('hot_short_distribution_tg_lines'))
+        if not _dist:
+            _dist = DeepSeekAnalyzer.format_hot_short_distribution_tg_lines(
+                pack, home=kwargs.get('home'), away=kwargs.get('away'),
+            )
+        sections.append('\n'.join(_dist))
+
         # 4) 市热超理论专表（生产传 mkt_over_theo_tg_lines；以前没读，整段消失）
         _pos_lines = _as_lines(kwargs.get('mkt_over_theo_tg_lines'))
         if not _pos_lines and isinstance(payload, dict):
@@ -2355,6 +2653,7 @@ class DeepSeekAnalyzer:
         '★市短·胜平负比分矩阵',
         '市热·胜平负比分矩阵',
         '市均前15·进球赔率矩阵',
+        '【市热·市短分布｜冷门窗口】',
     )
     REGISTERED_TG_SECTIONS: ClassVar[tuple[str, ...]] = (
         REQUIRED_TG_SECTIONS + OPTIONAL_TG_SECTIONS
@@ -3022,25 +3321,49 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def format_matrix_dual_prejudge_html(text: Any, *args: Any, **kwargs: Any) -> str:
-        """把纯文本研判报告转成 Telegram HTML（转义 + 首行标题加粗）。
+        """把纯文本研判报告转成 Telegram HTML（转义 + 首行标题加粗 + 表格等宽块）。
 
         契约：`bool(str(text).strip())` 为真时返回值一定非空。
 
         这条契约是硬要求，不是风格问题：调用方把它当渲染器，拿到的空串会被
         `send_tg` 当「消息内容为空」静默丢掉，而调用点仍然把 `_tg_pushed` 置真。
         本函数曾经是 `return ''` 的空桩，于是每一场都渲染成功、发送失败、记为已推。
+
+        **等宽块**：Telegram 的比例字体会把空格宽度吃掉，对齐了也看不出来。
+        所以凡是「同一段里连续两行及以上都带 `|`」的表格体，包进 `<pre>`；
+        段标题行（`📈【…】` 那种带 emoji 的）留在块外——emoji 宽度不可靠，
+        让它参与列宽计算只会把整块推歪。
         """
         raw = str(text if text is not None else '')
         if not raw.strip():
             return ''
-        lines = escape(raw).split('\n')
+        lines = raw.split('\n')
+        # 首行加粗的规则与 `bold_tg_match_title_html` 完全一致：只加粗第一个
+        # 非空行，且它必须以 `📌` 开头（比赛标题）。缺口横幅不是标题，不加粗。
+        first_content = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+        bold_line = (
+            first_content is not None
+            and lines[first_content].lstrip().startswith('📌')
+        )
+        out: list[str] = []
+        block: list[str] = []
+
+        def _flush() -> None:
+            if block:
+                out.append('<pre>' + escape('\n'.join(block)) + '</pre>')
+                block.clear()
+
         for index, line in enumerate(lines):
-            if not line.strip():
+            if GRID_SEP in line and line.strip():
+                block.append(line)
                 continue
-            if line.lstrip().startswith('📌'):
-                lines[index] = f'<b>{line.lstrip()}</b>'
-            break
-        rendered = '\n'.join(lines)
+            _flush()
+            if bold_line and index == first_content:
+                out.append(f'<b>{escape(line.lstrip())}</b>')
+                continue
+            out.append(escape(line))
+        _flush()
+        rendered = '\n'.join(out)
         return rendered if rendered.strip() else ''
 
     @staticmethod
