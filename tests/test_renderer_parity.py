@@ -21,17 +21,55 @@
 范围说明（有意收窄）：这条守卫钉的是**百分点（pp）数字**，因为那正是上一个
 PR 的缺陷形态（0..1 分数该乘 100 而没乘）。百分比列（`_pct`）、赔率列
 （`format_matrices_*`）也各自在 `FAMILIES` 里，但它们由显式的解析器登记，
-不在自动扫描范围内——自动扫描只认 `{...}pp` 这一种字面量，宁窄不宽，
-漏报比误报更容易被发现（误报会让整条守卫被 `EXEMPT` 塞满而失效）。
+不在自动扫描范围内。
 
-反证（均实测，见 PR 报告的反证表）：
-  * `_format_same_caliber_lines` 的 `_pp` 不乘 100
+## 扫描器的已知盲区
+
+清单完整性检查的全部价值取决于「新渲染器一出现就被扫到」，所以它认哪些
+写法、漏哪些写法，必须写在这里而不是留给读者猜。**写法不同，结果就不同**：
+第一版只认 f-string，用 `format(v, '+.2f') + 'pp'` 造的未登记渲染器全绿，
+差点被当成「清单完整性有效」报上去。
+
+已覆盖（每种都有 fixture 反证，见 `PP_WRITING_FORMS`）：
+
+| 写法 | 例子 | 检测 |
+| --- | --- | --- |
+| f-string | `f'Δ{v:.2f}pp'` | 是 |
+| 拼接，pp 在右 | `format(v, '+.2f') + 'pp'` | 是 |
+| 拼接，pp 在左 | `'pp' + format(v, '+.2f')` | 是 |
+| 拼接，经中间变量 | `s = format(v, '+.2f'); return s + 'pp'` | 是 |
+| 老式 % 格式化 | `'%.2fpp' % v` / `'%spp' % format(v, '+.2f')` | 是 |
+| `.join`，字面量在同一表达式 | `''.join([format(v, '+.2f'), 'pp'])` | 是 |
+
+**未覆盖，已确认为盲区**：
+
+  * **`.join` 经中间变量**：`parts = [format(v, '+.2f'), 'pp']; ''.join(parts)`
+    需要跨语句的数据流分析，本扫描器（单函数 AST 遍历）做不到。理由不是
+    「不会发生」，而是「本仓库零使用，硬追会让扫描器复杂到没人敢改」。
+    代价与兜底：`test_join_without_inline_pp_literal_is_flagged_separately`
+    做一条便宜的粗筛——同一文件里同时出现 `.join(` 与 `'pp'` 就报出来，
+    宁可误报也不静默漏掉。今天仓库里零命中，所以那条断言现在是 `[]`；
+    哪天出现，它会变红并点名文件。
+  * **把单位拼在别处再返回**：`u = 'pp'; return f'{v:.2f}' + u`、从常量表
+    取名、`''.join` 之后再 `+ suffix`——都需要常量传播，同样不做。
+    同样由上面那条粗筛兜底（`'pp'` 字面量仍在文件里）。
+  * **`%` 格式化把单位放在右操作数**：`'%.2f' % v + 'pp'` 实际是
+    `('%.2f' % v) + 'pp'`，落在拼接分支，能扫到；但 `fmt % (v, 'pp')`
+    这种把单位当参数传的写法扫不到（`pp` 在元组里，不在格式串里）。
+  * **非 `pp` 的单位**：`%`、`odds`、球数（`Δh={x:.3f}`）不在扫描范围内，
+    它们的覆盖靠 `FAMILIES` 里显式登记的解析器，不靠自动扫。
+
+反证（均实测，见 PR 报告的反证表；**每条注明用哪种写法验证**）：
+  * `_format_same_caliber_lines` 的 `_pp` 不乘 100（f-string 渲染，扫描无关）
     → `test_every_pp_number_matches_its_source[caliber_delta]` 与
       `test_renderers_agree_on_every_shared_field[caliber_delta]` 变红；
   * `score_books.format_analysis_text` 的 `_scale_pct` 不乘 100 → 同上；
   * `format_mkt_hot_wdl_matrix_tg_lines` 的 Δ 写成 0..1 分数
     → `[pack_market_minus_theory]` 变红；
-  * 新增一个不登记的 pp 渲染器 → `test_renderer_inventory_is_complete` 变红。
+  * 新增一个不登记的 pp 渲染器，**用 f-string 写** → 清单完整性变红；
+  * 新增一个不登记的 pp 渲染器，**用 `+ 'pp'` 拼接写** → 清单完整性变红
+    （第一版扫描器在这里是绿的，这是它自己的反证）；
+  * 新增一个不登记的 pp 渲染器，**用 `'%.2fpp' % v` 写** → 清单完整性变红。
 """
 from __future__ import annotations
 
@@ -522,14 +560,97 @@ def test_renderers_agree_on_every_shared_field(family_name: str) -> None:
 # --------------------------------------------------------------------------- #
 # 3. 清单完整性：新增渲染器漏登记 → 红
 # --------------------------------------------------------------------------- #
-def _pp_emitters(module_path: Path) -> dict[str, list[int]]:
-    """扫出一个模块里所有会打印 `pp` 数字的函数。
+def _looks_like_pp_literal(node: ast.AST | None, *, where: str = 'any') -> bool:
+    """这段字面量是不是一个「百分点」单位后缀。
 
-    只认紧跟在格式化值之后的 `pp` 字面量（`{x:.2f}pp` / `Δ{x}pp`），
-    这是百分点的唯一书写形态；`Δh={x:.3f}`（球）与 `%`（百分比）不在此列，
-    它们由 FAMILIES 里的显式解析器登记，见模块 docstring 的范围说明。
+    `where` 决定 `pp` 出现在字面量的哪一端，因为不同写法里它落在不同位置：
+
+      * `'suffix'`（拼接 / `%` 格式化）：`'pp'`、`' pp'`、`'%.2fpp'` —— 以 pp 结尾；
+      * `'prefix'`（f-string 尾串）：`'pp'`、`'pp…'` —— 以 pp 开头。
+
+    后缀判定不能简单用「前一字符不是字母」：`'%.2fpp'` 里 pp 前面正是格式
+    说明符的 `f`，那样会把 `%` 格式化整类漏掉（实测过，`percent_format` 与
+    `percent_format_str` 两种写法都漏）。所以规则是：去掉末尾 pp 后的**词干**
+    要么为空（`'pp'` / `' pp'`），要么含 `%`（格式串），要么含有非 ASCII
+    字母的字符（`'Δpp'`、`'2.5pp'`）；`'app'` 的词干是纯 ASCII 字母，
+    因此不会被误判。
     """
-    tree = ast.parse(module_path.read_text(encoding='utf-8'))
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        return False
+    text = node.value
+    if where in ('any', 'prefix') and text.startswith('pp'):
+        return True
+    if where not in ('any', 'suffix'):
+        return False
+    stripped = text.rstrip()
+    if not stripped.endswith('pp'):
+        return False
+    stem = stripped[:-2].strip()
+    if not stem:
+        return True
+    if '%' in stem:
+        return True
+    return any(not (ch.isascii() and ch.isalpha()) for ch in stem)
+
+
+def _pp_sites_in_function(func: ast.AST) -> list[int]:
+    """一个函数体里所有「把数字渲染成 pp」的位置（行号）。
+
+    **写法不同，扫到的结果就不同**——这正是这条守卫最容易自欺的地方。
+    上一版只认 f-string，结果用 `format(x, '+.2f') + 'pp'` 塞进去一个未登记
+    渲染器时 14 条全绿。所以四种写法都要进来，而不是只认最漂亮的那一种：
+
+      1. f-string：`f'Δ{v:.2f}pp'` —— `ast.JoinedStr` 里格式化值后紧跟 pp 常量；
+      2. 字符串拼接：`format(v, '+.2f') + 'pp'`、`s = format(...); s + 'pp'`
+         —— `ast.BinOp(op=Add)`，**任一侧**是 pp 后缀常量（左侧也收：
+         `'pp' + str(v)` 同样是渲染）；
+      3. 老式 % 格式化：`'%.2fpp' % v`、`'%spp' % format(v, '+.2f')`
+         —— `ast.BinOp(op=Mod)`，左操作数是含 pp 的格式串；
+      4. `.join` 拼接：`''.join([format(v, '+.2f'), 'pp'])`
+         —— `ast.Call` + `attr='join'`，实参（含列表/元组/生成器内部）里出现 pp。
+
+    第 4 种是**尽力而为**：它只能看到同一条表达式里的字面量。把列表先建在
+    变量里再 join（`parts = [x, 'pp']; ''.join(parts)`）需要跨语句数据流，
+    本扫描器做不到，属于已知盲区（见模块 docstring）。
+    """
+    lines: list[int] = []
+    for node in ast.walk(func):
+        if isinstance(node, ast.JoinedStr):
+            values = node.values
+            for index, value in enumerate(values[:-1]):
+                if isinstance(value, ast.FormattedValue) and _looks_like_pp_literal(
+                        values[index + 1], where='prefix'):
+                    lines.append(node.lineno)
+                    break
+            continue
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            if (_looks_like_pp_literal(node.right, where='suffix')
+                    or _looks_like_pp_literal(node.left, where='suffix')):
+                lines.append(node.lineno)
+            continue
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            if _looks_like_pp_literal(node.left, where='suffix'):
+                lines.append(node.lineno)
+            continue
+        if isinstance(node, ast.Call):
+            func_node = node.func
+            if isinstance(func_node, ast.Attribute) and func_node.attr == 'join':
+                if any(_looks_like_pp_literal(inner, where='suffix')
+                       for arg in node.args for inner in ast.walk(arg)):
+                    lines.append(node.lineno)
+    return sorted(set(lines))
+
+
+def _pp_emitters(source: str | Path) -> dict[str, list[int]]:
+    """扫出一个模块里所有会打印 `pp` 数字的函数：`{函数名: [行号, …]}`。
+
+    `source` 既可以是路径，也可以直接是一段源码字符串——反证测试正是靠后者
+    把一段写死的 fixture 源码喂进来，不必为此在仓库里留下一个假渲染器。
+
+    覆盖范围与已知盲区见模块 docstring 的「扫描器的已知盲区」一节。
+    """
+    text = source.read_text(encoding='utf-8') if isinstance(source, Path) else source
+    tree = ast.parse(text)
     found: dict[str, list[int]] = {}
 
     def walk(node: ast.AST, owner: str) -> None:
@@ -537,19 +658,15 @@ def _pp_emitters(module_path: Path) -> dict[str, list[int]]:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 walk(child, child.name)
                 continue
-            if isinstance(child, ast.JoinedStr):
-                values = child.values
-                for index, value in enumerate(values[:-1]):
-                    if not isinstance(value, ast.FormattedValue):
-                        continue
-                    nxt = values[index + 1]
-                    if (isinstance(nxt, ast.Constant) and isinstance(nxt.value, str)
-                            and nxt.value.startswith('pp')):
-                        found.setdefault(owner, []).append(child.lineno)
             walk(child, owner)
 
     walk(tree, '<module>')
-    return found
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sites = _pp_sites_in_function(node)
+            if sites:
+                found.setdefault(node.name, []).extend(sites)
+    return {name: sorted(set(lines)) for name, lines in found.items()}
 
 
 def _shipped_modules() -> list[Path]:
@@ -632,3 +749,120 @@ def test_every_exemption_states_a_reason() -> None:
     """豁免必须写清楚理由；一句「不用」不算理由，否则这条守卫会被塞满豁免架空。"""
     for renderer, reason in EXEMPT.items():
         assert len(str(reason).strip()) >= 30, f'{renderer} 的豁免理由太短：{reason!r}'
+
+
+# --------------------------------------------------------------------------- #
+# 4. 扫描器自身的反证：每种「渲染成 pp」的写法都必须被扫到
+# --------------------------------------------------------------------------- #
+#: 实测过的写法 → 该写法是否应当被 `_pp_emitters` 扫到。
+#: 这张表本身就是文档：`PP_WRITING_FORMS` 之外还有哪些写法、为什么不管，
+#: 写在模块 docstring 的「扫描器的已知盲区」一节。
+PP_WRITING_FORMS: dict[str, tuple[str, bool]] = {
+    'fstring': (
+        "def r(v):\n    return f'Δ{v:.2f}pp'\n",
+        True,
+    ),
+    'fstring_no_sign': (
+        "def r(v):\n    return f'{v:.2f}pp'\n",
+        True,
+    ),
+    'concat_right': (
+        "def r(v):\n    return format(v, '+.2f') + 'pp'\n",
+        True,
+    ),
+    'concat_spaced_suffix': (
+        "def r(v):\n    return format(v, '+.2f') + ' pp'\n",
+        True,
+    ),
+    'concat_left': (
+        "def r(v):\n    return 'pp' + format(v, '+.2f')\n",
+        True,
+    ),
+    'concat_via_variable': (
+        "def r(v):\n    s = format(v, '+.2f')\n    return s + 'pp'\n",
+        True,
+    ),
+    'percent_format': (
+        "def r(v):\n    return '%.2fpp' % v\n",
+        True,
+    ),
+    'percent_format_str': (
+        "def r(v):\n    return '%spp' % format(v, '+.2f')\n",
+        True,
+    ),
+    'join_inline': (
+        "def r(v):\n    return ''.join([format(v, '+.2f'), 'pp'])\n",
+        True,
+    ),
+    # 已知盲区：列表先建在变量里再 join，需要跨语句数据流，AST 局部扫描做不到。
+    'join_via_variable': (
+        "def r(v):\n    parts = [format(v, '+.2f'), 'pp']\n    return ''.join(parts)\n",
+        False,
+    ),
+    # 已知盲区：单位写在 docstring 之类不带数字的地方，本来就不是渲染。
+    'bare_pp_word': (
+        "def r(name):\n    return 'app' + name\n",
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize('form', sorted(PP_WRITING_FORMS))
+def test_scanner_sees_every_pp_writing_form(form: str) -> None:
+    """反证：把每种写法写进一段 fixture 源码，断言语义上「有没有扫到」符合预期。
+
+    这条存在的理由是一次实测的假绿：用 `format(v, '+.2f') + 'pp'` 造了一个
+    未登记渲染器塞进 `score_matrices.py`，纯 f-string 扫描器 14 条全绿，
+    差点被当成「清单完整性有效」。所以扫描器本身必须有反证，
+    而且反证必须覆盖拼接/`%`/`join`，不能只覆盖 f-string——那正是漏掉的那一种。
+
+    这里喂的是源码字符串，不是真文件：仓库里不必留一个假渲染器。
+    """
+    source, should_detect = PP_WRITING_FORMS[form]
+    found = _pp_emitters(source)
+    assert ('r' in found) is should_detect, (
+        f'写法 {form!r} 期望 detected={should_detect}，实际 {found!r}'
+    )
+    if should_detect:
+        assert found['r'], f'{form!r} 扫到了函数名但没给出行号：{found!r}'
+
+
+def test_unregistered_concatenated_renderer_turns_the_inventory_red(tmp_path) -> None:
+    """端到端反证：拼接写法的未登记渲染器必须让清单完整性变红。
+
+    `test_scanner_sees_every_pp_writing_form` 测的是扫描器函数本身；这条走
+    `test_renderer_inventory_is_complete` 用的同一条清单比对逻辑，
+    证明「扫到了」真的会变成「红」，而不只是「返回了一个字符串」。
+    """
+    source = (
+        "def _new_unregistered_pp_renderer(value):\n"
+        "    return format(value, '+.2f') + 'pp'\n"
+    )
+    # 扫描器返回 {函数名: [行号]}；这里模拟「把它放进某个模块」再走清单比对。
+    discovered = {('fake_module', name) for name in _pp_emitters(source)}
+    assert ('fake_module', '_new_unregistered_pp_renderer') in discovered, discovered
+    registered = {*RENDERER_FAMILIES, *EXEMPT}
+    missing = sorted(f'{m}.{f}' for (m, f) in discovered if (m, f) not in registered)
+    assert missing == ['fake_module._new_unregistered_pp_renderer'], missing
+
+
+def test_join_without_inline_pp_literal_is_flagged_separately() -> None:
+    """已知盲区的哨兵：同文件里出现 `.join(` 和 `'pp'` 时必须被点名。
+
+    跨语句的 `parts = [x, 'pp']; ''.join(parts)` 本扫描器**看不到**，
+    与其假装覆盖，不如留一条便宜的粗筛：文件里同时出现 `.join(` 与 `'pp'`
+    就报出来，由人手判断。宁可误报，也不静默漏掉。
+
+    这条会随源码变化而变化：今天仓库里没有任何文件同时命中两者，所以它断言
+    `flagged == []`；哪天出现了，它会变红并点名文件，提醒来人要么登记、
+    要么把 `_pp_emitters` 升级到跨语句分析。
+    """
+    flagged: list[str] = []
+    for path in _shipped_modules():
+        text = path.read_text(encoding='utf-8')
+        if '.join(' in text and "'pp'" in text:
+            flagged.append(path.name)
+    assert flagged == [], (
+        '这些文件同时出现 `.join(` 与 `\'pp\'`，可能藏着扫描器看不到的拼接渲染器，'
+        f'请人工确认后登记或扩写扫描器：{flagged}'
+    )
