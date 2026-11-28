@@ -1800,15 +1800,15 @@ class DeepSeekAnalyzer:
         return lines
 
     # ------------------------------------------------------------------ #
-    # 市热 / 市短 的唯一判据（三段共用，不许各写一份）
+    # 市热 / 市短 的唯一判据（★市短 与 市热 两段共用，不许各写一份）
     # ------------------------------------------------------------------ #
     @staticmethod
     def split_hot_short(rows: list[dict[str, Any]]) -> dict[str, Any]:
         """把 31 项按 `市均 − 竞彩` 的符号切成市热 / 市短 / 边界三组。
 
-        这是全仓库**唯一**一处「市热/市短」判定。★市短段、市热段、
-        冷门窗口段都调它：三处各自写一份 `diff > 0` / `diff < 0`，迟早在
-        某一处漏掉 None 或把 0 算进去，同一场比赛就会有两个答案。
+        这是全仓库**唯一**一处「市热/市短」判定。★市短段与市热段都调它：
+        两处各自写一份 `diff > 0` / `diff < 0`，迟早在某一处漏掉 None
+        或把 0 算进去，同一场比赛就会有两个答案。
 
         * 市热 = 差 > 0；
         * 市短 = 差 < 0；
@@ -1832,172 +1832,6 @@ class DeepSeekAnalyzer:
                 edge.append(row)
         return {'hot': hot, 'short': short, 'edge': edge, 'missing': missing}
 
-    @staticmethod
-    def leading_direction(items: list[dict[str, Any]]) -> dict[str, Any]:
-        """集合里项数最多的方向：`头向`。
-
-        并列最大时按固定优先级 胜>平>负 取一个，**但必须标「并列」**并且把
-        全部并列方向交出去——静默取第一个会让读者以为它是唯一领先。
-        """
-        counts = {d: 0 for d in ('胜', '平', '负')}
-        for row in items:
-            if row.get('wdl') in counts:
-                counts[row['wdl']] += 1
-        total = sum(counts.values())
-        top = max(counts.values()) if counts else 0
-        leaders = [d for d in ('胜', '平', '负') if counts[d] == top] if top else []
-        return {
-            'direction': leaders[0] if leaders else '',
-            'count': top,
-            'total': total,
-            'counts': counts,
-            'tied': len(leaders) > 1,
-            'leaders': leaders,
-        }
-
-    @staticmethod
-    def format_hot_short_distribution_tg_lines(pack: Any = None, **kwargs: Any) -> list[str]:
-        """`【市热·市短分布｜冷门窗口】`：两组比分、两个差集、冷门候选与解读。
-
-        两组都用 `split_hot_short` 的同一份判据；两个差集用集合运算，不是列表。
-        """
-        p = pack if isinstance(pack, dict) else {}
-        rows = DeepSeekAnalyzer._raw_odds_rows(p)
-        parts = DeepSeekAnalyzer.split_hot_short(rows)
-        hot, short, edge = parts['hot'], parts['short'], parts['edge']
-        head = '【市热·市短分布｜冷门窗口】'
-        if not hot and not short:
-            return [head, '  未形成（市热与市短均无项）']
-
-        hot_lead = DeepSeekAnalyzer.leading_direction(hot)
-        short_lead = DeepSeekAnalyzer.leading_direction(short)
-        hot_scores = {str(r['score']) for r in hot}
-        short_scores = {str(r['score']) for r in short}
-
-        def _counts_text(lead: dict[str, Any]) -> str:
-            return ' '.join(f'{d}{lead["counts"][d]}' for d in ('胜', '平', '负'))
-
-        def _head_text(lead: dict[str, Any]) -> str:
-            if not lead['direction']:
-                return '头向【无】（0/0）'
-            tie = f"，并列{'/'.join(lead['leaders'])}" if lead['tied'] else ''
-            return (
-                f'头向【{lead["direction"]}】（{lead["count"]}/{lead["total"]}{tie}）'
-            )
-
-        def _ordered(items: list[dict[str, Any]], *, descending: bool) -> list[str]:
-            """组内排序：市热按差降序、市短按差升序。两把尺子，不共用一个比较器。"""
-            by_dir: dict[str, list[dict[str, Any]]] = {d: [] for d in ('胜', '平', '负')}
-            for row in items:
-                if row.get('wdl') in by_dir:
-                    by_dir[row['wdl']].append(row)
-            out: list[str] = []
-            for d in ('胜', '平', '负'):
-                group = sorted(
-                    by_dir[d],
-                    key=lambda r: (
-                        -r['diff'] if descending else r['diff'],
-                        JCZQ_ODDS_ORDER.index(r['score']),
-                    ),
-                )
-                out.extend(str(r['score']) for r in group)
-            return out
-
-        hot_seq = _ordered(hot, descending=True)
-        short_seq = _ordered(short, descending=False)
-        only_hot = [s for s in hot_seq if s not in short_scores]
-        only_short = [s for s in short_seq if s not in hot_scores]
-
-        lines = [head]
-        lines.append(f' 市热({len(hot)})：{_counts_text(hot_lead)}｜{_head_text(hot_lead)}')
-        lines.append(' 市热比分：' + ('/'.join(hot_seq) if hot_seq else '无'))
-        lines.append(f' ★市短({len(short)})：{_counts_text(short_lead)}｜{_head_text(short_lead)}')
-        lines.append(' 市短比分：' + ('/'.join(short_seq) if short_seq else '无'))
-        lines.append(' 热而非短：' + ('/'.join(only_hot) if only_hot else '无'))
-        lines.append(' 短而非热：' + ('/'.join(only_short) if only_short else '无'))
-
-        # 冷门候选 = 市短中「方向与市热头向**相反**」且不是「XX其它」汇总格的项。
-        #
-        # 口径说明（有据）：用户第 4 条正文写的是「方向 ≠ 市热头向」，但那个
-        # 写法在样本上会得到 10 项（负头向时 0-0/3-3 也算进来），而样本列的是
-        # 8 项，且样本末句明确写「只留与市热头向**相反**且市短」。以样本为准：
-        # 只保留**相反方向**（胜↔负），平向不算相反。剔除汇总格是第二条规则：
-        # 三个「其它」是 31 项里的兜底桶，不是一个可比分的冷门点位。
-        hot_dir = hot_lead['direction']
-        opposite = {'胜': '负', '负': '胜'}.get(hot_dir, '')
-        candidates = [
-            str(r['score']) for r in short
-            if opposite and r.get('wdl') == opposite and '其它' not in str(r['score'])
-        ]
-        candidates.sort(key=lambda s: JCZQ_ODDS_ORDER.index(s))
-        if candidates:
-            lines.append(' 冷门候选（非终裁）：' + '/'.join(candidates))
-        else:
-            lines.append(' 冷门候选：无（判据下无符合项）')
-
-        lines.append(
-            ' 口径：市热=市均−竞彩为正，市短=市均−竞彩为负，两者互斥、同一份判据。'
-            f'差恰为0的{len(edge)}项两边都不算。'
-        )
-        lines.append(
-            ' 分布解读：' + DeepSeekAnalyzer._distribution_reading(
-                hot_lead, short_lead, only_hot, only_short, candidates, edge,
-            )
-        )
-        return lines
-
-    @staticmethod
-    def _distribution_reading(
-        hot_lead: dict[str, Any],
-        short_lead: dict[str, Any],
-        only_hot: list[str],
-        only_short: list[str],
-        candidates: list[str],
-        edge: list[dict[str, Any]],
-    ) -> str:
-        """把两个头向、两个差集、冷门候选写成一句由数据生成的中文解读。
-
-        每一处数字都从入参算，没有模板句子：换一份数据，这段文字就跟着变。
-        """
-        bits: list[str] = []
-        bits.append(
-            f'市热{hot_lead["total"]}项、头向'
-            + (f'【{hot_lead["direction"]}】（{hot_lead["count"]}/{hot_lead["total"]}）'
-               if hot_lead['direction'] else '【无】')
-        )
-        bits.append(
-            f'市短{short_lead["total"]}项、头向'
-            + (f'【{short_lead["direction"]}】（{short_lead["count"]}/{short_lead["total"]}）'
-               if short_lead['direction'] else '【无】')
-        )
-        mismatched = bool(hot_lead['direction']) and bool(short_lead['direction']) \
-            and hot_lead['direction'] != short_lead['direction']
-        bits.append('两市方向错位' if mismatched else '两市方向同向')
-        if len(short_lead['counts']) and len(hot_lead['counts']):
-            # 「只数」= 各自集合里各方向的项数比较，不是两集合总数比较。
-            short_more_dirs = [
-                d for d in ('胜', '平', '负')
-                if short_lead['counts'][d] > hot_lead['counts'][d]
-            ]
-            bits.append(
-                '市短项数多于市热的方面：' + ('/'.join(short_more_dirs) if short_more_dirs else '无')
-            )
-        bits.append(
-            f'短而非热{len(only_short)}项、热而非短{len(only_hot)}项，'
-            + (
-                '短而非热更多，优先选择短而非热比分。'
-                if len(only_short) > len(only_hot)
-                else ('两者相等，无优先侧。' if len(only_short) == len(only_hot)
-                      else '热而非短更多，短而非热不占优。')
-            )
-        )
-        bits.append(
-            f'冷门候选{len(candidates)}项' if candidates else '冷门候选0项（判据下无符合项）'
-        )
-        if edge:
-            bits.append(f'差恰为0的{len(edge)}项不计入任一侧')
-        bits.append('本段只作对照，不改方向锁。')
-        return '；'.join(bits) + '。'
     @staticmethod
     def format_jingcai_hot_wdl_matrix_tg_lines(pack: Any = None, **kwargs: Any) -> list[str]:
         """`市热·胜平负比分矩阵`：市热项按胜平负分三行，比分列按**市均升序**。
@@ -2437,17 +2271,6 @@ class DeepSeekAnalyzer:
             )
         sections.append('\n'.join(_hot_wdl))
 
-        # 3d) 【市热·市短分布｜冷门窗口】：市热/市短两组、两个真差集、冷门候选。
-        #     判据与 3b/3c 是同一份（`split_hot_short`），段与段之间不可能分叉。
-        _dist = _as_lines(kwargs.get('hot_short_distribution_tg_lines'))
-        if not _dist and isinstance(payload, dict):
-            _dist = _as_lines(payload.get('hot_short_distribution_tg_lines'))
-        if not _dist:
-            _dist = DeepSeekAnalyzer.format_hot_short_distribution_tg_lines(
-                pack, home=kwargs.get('home'), away=kwargs.get('away'),
-            )
-        sections.append('\n'.join(_dist))
-
         # 4) 市热超理论专表（生产传 mkt_over_theo_tg_lines；以前没读，整段消失）
         _pos_lines = _as_lines(kwargs.get('mkt_over_theo_tg_lines'))
         if not _pos_lines and isinstance(payload, dict):
@@ -2532,7 +2355,6 @@ class DeepSeekAnalyzer:
         '★市短·胜平负比分矩阵',
         '市热·胜平负比分矩阵',
         '市均前15·进球赔率矩阵',
-        '【市热·市短分布｜冷门窗口】',
     )
     REGISTERED_TG_SECTIONS: ClassVar[tuple[str, ...]] = (
         REQUIRED_TG_SECTIONS + OPTIONAL_TG_SECTIONS

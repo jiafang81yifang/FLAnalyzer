@@ -94,10 +94,10 @@ def test_truncated_short_list_turns_the_count_guard_red() -> None:
 # 3. 市短判据反过来（>0 当成市短）
 # --------------------------------------------------------------------------- #
 def test_flipped_short_predicate_turns_the_guards_red() -> None:
-    """`diff < 0` → `diff > 0`：市短变成市热，计数与样本锚全红。"""
+    """共用判据里 `diff < 0` → `diff > 0`：市短变成市热，计数与样本锚全红。"""
     module = _mutated_module(
-        [("short = [r for r in rows if r['diff'] is not None and r['diff'] < 0]",
-          "short = [r for r in rows if r['diff'] is not None and r['diff'] > 0]")],
+        [("            elif diff < 0:\n                short.append(row)",
+          "            elif diff > 0:\n                short.append(row)")],
         'mut_short_pred',
     )
     with pytest.raises(AssertionError):
@@ -105,10 +105,10 @@ def test_flipped_short_predicate_turns_the_guards_red() -> None:
 
 
 def test_flipped_hot_predicate_turns_the_guards_red() -> None:
-    """市热判据 `< 0` 同样必须红。"""
+    """共用判据里 `diff > 0` → `diff < 0`：市热变成市短，同样必须红。"""
     module = _mutated_module(
-        [("hot = [r for r in rows if r['diff'] is not None and r['diff'] > 0]",
-          "hot = [r for r in rows if r['diff'] is not None and r['diff'] < 0]")],
+        [("            if diff > 0:\n                hot.append(row)",
+          "            if diff < 0:\n                hot.append(row)")],
         'mut_hot_pred',
     )
     with pytest.raises(AssertionError):
