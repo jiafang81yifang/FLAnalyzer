@@ -47,6 +47,35 @@ def _proxy_dict(proxies: Any = None) -> dict[str, str] | None:
     return {'http': proxy, 'https': proxy} if proxy else None
 
 
+def _effective_proxies(proxies: Any = None) -> dict[str, str]:
+    """按 requests 自己的合并规则，算出这一轮真正生效的代理。
+
+    不能用 `_proxy_dict(proxies)` 的结果当结论：`proxies={}` 在 requests 里表示
+    「我没指定，去合并环境变量」，和「直连」不是一回事。只有走
+    `Session.merge_environment_settings` 才能拿到最终口径，所以这里直接问它。
+    """
+    try:
+        merged = requests.Session().merge_environment_settings(
+            'https://m.okooo.com/', _proxy_dict(proxies), None, None, None,
+        )
+    except Exception:  # noqa: BLE001 - 只是日志口径，取不到就如实说不知道
+        return {}
+    raw = merged.get('proxies') if isinstance(merged, dict) else None
+    return {str(k): str(v) for k, v in (raw or {}).items() if v}
+
+
+def _route_label(proxies: Any = None) -> str:
+    """这一轮实际的出口类型，供日志与不可用原因引用。
+
+    `direct` 表示 requests 合并后没有任何代理；否则把代理地址写出来。
+    用户排障时最需要的就是这一行：到底走的是代理还是直连。
+    """
+    effective = _effective_proxies(proxies)
+    if not effective:
+        return 'direct'
+    return 'proxy ' + '/'.join(sorted(set(effective.values())))
+
+
 def _http_get(url: str, proxies: Any = None, session: Any = None, retries: int = 2, timeout: int = 12) -> str:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -225,11 +254,17 @@ _BLOCK_MARKERS = (
 def _cache_evidence(headers: Any) -> dict[str, Any]:
     """从响应头里取「是否命中 CDN 缓存」的原始证据。
 
-    2026-11-26 现场结论：澳客源站按出口 IP 信誉拦截机房/云段，客户端指纹/UA/
-    Referer/cookie 全部无效；唯一决定成败的是 CDN 缓存是否命中。
-      * 命中：`age` 有值（列表页实测 age: 20 / server: Lego Server）→ 200
+    历史观察（2026-11-26，只在当时那个出口上成立）：同一轮里
+      * 命中缓存：`age` 有值（列表页实测 age: 20 / server: Lego Server）→ 200
       * 回源：`x-cache-status: EXPIRED` 且无 age（子页实测）→ 405 WAF 拦截页
-    所以这里如实记录 age / x-cache-status / server，供不可用原因直接引用。
+
+    这组观察**不足以**推出「源站按出口 IP 信誉拦截、唯一决定成败的是缓存」：
+    同一进程、同一出口下 `https://m.okooo.com/jczq/` 拿到过 200（325583 字节），
+    说明该出口至少对部分澳客路径是通的。所以「是不是出口被拦」必须由同出口探针
+    （`_canary_probe`）当场验证，不能由这些响应头反推；`age` / `x-cache-status`
+    只回答「这一次有没有命中缓存」这一个问题。
+
+    这里只如实记录 age / x-cache-status / server / traceid，供不可用原因引用。
     """
     get = getattr(headers, 'get', None)
     if not callable(get):
@@ -377,6 +412,87 @@ def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: i
     info['error'] = last_error or 'empty response'
     info['attempted'] = tried
     return info
+
+
+def _canary_urls(match_id: Any = None) -> list[str]:
+    """同出口探针的候选 URL，按「最可能 200」排序。
+
+    第一条是 `https://m.okooo.com/jczq/`：它就在生产主路径上（`fetch_jczq31`
+    与六盘口的竞彩块都抓这一页），2026-11-28 的实机日志里同一进程拿过
+    `status=200 bytes=325583`。它是**同主机、同 UA 系列、已被证明可达**的路径，
+    所以是最硬的反证：它 200 就说明「这台机器连不上澳客」不成立。
+    其次用站点根的预热 URL 兜底。
+    """
+    urls = [_MOBILE_WARMUP_URL, _WARMUP_URL]
+    if match_id not in (None, ''):
+        # 同场次页只作最后兜底：它可能本身也被路径级规则挡住，不适合当探针。
+        urls.append(f'https://www.okooo.com/soccer/match/{match_id}/')
+    return urls
+
+
+def _canary_probe(proxies: Any = None, session: Any = None,
+                  match_id: Any = None, timeout: int = 15) -> dict[str, Any]:
+    """用**同一个出口**打一条已知可达的澳客页面，验证「是不是这台机器被拦」。
+
+    为什么要它：403/405 + WAF 响应体 + CDN 未命中只能证明**这条路径**这次没拿到，
+    证明不了「出口 IP 被源站整体拦掉」。实测反例就在同一个进程里——同一次运行
+    `m.okooo.com/jczq/` 是 200，而 `/soccer/match/<id>/cs/` 是 405。只凭后者就断言
+    「机房/云段 IP 一律被拦、需要住宅 IP」，会把用户推去换出口，而真正该做的是
+    换路径/换来源继续重试。
+
+    探针本身成功 → 出口至少对部分澳客路径可达，`origin_blocked` 不成立；
+    探针也 403/405/超时 → 才有资格说这一轮出口不可用，并且必须带上探针 URL
+    与它自己的状态码作为证据。
+
+    返回 {ok, url, status, error, cache_hit, route, transport_error}。
+    失败时 additionally 带 `tried`：每个候选 URL 自己的结果——文案里必须能写出
+    探针试过哪几条、各自什么状态码，而不是只报最后一条。
+    """
+    route = _route_label(proxies)
+    last: dict[str, Any] = {'ok': False, 'url': '', 'status': 0, 'error': '',
+                            'cache_hit': False, 'route': route, 'transport_error': '',
+                            'tried': []}
+    tried: list[dict[str, Any]] = []
+    for url in _canary_urls(match_id):
+        # 走和抓取完全相同的取字节入口（`_fetch_detail`），只是 retries=1：
+        # 探针要回答的是「这个出口现在能不能拿到澳客页面」，不是「多试几次行不行」。
+        info = _fetch_detail(url, proxies=proxies, session=session, retries=1, timeout=timeout)
+        last = {
+            'ok': bool(info.get('ok')),
+            'url': url,
+            'status': int(info.get('status') or 0),
+            'error': str(info.get('error') or info.get('transport_error') or ''),
+            'cache_hit': bool(info.get('cache_hit')),
+            'route': route,
+            'transport_error': str(info.get('transport_error') or ''),
+        }
+        tried.append({**last, 'tried': []})
+        last['tried'] = list(tried)
+        if last['ok']:
+            return last
+    return last
+
+
+def _canary_line(probe: dict[str, Any]) -> str:
+    """把探针结果压成一句可以直接贴进不可用原因的证据。
+
+    失败时列出每个候选取到的状态码：只报最后一条会让「探针也挂了」变成一句没有
+    细节的断言，而这一句正是「到底是不是出口问题」的唯一证据。
+    """
+    route = probe.get('route') or '?'
+    rows = [r for r in (probe.get('tried') or []) if isinstance(r, dict)]
+    if probe.get('ok'):
+        url = str(probe.get('url') or '-')
+        cached = '命中缓存' if probe.get('cache_hit') else '未命中缓存'
+        return f'探针 {url} → HTTP {probe.get("status") or "?"}（{cached}, route={route}）'
+    if rows:
+        parts = []
+        for row in rows:
+            status = row.get('status') or row.get('error') or 'no-response'
+            cached = '命中缓存' if row.get('cache_hit') else '未命中缓存'
+            parts.append(f'{row.get("url") or "-"} → HTTP {status}（{cached}）')
+        return f'探针全部失败（route={route}）：' + '；'.join(parts)
+    return f'探针未取得结果（route={route}）'
 
 
 def _next_referer(referers: list[str], current: str) -> str | None:
@@ -1202,41 +1318,45 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
     if kwargs.get('url'):
         urls = [str(kwargs.get('url'))]
     elif match_id:
-        urls = [
-            f'https://www.okooo.com/soccer/match/{match_id}/cs/',
-            f'https://m.okooo.com/match/cs.php?MatchID={match_id}',
-        ]
+        # 手机 `m.okooo.com/match/cs.php` 曾经作为第二条候选：2026-11-28 实机日志里
+        # 它在**同一主机**上回 404「页面找不到了」（同一次运行 `m.okooo.com/jczq/`
+        # 是 200），所以它不是被 WAF 拦，而是路径本身没了——同主机 404 与 405
+        # 是两种完全不同的事实。留着它只会让每次抓取多一次必然失败的往返，
+        # 并让「换了来源也不行」看起来像是出口问题。据此从候选里移除。
+        urls = [f'https://www.okooo.com/soccer/match/{match_id}/cs/']
     fetch: dict[str, Any] = {}
     tried: list[str] = []
-    # 源站按出口 IP 拦截时**一次都不重试**：2026-11-26 已逐条证明客户端侧
-    # （TLS 指纹 / 真实 Chrome CDP / Googlebot UA / 随机 query / 双 A 记录直连 /
-    # POST-HEAD-OPTIONS / acw_tc cookie / r.jina.ai 第三方出口）全部无效。
-    # 这里的耐心重试只对「非 IP 拦截」的间歇失败生效（历史上「等 35s 再要就 200」
-    # 的现象，实际是那次刚好命中了 CDN 缓存）。
+    # 「出口 IP 被拦」不能由单条路径的 403/405 推断：同一次运行里
+    # `m.okooo.com/jczq/` 是 200（325583 字节）。所以被判 origin_blocked 之前
+    # 必须先打一条同出口探针（`_canary_probe`），只有探针也失败才算这一轮
+    # 出口不可用；探针成功就说明是路径级拦截，应当继续换来源与重试。
     patience = int(kwargs.get('patience_retries', os.environ.get('OKOOO_CS_PATIENCE') or 2) or 0)
     gap = float(kwargs.get('patience_gap', os.environ.get('OKOOO_CS_PATIENCE_GAP') or 35) or 35)
-    # 出口 IP 被源站拦（阿里云 WAF 405）时，重试与换 URL 都是同一个结果，
-    # 必须与「页面结构变了」区分开：这个标志一路带到下面的不可用分支。
+    # 探针结论先留空：只有真的有路径被判 origin_blocked 时才需要它。
+    canary: dict[str, Any] = {}
     origin_blocked = False
     for url in urls:
         fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
-        if fetch.get('origin_blocked'):
-            origin_blocked = True
+        if fetch.get('origin_blocked') and not canary:
+            canary = _canary_probe(proxies=proxies, session=session, match_id=match_id)
+            # 探针 200 = 同一出口可达，这次失败是路径/Referer 级，不是 IP 级：
+            # 不置 origin_blocked，照常走耐心重试与换来源。
+            origin_blocked = not canary.get('ok')
         for _attempt in range(patience if url == urls[0] else 0):
             if fetch.get('ok'):
                 break
             if fetch.get('origin_blocked'):
-                # 出口 IP 被拦：再等再试都是同一个 405，立刻收手。
-                origin_blocked = True
-                break
+                # 只在这条路径被判拦时复核探针；探针可达就不是 IP 拦截，继续等重试。
+                if origin_blocked:
+                    break
             if not fetch.get('blocked'):
                 # 不是被 WAF 拦（例如 404）就没必要等，直接换下一条来源。
                 break
             time.sleep(gap)
             fetch = _fetch_detail(url, proxies=proxies, session=session, retries=1)
-            if fetch.get('origin_blocked'):
-                origin_blocked = True
-                break
+            if fetch.get('origin_blocked') and not canary:
+                canary = _canary_probe(proxies=proxies, session=session, match_id=match_id)
+                origin_blocked = not canary.get('ok')
         tried.append(
             f'{url} → '
             + (f'HTTP {fetch.get("status")}' if fetch.get('status') else str(fetch.get('error') or 'no-response'))
@@ -1244,29 +1364,36 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
             + (', blocked' if fetch.get('blocked') else '')
             + (f', x-cache-status={fetch.get("x_cache_status")}' if fetch.get('x_cache_status') else '')
             + (f', age={fetch.get("age")}' if fetch.get('age') else '')
+            + (f', route={_route_label(proxies)}' if fetch.get('status') else '')
             + ', stage=fetch_failed'
         )
         if fetch.get('ok'):
             html = fetch.get('html')
             break
     if not html:
-        # 波胆页被拦（/cs/ 与 /match/cs.php 在这台机器上是阿里云 WAF 405）时，
-        # 以前整包直接报不可用返回，连竞彩31都没抓——于是「重新抓全」永远补不上
-        # 那 9 个市均覆盖不到的选项，31 表也就永远缺 9 项。
+        # 波胆页取不到时，以前整包直接报不可用返回，连竞彩31都没抓——于是
+        # 「重新抓全」永远补不上那 9 个市均覆盖不到的选项，31 表也就永远缺 9 项。
         # 市均确实没有，如实报 unavailable；但竞彩31是另一个真实来源，必须照抓。
         if origin_blocked:
-            # 源站按出口 IP 拦截和「页面结构变了」的处置完全不同，日志里必须能分清：
-            # 前者要换出口/等缓存命中，后者要改解析。所以这里单独点名，
-            # 同时照样附挂竞彩31侧通道——两个事实互不替代。
+            # 走到这里的前提是**探针也失败**：同出口连一条已知可达的澳客页面都拿不到。
+            # 这才是「这一轮出口不可用」；只有这种情形才允许提「换出口」。
+            # 文案里的每一条都必须是这一轮真的观察到的事实（探针 URL + 它的状态码），
+            # 不能写「客户端指纹/UA/Referer/cookie 均无效」这种本轮没试过的结论。
+            probe_line = _canary_line(canary)
+            route = _route_label(proxies)
             return _unavailable(
-                'cs_origin_ip_blocked: 源站按出口 IP 拦截（阿里云 WAF 405，响应体 '
-                'block_message）；CDN 未命中、请求回源，机房/云段 IP 一律被拦，'
-                '客户端指纹/UA/Referer/cookie 均无效，需要住宅 IP 或缓存命中。',
+                f'cs_origin_ip_blocked: 目标路径 403/405 且同出口探针同样失败（{probe_line}），'
+                f'本轮出口 route={route} 对澳客不可用，疑似出口 IP 被源站拦截'
+                '（阿里云 WAF 拦截页、CDN 未命中）。处置：换出口/等缓存命中后重抓。',
                 match_id=str(match_id or ''),
-                error='; '.join(tried)[:300],
+                error='; '.join(tried)[:300] + f' | {probe_line}',
                 fetch_urls=list(urls),
                 parse_stage='origin_blocked',
                 origin_blocked=True,
+                route=route,
+                canary=dict(canary),
+                canary_url=str(canary.get('url') or ''),
+                canary_status=int(canary.get('status') or 0),
                 cache_hit=bool(fetch.get('cache_hit')),
                 age=str(fetch.get('age') or ''),
                 x_cache_status=str(fetch.get('x_cache_status') or ''),
@@ -1274,13 +1401,34 @@ def scrape_okooo_mobile_cs_zuizhi(match_id: Any, proxies: Any = None, session: A
                 attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
                 **_jc31_side_channel(match_id, proxies=proxies, session=session),
             )
+        # 探针可达（或压根没被判 origin_blocked）：这是路径级失败，不是这台机器被拦。
+        # 原因必须写清「同出口可达」，否则用户又会被推去换住宅 IP。
+        # `reason` 保持机器可读的稳定码（下游按它分支），可读的推导结论放
+        # `reason_detail`，并同时进 `error`——控制台那行打印的就是 `error`。
+        route = _route_label(proxies)
+        detail = ''
+        if canary.get('ok'):
+            detail = (
+                f'该路径被拦（path/referer 级）：{"、".join(urls)} 返回 403/405；'
+                f'但同出口其它澳客页面可达（{_canary_line(canary)}），'
+                f'说明不是出口 IP 被拦，不需要换住宅 IP；route={route}。已按耐心重试与换来源处置。'
+            )
+        elif fetch.get('blocked'):
+            detail = (
+                f'目标路径被 WAF 页拦截，但未能确认出口是否可用（未取得探针结果）；route={route}。'
+            )
         return _unavailable(
             'external_okooo_mobile_cs_fetch_failed',
             match_id=str(match_id or ''),
-            error='; '.join(tried)[:300],
+            error=('; '.join(tried)[:300] + (f' | {detail}' if detail else ''))[:900],
+            reason_detail=detail,
             fetch_urls=list(urls),
             parse_stage='fetch_failed',
             origin_blocked=False,
+            route=route,
+            canary=dict(canary),
+            canary_url=str(canary.get('url') or ''),
+            canary_status=int(canary.get('status') or 0),
             attempted=[{'url': t.split(' → ')[0], 'result': t.split(' → ')[-1]} for t in tried],
             **_jc31_side_channel(match_id, proxies=proxies, session=session),
         )
