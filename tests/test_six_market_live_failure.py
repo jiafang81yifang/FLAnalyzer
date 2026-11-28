@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib
+import ast
 import json
 import re
 import sys
@@ -552,15 +553,98 @@ def test_31_table_reports_missing_when_nothing_was_folded() -> None:
 # 9. DeepSeek 失败不许冒充正文
 # ---------------------------------------------------------------------------
 
-def _pipe():
+def _reset_completion_state(pipe, monkeypatch=None) -> None:
+    """把模块级「上次调用结果」重置成初始值，**不重新 import 模块**。
+
+    这些测试原本靠 `importlib.reload(blade_deepseek_pipeline)` 拿干净状态。
+    reload 会新建一套模块对象：`app_v84_hermes` 在 import 时绑定的
+    `DeepSeekAnalyzer` 仍指向旧类，`bind_hermes_runtime` 写进 `_RUNTIME` 的
+    运行期配置被清空，`monkeypatch.setattr(pipe.DeepSeekAnalyzer, ...)` 之后
+    也打在被丢弃的那份类上。于是 reload 之后跑的下游测试看到的是一份
+    「app 和 pipe 各有一个 DeepSeekAnalyzer」的分裂状态。
+
+    这里只改那个测试真正依赖的两个全局：环境变量交给 `monkeypatch`，
+    完成状态显式归零。传给 `monkeypatch` 时会在测试结束时自动还原。
+    """
+    setter = monkeypatch.setattr if monkeypatch is not None else setattr
+    setter(pipe, '_LAST_COMPLETION_ERROR', '')
+    setter(pipe, '_LAST_COMPLETION_LOCAL', False)
+
+
+def _pipe(monkeypatch=None):
     import blade_deepseek_pipeline as pipe
-    return importlib.reload(pipe)
+    _reset_completion_state(pipe, monkeypatch)
+    return pipe
+
+
+def test_clean_state_helper_does_not_desync_app_from_the_pipeline(monkeypatch) -> None:
+    """反证：`_pipe()` 取干净状态后，app 与 pipeline 必须仍是同一个分析器。
+
+    `importlib.reload` 会新建一套模块对象，`app_v84_hermes` 里 import 时
+    绑定的 `DeepSeekAnalyzer` 就永久指向被丢弃的旧类；`_RUNTIME` 也被清空。
+    这条断言在旧实现下实测为红（`app.DeepSeekAnalyzer is pipe.DeepSeekAnalyzer`
+    → False，`pipe._RUNTIME` → {}），改法下为绿。
+
+    它同时钉住「后续测试看到的是同一份模块」这个前提：只要有人把 reload
+    写回来，本文件第一个跑到的下游测试就会看到分裂状态。
+    """
+    import sys
+
+    pipe = _pipe(monkeypatch)
+    assert sys.modules['blade_deepseek_pipeline'] is pipe, '模块被换成了新的对象'
+    assert app.DeepSeekAnalyzer is pipe.DeepSeekAnalyzer, (
+        'app_v84_hermes 绑定的 DeepSeekAnalyzer 已不是当前 pipeline 的那个；'
+        '任何 importlib.reload(blade_deepseek_pipeline) 都会造成这个分裂'
+    )
+    assert pipe._RUNTIME, 'bind_hermes_runtime 写进来的运行期配置被清空了'
+
+
+def test_clean_state_helper_actually_resets_completion_state(monkeypatch) -> None:
+    """反证的另一半：不再 reload 也必须真的把「上次调用结果」清干净。
+
+    否则这些用例只是换掉了污染手段，却丢了隔离本身。先人为弄脏两个全局，
+    再经 `_pipe()`，必须读到初始值。
+    """
+    pipe = _pipe(monkeypatch)
+    original = (pipe._LAST_COMPLETION_ERROR, pipe._LAST_COMPLETION_LOCAL)
+    pipe._LAST_COMPLETION_ERROR = 'leaked_from_a_previous_test'
+    pipe._LAST_COMPLETION_LOCAL = True
+
+    pipe = _pipe(monkeypatch)
+    assert pipe.completion_error() == ''
+    assert pipe.completion_is_local() is False
+    assert pipe.completion_failed('') is True, '空串仍然是失败，契约不变'
+    # 还原真的挂在 monkeypatch 上：undo（teardown 也会做一次，幂等）
+    # 之后两个全局回到进本测试前的值，而不是留在本测试写过的任何一个值上。
+    monkeypatch.undo()
+    assert (pipe._LAST_COMPLETION_ERROR, pipe._LAST_COMPLETION_LOCAL) == original
+
+
+def test_no_test_in_this_file_reloads_the_pipeline_module() -> None:
+    """文件级守卫：本文件不许再出现对 pipeline 的 `importlib.reload` 调用。
+
+    单条行为断言挡不住「以后又加一个 reload 的用例」；这条把手段本身钉死。
+    走 AST 找真正的调用节点 —— 文档里解释 reload 为什么有害不算违规。
+    """
+    source = (ROOT / 'tests' / 'test_six_market_live_failure.py').read_text(encoding='utf-8')
+    calls: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (isinstance(func, ast.Attribute) and func.attr == 'reload'
+                and isinstance(func.value, ast.Name) and func.value.id == 'importlib'):
+            calls.append(node.lineno)
+    assert not calls, (
+        'reload 会重建模块对象，污染 app_v84_hermes 与其他模块里已绑定的符号；'
+        f'改用 _reset_completion_state() + monkeypatch（实际调用在行 {calls}）'
+    )
 
 
 def test_api_failure_is_not_presented_as_analysis(monkeypatch) -> None:
     """API 全挂时 analyze_match_judgment 必须 available=False 且 error 非空，
     正文里不许出现「调用失败」这种话。"""
-    pipe = _pipe()
+    pipe = _pipe(monkeypatch)
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'fake-key')
 
     def _boom(*a, **k):
@@ -580,7 +664,7 @@ def test_api_failure_is_not_presented_as_analysis(monkeypatch) -> None:
 
 def test_learning_report_failure_is_empty_not_an_apology(monkeypatch) -> None:
     """run_learning_report 同形缺陷：失败不得把告警串当成复盘正文。"""
-    pipe = _pipe()
+    pipe = _pipe(monkeypatch)
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'fake-key')
     monkeypatch.setattr('requests.post', lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError('ConnectionError: boom')))
@@ -590,7 +674,7 @@ def test_learning_report_failure_is_empty_not_an_apology(monkeypatch) -> None:
 
 def test_successful_call_still_returns_body(monkeypatch) -> None:
     """成功路径不受影响：available=True、error 空、content 为正文。"""
-    pipe = _pipe()
+    pipe = _pipe(monkeypatch)
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'fake-key')
 
     class _Resp:
@@ -1018,7 +1102,7 @@ def test_failure_still_logged_once_with_reasons(monkeypatch, capsys) -> None:
 # ---------------------------------------------------------------------------
 
 def test_no_api_key_is_not_a_judgment(monkeypatch) -> None:
-    pipe = _pipe()
+    pipe = _pipe(monkeypatch)
     monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
     monkeypatch.delenv('DEEPSEEK_KEY', raising=False)
     raw = pipe.deepseek_chat_completion([{'role': 'user', 'content': 'x'}])
@@ -1035,7 +1119,7 @@ def test_no_api_key_is_not_a_judgment(monkeypatch) -> None:
 
 def test_json_and_text_mode_agree_on_missing_key(monkeypatch) -> None:
     """同一条件两种模式必须同一结论——这正是原来的不对称缺陷。"""
-    pipe = _pipe()
+    pipe = _pipe(monkeypatch)
     monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
     monkeypatch.delenv('DEEPSEEK_KEY', raising=False)
     text_res = pipe.deepseek_chat_completion([{'role': 'user', 'content': 'x'}])
