@@ -155,10 +155,6 @@ def review_direction_lock_recognition(source: Any, *args: Any, **kwargs: Any) ->
     return {'available': True, 'line': '方向锁复盘: 已按本地规则形成。', 'lock_side': info.get('lock_side')}
 
 
-def settle_display_score_pair(first: Any, second: Any = None, *args: Any, **kwargs: Any) -> tuple[str, str]:
-    return _norm_score(first), _norm_score(second)
-
-
 def split_dual_model_both_wrong(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return {'available': True, 'both_wrong': False}
 
