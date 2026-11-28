@@ -165,10 +165,13 @@ def _e9_shard(drop: str = '', n: int = 12, seed: int = 20261127,
         import sweep_100k_e2e as S
         import blade_deepseek_pipeline as _pipe_mod
 
-    # `test_six_market_live_failure._pipe` reloads blade_deepseek_pipeline, which
-    # rebinds the module's DeepSeekAnalyzer while app_v84_hermes keeps the old
-    # class. That is a real hygiene bug in that helper (reported separately);
-    # here it only matters that emit and the patch agree on one class.
+    # The writeback run and the replay must reach the *same* analyser class, so
+    # pin it instead of relying on whatever the sweep happened to bind at import.
+    # (This used to paper over `test_six_market_live_failure._pipe` reloading the
+    # pipeline module, which left `app_v84_hermes` on the discarded class. That
+    # reload is gone; the pin stays because it makes the intent explicit and the
+    # test independent of import order.)
+    assert S.PIPE is _pipe_mod, 'the sweep imported a different pipeline module object'
     S.APP.DeepSeekAnalyzer = _pipe_mod.DeepSeekAnalyzer
 
     orig = S.PIPE.DeepSeekAnalyzer.build_deepseek_only_tg_sections
