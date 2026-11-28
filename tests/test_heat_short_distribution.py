@@ -152,13 +152,18 @@ def test_sample_score_lists_match_as_sets() -> None:
 
 def test_sample_differences_and_candidates_match() -> None:
     lines = _lines(_sample_pack())
-    # 市热/市短按定义不相交，所以差集与「市热比分 / 市短比分」完全相同：
-    # 简洁后那两行**不再重复打印**（同一串比分只出现一次）。
-    assert not any(ln.strip().startswith(('热而非短', '短而非热')) for ln in lines), lines
+    # 「热而非短 / 短而非热」**必须无条件打印**：它们是本段判据的两个操作数
+    # （短而非热 > 热而非短 ⇒ 优先短而非热），也是冷门候选的上游。
+    # 本夹具两市互斥，差集等于各自全集，这两行仍要在。
+    only_hot = _score_seq(lines, '热而非短：')
+    only_short = _score_seq(lines, '短而非热：')
     hot = _score_seq(lines, '市热比分：')
     short = _score_seq(lines, '市短比分：')
-    assert len(hot) == 11 and set(hot) == set(SAMPLE_HOT)
-    assert len(short) == 14 and set(short) == set(SAMPLE_SHORT)
+    assert len(only_hot) == 11 and set(only_hot) == set(SAMPLE_HOT), only_hot
+    assert len(only_short) == 14 and set(only_short) == set(SAMPLE_SHORT), only_short
+    # 差集用的是真集合运算：等于全集只是因为两市不相交。
+    assert set(only_hot) == set(hot) - set(short)
+    assert set(only_short) == set(short) - set(hot)
     cand = _score_seq(lines, '冷门候选（非终裁）：')
     assert cand == ['1-0', '2-0', '2-1', '3-0', '3-1', '4-0', '4-1', '4-2'], cand
 
@@ -183,10 +188,9 @@ def test_hot_and_short_are_complementary_and_disjoint() -> None:
 
 
 def test_differences_are_real_set_operations() -> None:
-    """差集由集合运算得出，且与集合的关系仍然成立。
+    """差集由集合运算得出，且与集合的关系仍然成立；两集合不相交也照印。
 
-    简洁后两个差集行只在「有重叠」时才打印；这里直接验底层关系：
-    热而非短 = 市热 − 市短，短而非热 = 市短 − 市热，两集合不相交。
+    简洁后这两行曾经被「等于全集就省略」跳掉，现在**无条件打印**。
     """
     rows = DSA._raw_odds_rows(_sample_pack())
     parts = DSA.split_hot_short(rows)
@@ -197,8 +201,36 @@ def test_differences_are_real_set_operations() -> None:
     assert not (only_hot & only_short)
     assert only_hot | (hot & short) == hot
     assert only_short | (hot & short) == short
-    # 本夹具两个集合本来就互斥，所以差集等于原集合。
     assert only_hot == hot and only_short == short
+
+    # 差集等于全集时，渲染层仍然要把两行打出来。
+    lines = _lines(_sample_pack())
+    assert _score_seq(lines, '热而非短：') == _score_seq(lines, '市热比分：')
+    assert _score_seq(lines, '短而非热：') == _score_seq(lines, '市短比分：')
+
+
+def test_difference_lines_sit_between_short_scores_and_candidates() -> None:
+    """版式顺序：市短比分 → 热而非短 → 短而非热 → 冷门候选。"""
+    lines = [ln for ln in _lines(_sample_pack()) if ln.strip()]
+    order = [
+        next(i for i, ln in enumerate(lines) if ln.strip().startswith(label))
+        for label in ('市短比分：', '热而非短：', '短而非热：', '冷门候选')
+    ]
+    assert order == sorted(order), order
+
+
+def test_difference_lines_are_not_hardcoded() -> None:
+    """换一份数据，两个差集必须跟着变（不是写死的两串比分）。"""
+    # 把 1-0 改成差恰为 0 的边界项，它就从市短里消失：
+    # 市短差集会少一项，而市热差集不变 —— 两行不可能都是写死的。
+    others = [s for s in MARKET if s not in SAMPLE_HOT and s not in SAMPLE_SHORT]
+    pack = _pack(SAMPLE_HOT, [s for s in SAMPLE_SHORT if s != '1-0'],
+                 [*others, '1-0'])
+    lines = _lines(pack)
+    only_short = _score_seq(lines, '短而非热：')
+    assert '1-0' not in only_short, only_short
+    assert len(only_short) == 13, only_short
+    assert len(_score_seq(lines, '热而非短：')) == 11
 
 
 def test_reading_sentence_is_generated_from_data() -> None:
@@ -389,3 +421,29 @@ def test_section_reaches_the_report_after_the_fourth_section() -> None:
     assert all(i >= 0 for i in order), order
     assert order == sorted(order), order
     assert not DSA._section_is_empty(text, '【市热·市短分布｜冷门窗口】')
+
+
+# --------------------------------------------------------------------------- #
+# 同差时的次序：记录「当前实现与用户样本不一致」这件事
+# --------------------------------------------------------------------------- #
+def test_tied_hot_diffs_fall_back_to_the_reading_order() -> None:
+    """同差时按 `JCZQ_ODDS_ORDER` 兜底 —— 与用户样本**不一致**，这里把差异钉住。
+
+    样本「市热比分」负向：`0-2/0-3/1-2/1-3/0-4/1-4/2-3/负其它`，
+    总进球数严格单调 2→3→3→4→4→5→5→7。
+    顺序表给的是 `0-2/0-3/0-4/1-2/...`（在 `0-4` 处回退）。
+
+    这条测试存在的意义是：**不许悄悄改掉这个兜底**。若将来确认样本口径是
+    「总进球升序」，改实现时这条会红，逼着改动者一并更新本注释与 internal 报告。
+    """
+    order = pipe.JCZQ_ODDS_ORDER
+    sample_neg = ['0-2', '0-3', '1-2', '1-3', '0-4', '1-4', '2-3', '负其它']
+    by_order = [s for s in order if s in sample_neg]
+    assert by_order != sample_neg, '若这变相等，说明顺序表已改成样本口径，请更新本测试'
+    # 当前实现给的是顺序表口径。
+    assert by_order == ['0-2', '0-3', '0-4', '1-2', '1-3', '1-4', '2-3', '负其它']
+    # 样本口径的进球数是单调的，顺序表口径不是——这就是差异本身。
+    def _goals(s: str) -> int:
+        return 7 if '其它' in s else sum(int(x) for x in s.split('-'))
+    assert [_goals(s) for s in sample_neg] == sorted(_goals(s) for s in sample_neg)
+    assert [_goals(s) for s in by_order] != sorted(_goals(s) for s in by_order)

@@ -129,6 +129,30 @@ def test_splitting_the_reading_into_four_lines_turns_the_guard_red() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 简洁 5（豁免的反向）：删掉「热而非短 / 短而非热」两行 → 两条守卫都要红
+# --------------------------------------------------------------------------- #
+def test_dropping_the_difference_lines_turns_both_guards_red() -> None:
+    """这两行豁免于简洁规则，但**不许**因此被删掉。
+
+    删除后：
+      * `test_exempt_lines_really_exist_and_are_really_the_difference_sets` 红
+        （豁免登记了、行却不在）；
+      * 第五段的 `test_difference_lines_sit_between_short_scores_and_candidates` 红。
+    """
+    module = _mutated(
+        [("        lines.append(' 热而非短：' + ('/'.join(only_hot) if only_hot else '无'))\n"
+          "        lines.append(' 短而非热：' + ('/'.join(only_short) if only_short else '无'))",
+          "        pass")],
+        'mut_drop_diff_lines',
+    )
+    with pytest.raises(Exception):
+        _run(module, CONCISE, 'test_exempt_lines_really_exist_and_are_really_the_difference_sets')
+    with pytest.raises(Exception):
+        _run(module, 'test_heat_short_distribution',
+             'test_difference_lines_sit_between_short_scores_and_candidates')
+
+
+# --------------------------------------------------------------------------- #
 # 对齐 1：`_display_width` 换成 `len`
 # --------------------------------------------------------------------------- #
 def test_len_width_turns_the_alignment_guard_red() -> None:

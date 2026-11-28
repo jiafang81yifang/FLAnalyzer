@@ -2002,7 +2002,19 @@ class DeepSeekAnalyzer:
             )
 
         def _ordered(items: list[dict[str, Any]], *, descending: bool) -> list[str]:
-            """组内排序：市热按差降序、市短按差升序。两把尺子，不共用一个比较器。"""
+            """组内排序：市热按差降序、市短按差升序。两把尺子，不共用一个比较器。
+
+            **同差时的次序**：按 `JCZQ_ODDS_ORDER`（31 项阅读顺序）兜底。
+
+            已知与用户样本不一致，且已查证：样本「市热比分」负向是
+            `0-2/0-3/1-2/1-3/0-4/1-4/2-3/负其它`，其**总进球数严格单调**
+            2→3→3→4→4→5→5→7；而顺序表给的是
+            `0-2/0-3/0-4/1-2/1-3/1-4/2-3/负其它`（在 `0-4` 处回退，顺序表下标
+            19,20,23,24,21,25,27,30）。所以样本同差时的次序另有来源——
+            最像是「总进球数，再按同进球内的字母序」，但没有第二份真实同差
+            数据可验，**不据一个样本反推排序规则**。这里保持确定性的顺序表兜底，
+            并在报告里把这条列为待用户确认项。
+            """
             by_dir: dict[str, list[dict[str, Any]]] = {d: [] for d in ('胜', '平', '负')}
             for row in items:
                 if row.get('wdl') in by_dir:
@@ -2029,14 +2041,19 @@ class DeepSeekAnalyzer:
         lines.append(' 市热比分：' + ('/'.join(hot_seq) if hot_seq else '无'))
         lines.append(f' ★市短({len(short)})：{_counts_text(short_lead)}｜{_head_text(short_lead)}')
         lines.append(' 市短比分：' + ('/'.join(short_seq) if short_seq else '无'))
-        # 差集只在与原集合**不同**时才印。市热/市短按定义就不相交，所以
-        # 「热而非短」通常等于「市热比分」全部、「短而非热」等于「市短比分」全部——
-        # 那两行在同一段里是把同一串比分印两遍（简洁要求第 6/8 条）。
-        # 只有在「某比分既热又短」（同源行被两边收下）时差集才真有新信息。
-        if only_hot != hot_seq:
-            lines.append(' 热而非短：' + ('/'.join(only_hot) if only_hot else '无'))
-        if only_short != short_seq:
-            lines.append(' 短而非热：' + ('/'.join(only_short) if only_short else '无'))
+        # 这两个差集**无条件打印**，即使它恰好等于上面的全集。
+        #
+        # 曾经在这里加过一个 `if only_hot != hot_seq` 的省略：市热与市短按定义
+        # 不相交，所以差集通常就等于全集，「同一串比分印两遍」看着像冗余。
+        # 那是错的，三条理由：
+        #   1. 本段的判据就是「短而非热 > 热而非短 ⇒ 优先短而非热」。省掉这两行，
+        #      判据的左右两个操作数就看不见了，读者只能相信解读句里报的 11 和 14。
+        #   2. 这两行是用户版式里显式给出的，而「简洁」是在版式之后才提的硬约束，
+        #      不该反过来覆盖已经点名要的行。
+        #   3. 它们是 `冷门候选` 的上游（短而非热 ∩ 反向 ∩ 非其它桶）；
+        #      上游不显示，下游无从追溯。
+        lines.append(' 热而非短：' + ('/'.join(only_hot) if only_hot else '无'))
+        lines.append(' 短而非热：' + ('/'.join(only_short) if only_short else '无'))
 
         # 冷门候选 = 市短中「方向与市热头向**相反**」且不是「XX其它」汇总格的项。
         #

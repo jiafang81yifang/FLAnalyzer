@@ -55,8 +55,25 @@ MAX_LINES = {
     '★市短·胜平负比分矩阵': 8,       # 标题+队名+列头+3行+解读
     '市热·胜平负比分矩阵': 8,        # 标题+队名+计数+列头+3行+口径
     '市均前15·进球赔率矩阵': 30,     # 两页各 10 行网格 + 汇总/口径
-    '【市热·市短分布｜冷门窗口】': 8,  # 标题+4组比分行+候选+解读
+    # 9 行：标题+市热行+市热比分+市短行+市短比分+热而非短+短而非热+候选+解读。
+    # 比「最简」多两行，是**刻意豁免**：见 CONCISE_EXEMPT_LINES。
+    '【市热·市短分布｜冷门窗口】': 9,
 }
+
+#: 豁免于「冗余/长句」判据的行，每条必须写明为什么不是冗余。
+CONCISE_EXEMPT_LINES: dict[str, str] = {
+    ' 热而非短：': (
+        '本段判据「短而非热项数 > 热而非短项数 ⇒ 优先短而非热」的左操作数；'
+        '也是冷门候选的上游集合。省掉它读者无法核对结论，且用户版式里显式给出。'
+    ),
+    ' 短而非热：': (
+        '同一判据的右操作数，同为冷门候选的上游。即使差集恰好等于全集也要打印。'
+    ),
+}
+
+
+def _is_exempt(line: str) -> bool:
+    return any(line.strip().startswith(label.strip()) for label in CONCISE_EXEMPT_LINES)
 
 #: 纯装饰行：只有分隔符/空白，或连续 3 个以上同类画线字符。
 _DECOR = re.compile(r'^\s*([─━═—\-=*_~·])\1{2,}\s*$')
@@ -159,13 +176,41 @@ def test_at_most_one_reading_line_outside_the_grid(name: str) -> None:
 
     判据不能按「行首是不是空格」过滤——解读行本身就以一个空格缩进，
     那样过滤等于把要守的东西先排除掉（实测过一次：整段加长到四行仍是绿的）。
+
+    `CONCISE_EXEMPT_LINES` 里的行不计入：它们是判据的操作数，不是散文。
     """
     lines = [ln for ln in SECTIONS[name](_pack()) if ln.strip()]
     long_prose = [
         ln for ln in lines
-        if pipe.GRID_SEP not in ln and len(ln) > 60
+        if pipe.GRID_SEP not in ln and len(ln) > 60 and not _is_exempt(ln)
     ]
     assert len(long_prose) <= 2, f'{name}: 表格外长句过多 {long_prose}'
+
+
+def test_every_exemption_states_a_reason() -> None:
+    """豁免必须写清理由，否则这个机制会被用来架空简洁守卫。"""
+    for label, reason in CONCISE_EXEMPT_LINES.items():
+        assert len(reason.strip()) >= 30, f'{label} 的豁免理由太短：{reason!r}'
+
+
+def test_exempt_lines_really_exist_and_are_really_the_difference_sets() -> None:
+    """豁免的这两行必须真的在输出里，且内容等于真实集合差。
+
+    这条防的是「豁免机制被反向利用」：把豁免登记了、行却悄悄删掉，
+    简洁测试就再也不会因为这两行变红。
+    """
+    lines = SECTIONS['【市热·市短分布｜冷门窗口】'](_pack())
+    present = [ln.strip() for ln in lines if _is_exempt(ln)]
+    assert len(present) == 2, present
+
+    rows = DSA._raw_odds_rows(_pack())
+    parts = DSA.split_hot_short(rows)
+    hot = {str(r['score']) for r in parts['hot']}
+    short = {str(r['score']) for r in parts['short']}
+    only_hot = next(ln for ln in present if ln.startswith('热而非短：')).split('：', 1)[1]
+    only_short = next(ln for ln in present if ln.startswith('短而非热：')).split('：', 1)[1]
+    assert set(only_hot.split('/')) == hot - short
+    assert set(only_short.split('/')) == short - hot
 
 
 # --------------------------------------------------------------------------- #
