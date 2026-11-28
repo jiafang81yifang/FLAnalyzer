@@ -136,6 +136,120 @@ def test_saved_file_distinguishes_not_detected_from_no_contradiction(tmp_path, m
 
 
 # --------------------------------------------------------------------------- #
+# (a2) 落盘格式换了，**所有**读取器都必须跟着认新格式
+# --------------------------------------------------------------------------- #
+def test_load_contradictions_reads_back_what_save_wrote(tmp_path, monkeypatch) -> None:
+    """round-trip：`_save_contradiction_state` 写的矛盾，旧读取器必须读得回来。
+
+    历史缺陷：写入侧改成 dict 之后，`load_six_market_contradictions` 仍然只认裸列表，
+    于是「历史缺口」从第二轮起静默变成空，且没有任何报错。
+    """
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(cs, '_STORE', tmp_path / 'six_market_contradictions.json')
+
+    pack = _all_six()
+    pack['ou_line'] = None
+    pack['predicted_ou'] = 2.5
+    items = [{'type': 'missing_ou_line', 'severity': 'low'}]
+    app._save_contradiction_state('M1', {'six_market_mobile': pack}, items)
+
+    # 新读取器看得到，旧读取器也必须看得到同一条。
+    status = cs.load_six_market_contradiction_status('M1')
+    assert status['count'] == 1, status
+    legacy = cs.load_six_market_contradictions('M1')
+    assert legacy == items, legacy
+    # 契约是「返回矛盾项列表」，不能把整个状态 dict 返回出去。
+    assert isinstance(legacy, list), legacy
+    assert not any(isinstance(x, dict) and 'detected' in x for x in legacy), legacy
+
+
+def test_load_contradictions_still_reads_the_legacy_list_format(tmp_path, monkeypatch) -> None:
+    """旧格式（裸列表）仍然要读得到，不能为了兼容新格式把老文件读废。"""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(cs, '_STORE', tmp_path / 'six_market_contradictions.json')
+    import json as _json
+    legacy_items = [{'type': 'missing_ou_line', 'severity': 'low'}]
+    # 按本场真实的落盘路径写（`_contradiction_store(match_id)` 会带上 match_id 后缀）。
+    store = cs._contradiction_store('M1')
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(_json.dumps(legacy_items), encoding='utf-8')
+
+    assert cs.load_six_market_contradictions('M1') == legacy_items
+    status = cs.load_six_market_contradiction_status('M1')
+    assert status['source'] == 'legacy_list', status
+    assert status['count'] == 1, status
+
+
+def test_prior_contradictions_survive_a_second_round(
+    monkeypatch, tmp_path,
+) -> None:
+    """连跑两轮：第二轮的 `prior_six_market_contradictions` 必须仍是第一轮那 1 条。
+
+    这是这个回归最直接的形状——先读旧值、再写新值，写入格式一变就自己把自己读空。
+    """
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(cs, '_STORE', tmp_path / 'six_market_contradictions.json')
+
+    pack_first = _all_six()
+    pack_first['ou_line'] = None
+    pack_first['predicted_ou'] = 2.5
+    first_rec = {'six_market_mobile': pack_first}
+    cons_first = cs.detect_six_market_contradictions(pack_first)
+    assert len(cons_first) == 1, cons_first
+
+    # 第一轮：没有历史。
+    assert cs.load_six_market_contradictions('M9') == []
+    app._save_contradiction_state('M9', first_rec, cons_first)
+
+    # 第二轮：同一场再跑一次，历史必须是第一轮那一条。
+    second_rec = {'six_market_mobile': _all_six()}
+    prior = cs.load_six_market_contradictions('M9')
+    assert prior == cons_first, f'第二轮读到的历史缺口是 {prior!r}，应为 {cons_first!r}'
+    cons_second = cs.detect_six_market_contradictions(second_rec['six_market_mobile'])
+    assert cons_second == [], '第二轮六块齐，本场不该有新矛盾'
+    app._save_contradiction_state('M9', second_rec, cons_second)
+
+    # 第三轮：文件已被第二轮覆盖成「无矛盾」，历史确实清了。
+    assert cs.load_six_market_contradictions('M9') == []
+
+
+def test_prior_contradictions_through_the_real_scrape_path(
+    monkeypatch, tmp_path,
+) -> None:
+    """走真实 `scrape_okooo_detail` 连跑两轮，钉住 prior_ 那段赋值。"""
+    monkeypatch.setenv('OKOOO_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(cs, '_STORE', tmp_path / 'six_market_contradictions.json')
+
+    def _drive(pack):
+        monkeypatch.setattr(app, 'scrape_okooo_mobile_cs_zuizhi', lambda *a, **k: {
+            'available': False, 'reason': 'x', 'block_reason': 'x',
+        })
+        monkeypatch.setattr(app, 'scrape_okooo_mobile_six_markets',
+                            lambda *a, **k: dict(pack))
+        for name in ('_attach_mobile_exchange_pnl', '_attach_mobile_lineup',
+                     '_attach_mobile_ah_ou_books', 'seed_mobile_ah_ou_books',
+                     'apply_mobile_books_lines', '_stamp_more_play_scores'):
+            if hasattr(app, name):
+                monkeypatch.setattr(app, name, lambda *a, **k: {})
+        monkeypatch.setattr(app, '_WATER_FULL_SCRAPE_IDS', set())
+        monkeypatch.setattr(app, '_WATER_GAP_LOGGED', set())
+        return app.scrape_okooo_detail('M77')
+
+    first = _all_six()
+    first['ou_line'] = None
+    first['predicted_ou'] = 2.5
+    _drive(first)
+
+    second = _all_six()
+    out = _drive(second)
+    prior = out.get('prior_six_market_contradictions')
+    assert isinstance(prior, list) and len(prior) == 1, (
+        f'第二轮 prior_six_market_contradictions = {prior!r}，历史缺口被读空了'
+    )
+    assert prior[0].get('type') == 'missing_ou_line', prior
+
+
+# --------------------------------------------------------------------------- #
 # (b) 可用且真的没矛盾：仍然打印 0条，但 0 是算出来的
 # --------------------------------------------------------------------------- #
 def test_available_without_contradictions_still_prints_zero() -> None:
