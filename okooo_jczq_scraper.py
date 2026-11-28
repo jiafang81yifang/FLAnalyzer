@@ -190,9 +190,14 @@ _CACHE_BUSTER_PARAMS = (
 def _assert_stable_url(url: str) -> None:
     """拒绝带 cache-buster 的 URL。
 
-    实测：`/jczq/` 原样请求命中 CDN 缓存返回 200；同一路径加一个随机 query 就
-    回源，被 WAF 拦成 405。所以给 URL 加随机参数不是「更保险」，而是把一个必然
-    成功的请求变成必然失败。这里直接拒绝，避免有人日后「顺手加个时间戳」。
+    历史观察（2026-11-26）：`/jczq/` 原样请求命中 CDN 缓存返回 200；同一路径加一个
+    随机 query 就回源、被 WAF 拦成 405。所以给 URL 加随机参数不是「更保险」，而是把
+    一个当时成功的请求变成当时失败的请求。
+
+    注意这条观察只说明「命中缓存那次是 200、回源那次是 405」，**不构成**「出口 IP
+    被拦是唯一主因」的证明：同一次运行里 `m.okooo.com/jczq/` 原样请求拿到过 200
+    （325583 字节）。防护仍然保留——`okooo_mobile_cs._fetch_detail` 这条抓取链不走
+    这里，放宽它对修复没有帮助，只会丢掉一条本来有价值的约束。
     """
     parsed = urlparse(url)
     # keep_blank_values：`?t=` 这种空值 cache-buster 默认会被 parse_qs 丢掉，
@@ -204,8 +209,8 @@ def _assert_stable_url(url: str) -> None:
     )
     if offenders:
         raise ValueError(
-            f'{url} 带 cache-buster 参数 {offenders}：给澳客 URL 加随机 query 会让'
-            'CDN 缓存失效并回源，被 WAF 拦成 405。请原样使用列表页/子页 URL。'
+            f'{url} 带 cache-buster 参数 {offenders}：给澳客 URL 加随机 query 会绕开'
+            'CDN 缓存并强制回源（实测回源那次被 WAF 拦成 405）。请原样使用列表页/子页 URL。'
         )
 
 
