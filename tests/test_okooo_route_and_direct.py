@@ -100,14 +100,27 @@ def test_route_direct_is_a_real_direct_connection(env_proxy, monkeypatch) -> Non
     """`OKOOO_ROUTE=direct` + 环境已设代理 → 实际生效代理为空。
 
     这条是用户最自然的自救动作，修复前它是空操作。
+
+    打桩 `_local_proxies`（假装 Clash 在跑）：不打桩时 direct 分支虽然在读它之前就返回，
+    结论一样，但「结论一样」不该靠分支顺序偶然成立——显式打桩后这条在任何机器上测的都是
+    「强制直连会压过可用的代理」，而不是「这台机器刚好没有代理」。
     """
     monkeypatch.setenv('OKOOO_ROUTE', 'direct')
     monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
-    routes = app._http_routes()
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    routes = app._http_routes('https://v3.football.api-sports.io/fixtures')
     assert routes == [app._DIRECT_PROXIES], routes
     assert _effective(routes[0]) == {}, (
         'OKOOO_ROUTE=direct 仍然走代理：这个逃生开关是空操作'
     )
+
+
+def test_route_direct_beats_okooo_routes_too(monkeypatch) -> None:
+    """同一份强制语义在澳客专用入口也成立（两个入口不能有一个漏掉 direct）。"""
+    monkeypatch.setenv('OKOOO_ROUTE', 'direct')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    assert app._okooo_http_routes() == [app._DIRECT_PROXIES]
 
 
 def test_route_proxy_still_uses_the_proxy(env_proxy, monkeypatch) -> None:
@@ -120,9 +133,30 @@ def test_route_proxy_still_uses_the_proxy(env_proxy, monkeypatch) -> None:
     assert routes[-1] == app._DIRECT_PROXIES, routes
 
 
+def test_forced_proxy_beats_the_domestic_direct_rule(monkeypatch) -> None:
+    """强制代理优先时，国内站也不许被 auto 的直连规则抢走。"""
+    monkeypatch.setenv('OKOOO_ROUTE', 'proxy')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    routes = app._http_routes('https://m.okooo.com/match/history.php?MatchID=1')
+    assert routes[0] == {'http': PROXY, 'https': PROXY}, routes
+    assert app._okooo_http_routes()[0] == {'http': PROXY, 'https': PROXY}
+
+
 # --------------------------------------------------------------------------- #
 # 3. auto 的两种语义：澳客直连优先，通用入口（境外 API 也走它）代理优先
+#
+# **这一节每条都显式打桩 `_local_proxies`。** 不打桩时本机（以及任何没跑 Clash 的机器/
+# CI）`_local_proxies()` 返回 None，两条路由退化成单条 `[直连]`，于是：
+#   * 「第一条是直连」的断言恒真（假绿）；
+#   * 「第一条是代理」的断言恒假（假红）。
+# 两种都得不到结论。详见本文件末尾「为什么必须打桩」一节的说明。
 # --------------------------------------------------------------------------- #
+def _stub_proxy_available(monkeypatch) -> None:
+    """让 `_local_proxies()` 看起来有一个活的 Clash，这是路由顺序断言的前提。"""
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+
+
 def test_auto_prefers_direct_for_okooo_and_keeps_proxy_as_fallback(monkeypatch) -> None:
     """**澳客专用**顺序：直连第一、代理第二。
 
@@ -131,18 +165,69 @@ def test_auto_prefers_direct_for_okooo_and_keeps_proxy_as_fallback(monkeypatch) 
     """
     monkeypatch.setenv('OKOOO_ROUTE', 'auto')
     monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
-    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    _stub_proxy_available(monkeypatch)
     routes = app._okooo_http_routes()
     assert routes[0] == app._DIRECT_PROXIES, routes
     assert {'http': PROXY, 'https': PROXY} in routes, routes
 
 
 def test_auto_without_proxy_has_a_single_direct_route(monkeypatch) -> None:
+    """**没有可用代理**时两条入口都只给一条直连。
+
+    这条与上面几条是互补的：上面测「有代理时的顺序」，这条测「没代理时不会凭空造出
+    一条代理路由」。两者都必须打桩——不桩的话前者恒真、后者恒真，两个方向都测不出来。
+    """
     monkeypatch.setenv('OKOOO_ROUTE', 'auto')
     monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
     monkeypatch.setattr(app, '_local_proxies', lambda: None)
     assert app._okooo_http_routes() == [app._DIRECT_PROXIES]
-    assert app._http_routes() == [app._DIRECT_PROXIES]
+    assert app._http_routes('https://v3.football.api-sports.io/fixtures') == [app._DIRECT_PROXIES]
+    assert app._http_routes('https://m.okooo.com/') == [app._DIRECT_PROXIES]
+
+
+def test_no_proxy_environment_makes_proxy_first_assertions_vacuous(monkeypatch) -> None:
+    """不打桩时（本机/CI 没有 Clash）「代理优先」断言**测不出任何东西**。
+
+    这条把那个陷阱本身钉住：没有代理时两条路由只剩一条 `[直连]`，于是
+    「第一条是代理」恒假、「第一条是直连」恒真。所以本节所有顺序断言都必须
+    `_stub_proxy_available`。它不测实现，测的是「测试环境的前提」。
+    """
+    monkeypatch.setenv('OKOOO_ROUTE', 'auto')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    # 故意不打桩：模拟没有代理在跑的机器。
+    routes = app._http_routes('https://v3.football.api-sports.io/fixtures')
+    if len(routes) == 1:
+        # 这正是必须打桩的原因：单条时「代理优先」这条断言无法成立也无法被证伪。
+        assert routes == [app._DIRECT_PROXIES], routes
+
+
+def test_proxy_order_tests_declare_their_stub() -> None:
+    """守卫：涉及路由**顺序**的测试必须在本函数体内打桩 `_local_proxies`。
+
+    否则将来有人加一条 `auto + 国内站直连优先` 的断言，在没代理的 CI 上它会恒真。
+    这里只做静态检查（扫函数体），不依赖运行环境。
+    """
+    import ast as _ast
+    import pathlib as _pathlib
+    src = (_pathlib.Path(__file__).resolve()).read_text(encoding='utf-8')
+    tree = _ast.parse(src)
+    lines = src.splitlines()
+    offenders: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, _ast.FunctionDef) or not node.name.startswith('test_'):
+            continue
+        body = '\n'.join(lines[node.lineno - 1: node.end_lineno])
+        # 只检查真正调用路由函数取顺序的测试；纯源码 grep / 纯 proxy_dict 的不在此列。
+        if "app._http_routes(" not in body and "app._okooo_http_routes(" not in body:
+            continue
+        if node.name in {
+            'test_no_proxy_environment_makes_proxy_first_assertions_vacuous',
+            'test_auto_without_proxy_has_a_single_direct_route',
+        }:
+            continue  # 这两条刻意不打桩（前者测陷阱本身，后者测无代理分支）
+        if "_local_proxies" not in body and "_stub_proxy_available(" not in body:
+            offenders.append(node.name)
+    assert offenders == [], f'这些测试依赖运行环境里恰好有代理，必须打桩: {offenders}'
 
 
 def test_generic_routes_stay_proxy_first_for_foreign_apis(monkeypatch) -> None:
