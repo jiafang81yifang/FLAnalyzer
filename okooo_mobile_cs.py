@@ -3095,6 +3095,14 @@ def _contradiction_store(match_id: Any = None) -> Path:
 
 
 def save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:
+    """落盘对账缺口。
+
+    两种载荷都必须能落盘：
+      * 列表（旧调用形状）：只写矛盾项；
+      * dict（带检测状态）：额外写出 `detected` / `block_reason` / `gaps`，
+        这样下游读文件时能区分「检测过、没矛盾」与「没抓到、没检测」——
+        只写一个空列表会让两者长得一模一样，正是「0 条」被当成「没问题」的根因。
+    """
     match_id = None if items is None else match_id_or_items
     payload = match_id_or_items if items is None else items
     path = _contradiction_store(match_id)
@@ -3108,10 +3116,22 @@ def save_six_market_contradictions(match_id_or_items: Any, items: Any = None) ->
 
 
 def load_six_market_contradictions(match_id: Any = None) -> list[Any]:
-    """读取某场的对账缺口文件。
+    """读取某场的对账缺口**矛盾项列表**。
 
     文件不存在是正常空状态（本场还没写过缺口），不是错误：不打印告警，
     直接返回空列表。只有真的读不动（权限/JSON 损坏）才留一行提示。
+
+    **两种落盘格式都必须能读**，否则「历史缺口」会静默变成空：
+      * 裸列表（旧格式）：原样返回；
+      * dict（新格式，`_save_contradiction_state` 写的）：返回它的
+        `contradictions` 字段。
+
+    这条契约是「返回矛盾项列表」，所以 dict 里那些 `detected` / `block_reason` /
+    `gaps` **不**在这里返回——要读状态请用 `load_six_market_contradiction_status`。
+
+    历史缺陷：本函数曾经只有 `return data if isinstance(data, list) else []`，
+    而写入侧已改成 dict。于是第二次跑同一场时这里读到 `[]`，报告里的「上轮缺口」
+    永远是空，且没有任何报错。
     """
     path = _contradiction_store(match_id)
     if not path.exists():
@@ -3127,4 +3147,41 @@ def load_six_market_contradictions(match_id: Any = None) -> list[Any]:
     except OSError as exc:
         print(f"   ℹ️ [澳客手机CS] 对账缺口文件不可读，按空处理: {path.name} ({type(exc).__name__})")
         return []
-    return data if isinstance(data, list) else []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        items = data.get('contradictions')
+        return items if isinstance(items, list) else []
+    return []
+
+
+def load_six_market_contradiction_status(match_id: Any = None) -> dict[str, Any]:
+    """读取某场的对账缺口**状态**（区分「检测过没矛盾」与「没抓到没检测」）。
+
+    落盘格式有两种：旧版是裸列表（只有矛盾项），新版是带
+    `detected` / `block_reason` / `gaps` 的 dict。裸列表无法区分那两种情形，
+    所以这里如实返回 `detected=None`（未知），而不是替它猜一个 False 或 True。
+    """
+    path = _contradiction_store(match_id)
+    if not path.exists():
+        return {'detected': None, 'blocked': None, 'block_reason': '',
+                'gaps': [], 'count': 0, 'contradictions': [], 'source': 'absent'}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {'detected': None, 'blocked': None, 'block_reason': '',
+                'gaps': [], 'count': 0, 'contradictions': [], 'source': 'unreadable'}
+    if isinstance(data, dict):
+        out = dict(data)
+        out['source'] = 'status'
+        items = out.get('contradictions')
+        out['contradictions'] = items if isinstance(items, list) else []
+        out.setdefault('count', len(out['contradictions']))
+        out.setdefault('gaps', [])
+        return out
+    if isinstance(data, list):
+        return {'detected': None, 'blocked': None, 'block_reason': '',
+                'gaps': [], 'count': len(data), 'contradictions': data,
+                'source': 'legacy_list'}
+    return {'detected': None, 'blocked': None, 'block_reason': '',
+            'gaps': [], 'count': 0, 'contradictions': [], 'source': 'unknown'}

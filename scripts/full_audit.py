@@ -1416,6 +1416,25 @@ def audit_reconciliation_gap(audit: Audit, root: Path, workdir: Path) -> None:
                 lambda: mobile.load_six_market_contradictions(missing_id),
                 lambda v: isinstance(v, list) and len(v) == 1 and v[0].get('type') == 'missing_ou_line')
 
+    # 新格式（`_save_contradiction_state` 写的 dict）也必须读得出来。
+    # 上面那条只写裸列表，所以它**发现不了**「写入侧换成 dict、读取侧只认 list」
+    # 这个回归：第二轮起历史缺口会静默变成空，且没有任何报错。
+    store.write_text(json.dumps({
+        'detected': True, 'blocked': False, 'block_reason': '', 'gaps': [],
+        'gap_count': 0, 'count': 1,
+        'contradictions': [{'type': 'missing_ou_line', 'severity': 'low'}],
+    }, ensure_ascii=False), encoding='utf-8')
+    audit.check('gap:status-format-roundtrip',
+                lambda: mobile.load_six_market_contradictions(missing_id),
+                lambda v: isinstance(v, list) and len(v) == 1 and v[0].get('type') == 'missing_ou_line')
+    audit.check('gap:status-format-is-not-leaked-as-dict',
+                lambda: mobile.load_six_market_contradictions(missing_id),
+                lambda v: isinstance(v, list) and not any(
+                    isinstance(x, dict) and 'detected' in x for x in v))
+    audit.check('gap:status-format-detail-reader',
+                lambda: mobile.load_six_market_contradiction_status(missing_id),
+                lambda v: isinstance(v, dict) and v.get('detected') is True and v.get('count') == 1)
+
     # 损坏文件按空处理，只留一行 info，不抛异常。
     store.write_text('{not json', encoding='utf-8')
     audit.check('gap:corrupt-file-returns-empty',
