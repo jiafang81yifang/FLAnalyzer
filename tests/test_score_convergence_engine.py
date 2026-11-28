@@ -985,7 +985,7 @@ def test_report_section_states_all_six_required_facts() -> None:
     text = '\n'.join(engine.format_convergence_tg_lines(out))
     assert '🧭【六步收敛】' in text
     assert '方向:' in text
-    assert 'O/U 路径:' in text
+    assert '大小球路径:' in text
     assert '候选集大小:' in text
     assert '互洽得分:' in text
     assert '冲突明细条数:' in text
@@ -1000,7 +1000,9 @@ def test_report_section_shows_abort_reason_never_bare_unformed() -> None:
     out = engine.run_score_convergence(payload)
     text = '\n'.join(engine.format_convergence_tg_lines(out))
     assert '中止' in text
-    assert 'Step2' in text
+    # 正文只说中文：步骤名是「第二步·大小球路径」，英文键只留在结构化结果里。
+    assert '第二步·大小球路径' in text
+    assert 'Step2' not in text, text
     for line in text.splitlines():
         if '未形成' in line:
             assert '（' in line, f'裸「未形成」不允许: {line}'

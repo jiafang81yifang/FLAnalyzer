@@ -136,13 +136,27 @@ REASON_TEXT: dict[str, str] = {
     'no_match_id': '缺少该来源的场次号，无法定位页面',
 }
 
+#: 未知原因码的兜底：必须是中文，原令牌放进括号供排障。
+#: 英文只允许出现在这个排障括号里（用户明确要求兜底也必须是中文 + 括号原令牌）。
+UNKNOWN_REASON_TEXT = '未知原因码（{token}）'
+
 
 def reason_text(reason: Any) -> str:
-    """原因码的中文说明；未知码原样回显并标「未知」，不假装懂它。"""
+    """原因码的中文说明；未知码原样回显并标「未知」，不假装懂它。
+
+    映射表的真源在 `blade_deepseek_pipeline.REASON_LABELS`（与「无数据（原因：…）」
+    里印的是同一份中文）。本模块只把它包一层，避免两处措辞漂移；映射表不可用
+    （内嵌环境里兄弟模块还没进 sys.modules）时退回本模块自己的 `REASON_TEXT`，
+    并同样对未知码给中文兜底。
+    """
     token = str(reason or '').strip()
     if not token:
         return '未知缺口（没有原因码）'
-    return REASON_TEXT.get(token) or f'未知原因码 {token}'
+    try:
+        from blade_deepseek_pipeline import reason_label  # noqa: PLC0415 - 内嵌环境延迟导入
+        return reason_label(token)
+    except Exception:  # noqa: BLE001 - 兄弟模块缺席时仍有中文兜底
+        return REASON_TEXT.get(token) or UNKNOWN_REASON_TEXT.format(token=token)
 
 
 class _Cell:
@@ -651,7 +665,7 @@ def format_matrix_tg_lines(matrix: dict[str, Any], max_rows: int = 0) -> list[st
     """
     matrix = matrix if isinstance(matrix, dict) else {}
     rows = [r for r in (matrix.get('rows') or []) if isinstance(r, dict)]
-    lines = ['🧩【两源合并数据矩阵】', '  join 键 = 竞彩编号(order)；盘口只认澳客手机页，比分只认 500']
+    lines = ['🧩【两源合并数据矩阵】', '  匹配键 = 竞彩编号（order）；盘口只认澳客手机页，比分只认 500 网']
     banner = format_gap_banner(matrix)
     if banner:
         lines.extend(['  ' + b for b in banner])
@@ -713,7 +727,7 @@ def _source_line(row: dict[str, Any]) -> str:
     if five.get('present'):
         board_ev = five.get('board') or {}
         extra = f"{board_ev.get('elapsed_ms')}ms" if board_ev.get('elapsed_ms') else ''
-        bits.append(_ev_line(f"500 fid={five.get('fid') or '-'}", board_ev, extra))
+        bits.append(_ev_line(f"500 场次号={five.get('fid') or '-'}", board_ev, extra))
     else:
         bits.append('500 缺')
     okooo = prov.get(SRC_OKOOO) or {}
@@ -721,7 +735,7 @@ def _source_line(row: dict[str, Any]) -> str:
         tabs = okooo.get('tabs') or {}
         got = [name for name, info in tabs.items() if info.get('available')]
         blocked = [name for name, info in tabs.items() if not info.get('available')]
-        text = f"澳客 mid={okooo.get('match_id') or '-'} 页={len(got)}可用"
+        text = f"澳客场次号={okooo.get('match_id') or '-'} 抓取页数={len(got)}可用"
         if blocked:
             text += f"/{len(blocked)}缺({','.join(sorted(blocked))})"
         bits.append(text)
@@ -734,8 +748,9 @@ def _source_line(row: dict[str, Any]) -> str:
         real = [g for g in gaps if g.get('reason') != 'no_such_match_in_source']
         absent = [g for g in gaps if g.get('reason') == 'no_such_match_in_source']
         if real:
-            codes = sorted({g.get('reason') or '?' for g in real})
-            bits.append(f'缺{len(real)}格[{"/".join(codes)}]')
+            # 原因码翻成中文短语；原码留在方括号里作排障位。
+            labels = sorted({reason_text(g.get('reason')) for g in real})
+            bits.append(f'缺{len(real)}格［{"/".join(labels)}］')
         if absent:
             bits.append(f'对方源无此场({len(absent)}格)')
     return '｜'.join(bits)
@@ -751,10 +766,34 @@ PREMARKET_STATUS_PREFIX = '  ℹ️ 赛前状态：'
 
 
 def _premarket_status_line(fields: list[str], code: str, max_items: int) -> str:
-    """赛前状态行的唯一写法：说明「时间未到」，并明说「非抓取缺失」。"""
-    shown = '、'.join(sorted(set(fields))[:max_items])
+    """赛前状态行的唯一写法：说明「时间未到」，并明说「非抓取缺失」。
+
+    格名走 `field_label`（`home_score` → 「主队比分」），原因码走 `reason_text`
+    （中文短语）。原因码本身仍留在行尾括号里作为排障位——那是唯一允许出现
+    英文令牌的位置，用户看到的是中文，排障时仍能 grep 到码。
+    """
+    shown = '、'.join(_field_names(fields, max_items))
     more = f" 等{len(set(fields))}格" if len(set(fields)) > max_items else ''
     return f'{PREMARKET_STATUS_PREFIX}{reason_text(code)}（{shown}{more}｜{code}）'
+
+
+def _field_names(fields: list[str], max_items: int) -> list[str]:
+    """格名列表 → 中文名。去重、排序、截断都在这一处，两处渲染保持同一口径。"""
+    uniq = sorted({str(f) for f in fields if f})
+    return [_field_label(f) for f in uniq[:max_items]]
+
+
+def _field_label(field: Any) -> str:
+    """字段名 → 中文名；`blade_deepseek_pipeline` 不在时退回原字段名。
+
+    退回原字段名是有意的：缺了翻译表，英文格名比空串好（用户至少知道是哪一格）。
+    正常路径永远走中文。
+    """
+    try:
+        from blade_deepseek_pipeline import field_label  # noqa: PLC0415 - 内嵌环境延迟导入
+        return field_label(field)
+    except Exception:  # noqa: BLE001 - 兄弟模块缺席时保留原格名
+        return str(field or '')
 
 
 def format_gap_banner(matrix: dict[str, Any], max_items: int = 6) -> list[str]:
@@ -802,9 +841,8 @@ def format_gap_banner(matrix: dict[str, Any], max_items: int = 6) -> list[str]:
         return []
     lines = [GAP_BANNER_HEADER]
     for code in sorted(buckets, key=lambda c: (-len(buckets[c]), c)):
-        fields = sorted({f for f in buckets[code] if f})
-        shown = '、'.join(fields[:max_items])
-        more = f" 等{len(fields)}格" if len(fields) > max_items else ''
+        shown = '、'.join(_field_names(buckets[code], max_items))
+        more = f" 等{len({f for f in buckets[code] if f})}格" if len({f for f in buckets[code] if f}) > max_items else ''
         lines.append(f'  · {reason_text(code)}（{shown}{more}｜{code}）')
     lines.extend(status_lines)
     return lines

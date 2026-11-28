@@ -326,7 +326,9 @@ def test_tg_lines_show_numbers_and_say_what_is_missing(
     lines = mdm.format_matrix_tg_lines(matrix, max_rows=2)
     text = '\n'.join(lines)
     assert '两源合并数据矩阵' in text
-    assert 'join 键' in text
+    # 正文只说中文：原来是「join 键」，现在「匹配键 = 竞彩编号（order）」。
+    assert '匹配键' in text
+    assert 'join 键' not in text, text
     # 5002 这一行必须同时出现两侧的实数字
     assert '-1' in text            # 亚盘（澳客）
     assert '3.25' in text          # 大小球（澳客）
@@ -375,4 +377,4 @@ def test_matrix_elapsed_is_zero_not_invented_when_unknown() -> None:
     )
     assert row['provenance']['live500']['board']['elapsed_ms'] == 0
     text = '\n'.join(mdm.format_matrix_tg_lines({'rows': [row], 'duplicates': []}))
-    assert 'ms' not in text.split('500 fid=')[1].split('｜')[0], '没有耗时却印了毫秒'
+    assert 'ms' not in text.split('500 场次号=')[1].split('｜')[0], '没有耗时却印了毫秒'

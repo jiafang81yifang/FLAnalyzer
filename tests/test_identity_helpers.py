@@ -282,6 +282,25 @@ def test_no_html_tags_reach_the_plaintext_fallback(
     assert '【31项市均×竞彩对比表】' in body
 
 
+def test_english_hubs_survive_in_the_delivered_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """六盘口事实板里的 `home`/`draw`/`away` 也必须说中文。
+
+    这三个是内部字段名，以前原样印成 `胜平负：home=1.91 draw=3.86 away=2.8`。
+    数字必须原样，名字必须是「主队/平局/客队」；英文键不得作为裸文本出现。
+    """
+    _payloads, texts = _emit(monkeypatch, tmp_path, _record())
+    body = _text(texts)
+    for label in ('主队=', '平局=', '客队='):
+        assert label in body, f'盘口数值的中文名缺失 {label}：{body[:1200]}'
+    for token in ('home=', 'draw=', 'away='):
+        assert token not in body, f'{token!r} 作为裸文本出现在正文里：{body[:1200]}'
+    # 数值本身一个都不能改。
+    for value in ('1.91', '3.86', '2.8'):
+        assert value in body, f'盘口数值被改了：{value} 不见了'
+
+
 def test_no_html_tags_reach_the_plaintext_fallback_when_send_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -327,20 +346,49 @@ def test_destructive_or_unreachable_helpers_are_gone(name: str) -> None:
     assert not hasattr(DA, name), f'{name} 还在：它承诺的事要么会删真数据，要么只能发生在 escape 之后'
 
 
+def bare_token_present(text: str, token: str) -> bool:
+    """`token` 是否以**裸文本**出现（不在中英文括号里）。
+
+    正文里的英文令牌只有一种合法位置：紧跟中文名后的排障括号
+    `澳客桌面比分均（desktop_cs）`。用它来区分「排障位保留」与「英文渗出」。
+    """
+    import re as _re
+    pattern = _re.escape(token)
+    for match in _re.finditer(pattern, text):
+        before = text[:match.start()].rstrip()
+        after = text[match.end():].lstrip()
+        if before.endswith(('（', '(')) and after.startswith(('）', ')')):
+            continue
+        return True
+    return False
+
+
 def test_english_markers_survive_in_the_delivered_report(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """`desktop_cs` / `Δ` / `pp` 是**故意**印的来源与单位标识，必须留在正文里。
+    """`Δ` / `pp` 必须活下来；英文来源令牌只许留在排障括号里。
 
-    这是删掉 `strip_tg_english` 的理由，用真实 emit 正文量出来的：
-    按名字实现（剔掉英文）会连这些一起删，31 表的来源列和市短/市热矩阵的
-    `Δ`/`pp` 全部消失。
+    这条用例原来钉的是「`desktop_cs` / `Δ` / `pp` 三个都必须原样印在正文里」，
+    用来证明 `strip_tg_english` 那种「按名字剔英文」的删法会毁数据。那个理由
+    对 `Δ` / `pp` 仍然成立——它们是单位符号，删掉读者就看不懂列了。但用户的
+    现行要求是**正文全部中文**：`desktop_cs` 是来源标识，中文名「澳客桌面
+    比分均」表达同一件事，英文原名只保留在括号里作排障位。
+
+    所以断言改成分层，而不是放宽：
+      * 单位符号 `Δ` / `pp` 必须在（删了就是毁数据）；
+      * 中文来源名必须在（这是用户要求的那一层）；
+      * 英文令牌若出现，必须紧跟在中文名后的括号里，不得作为裸文本出现。
     """
     _payloads, texts = _emit(monkeypatch, tmp_path, _record())
     body = _text(texts)
-    assert 'desktop_cs' in body, f'31 表的来源标识被删了：{body[:800]}'
     assert 'Δ' in body, 'Δ 列被删了'
     assert 'pp' in body, '百分点单位被删了'
+    assert '澳客桌面比分均' in body, f'31 表的中文来源名不见了：{body[:800]}'
+    # 英文来源令牌只允许出现在 `（desktop_cs）` 这种排障括号里。
+    assert '（desktop_cs）' in body, f'排障用的原来源标识被整段删了：{body[:800]}'
+    assert bare_token_present(body, 'desktop_cs') is False, (
+        f'desktop_cs 作为裸文本出现在正文里（应只在括号内）：{body[:800]}'
+    )
 
 
 def test_the_gap_banner_survives_without_the_six_market_sanitizer(

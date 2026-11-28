@@ -219,9 +219,16 @@ def build_goal_table_text(data: Any, compact: bool = False) -> str:
 
 
 def _wrap_table_text(table_text: str, use_html_pre: bool) -> str:
+    """包表格。HTML 模式用 `<pre>`；纯文本模式**不加代码围栏**。
+
+    原来的纯文本分支写成 ` ```text ` 围栏：`text` 是英文语言标识，会原样发到
+    Telegram 正文里（用户明确要求正文不得夹带英文短语）。等宽对齐靠的是
+    全角/半角列宽补齐，不依赖围栏；去掉围栏后表格仍逐列对齐，且不再有
+    英文标识。HTML 模式（生产默认）本来就没有语言标识。
+    """
     if use_html_pre:
         return f"<pre>{html.escape(table_text)}</pre>"
-    return f"```text\n{table_text}\n```"
+    return table_text
 
 
 def build_telegram_goal_table(
