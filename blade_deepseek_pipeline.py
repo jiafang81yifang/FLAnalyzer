@@ -258,6 +258,36 @@ def strip_tg_color_marks(text: Any) -> str:
     return str(text or '').replace('🟨', '').replace('🟥', '').replace('🟩', '')
 
 
+def _carry_page_breaks(sections: list[str]) -> list[str]:
+    """把段尾的 `\\x0c` 交给下一段的开头，并丢掉空段。
+
+    调用方用 `'\\n\\n'.join(sections)` 拼报告，所以段尾的 `\\x0c` 会变成
+    `\\x0c\\n\\n`——下一页以两个空行起头，而不是干净地从标题开始。
+    分页符的语义是「下一条从这里开始」，因此把它挪到下段首字符前；
+    最后一节若仍以 `\\x0c` 结尾就原样保留（它是「到此结束」的唯一表达）。
+    """
+    carried = False
+    out: list[str] = []
+    for section in sections:
+        text = section
+        if carried:
+            # 分页符落在「下一条消息从这里开始」的位置：挂到下段首字符之前，
+            # 并且吃掉 `'\n\n'.join` 留下的空行，让下一页从标题行开始。
+            text = '\x0c' + text.lstrip('\n')
+            carried = False
+        if text.endswith('\x0c'):
+            text = text.rstrip('\x0c').rstrip('\n')
+            if not text.strip():
+                carried = True
+                continue
+            carried = True
+        if text.strip():
+            out.append(text)
+    if carried and out:
+        out[-1] = out[-1] + '\x0c'
+    return out
+
+
 def split_tg_html_preserving_pre(text: Any, max_len: int = 3900) -> list[str]:
     """按行切块，绝不把一行（表格行/比分行）切断。
 
@@ -2626,11 +2656,19 @@ class DeepSeekAnalyzer:
 
         # 4b) 0球~7+ 均赔/比分表：必须排在 31 项表与市短/市热之后、研判正文之前。
         #     缺数据时调用方传的是「未形成（原因）」那一行，不会静默消失。
+        #     表固定两页（0~3 球 / 4~7+），用 `\x0c` 强制分页让两页各自成条。
+        #     分页符挂在**本段开头**（把本段与上一节切开）和两页之间；段尾不带
+        #     分页符——调用方用 `\n\n` 拼段，尾部 `\x0c` 只会让下一段以空行起头，
+        #     真正把第 2 页和后面的 4b2 / 六盘口 / 研判正文切开的是**下一段**
+        #     自己的前置分页符（`_carry_page_breaks` 会把段尾符交给下一段开头）。
         _goal_lines = _as_lines(kwargs.get('goal_table_tg_lines'))
         if not _goal_lines and isinstance(payload, dict):
             _goal_lines = _as_lines(payload.get('goal_table_tg_lines'))
         if _goal_lines:
-            sections.append('\n'.join(_goal_lines))
+            # 每页自带 `\x0c` 前缀；段尾也留一个，交给 `_carry_page_breaks`
+            # 挪到下一段开头——调用方 `'\n\n'.join` 会让段尾符落在两段之间，
+            # 只留前缀时「第 2 页」会和六盘口/heat/正文挤进同一条消息（实测过）。
+            sections.append('\x0c' + '\x0c'.join(_goal_lines) + '\x0c')
 
         # 4b2) 市均前15·进球赔率矩阵：两页网格，等宽对齐。
         #      与上面那张 0球~7+ 表不同：那张按总进球盘口给均赔，这张按
@@ -2666,7 +2704,7 @@ class DeepSeekAnalyzer:
             if extra_key == 'wdl_matrix_tg_lines' and any('市短矩阵' in ln for ln in extra):
                 continue
             sections.append('\n'.join(extra))
-        return [s for s in sections if s.strip()]
+        return _carry_page_breaks(sections)
 
     @staticmethod
     def compact_payload(payload: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
