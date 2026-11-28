@@ -197,10 +197,22 @@ def _e9_shard(drop: str = '', n: int = 12, seed: int = 20261127,
             out = []
             for sec in sections:
                 lines = sec.splitlines()
-                kept = [ln for ln in lines
-                        if not (ln.startswith('  ') and ln[2:4].strip().isdigit())]
-                if len(kept) != len(lines) and dropped is not None:
-                    dropped.append(f'{len(lines) - len(kept)} table row(s)')
+                # 只从 **31 项对比表那一节**删行，且要求该行同时含 `市均` 和 `竞彩`。
+                # 这条桩的全部意义是「写回时丢了一行 31 表数据」；判据收窄到
+                # 「哪一节」+「行里到底是什么」之后，新加的段（★市短 / 市热 /
+                # 进球网格…）就不会被同形状的行误命中，反证才仍然证明的是它
+                # 名字里说的那件事。
+                if '31项市均×竞彩对比表' not in sec:
+                    out.append(sec)
+                    continue
+                kept = [
+                    ln for ln in lines
+                    if not (ln.startswith('  ') and ln[2:4].strip().isdigit()
+                            and '市均' in ln and '竞彩' in ln)
+                ]
+                removed = len(lines) - len(kept)
+                if removed and dropped is not None:
+                    dropped.append(f'{removed} table row(s)')
                 out.append('\n'.join(kept or lines))
             return out
         if drop == 'fact_panel':
@@ -247,6 +259,12 @@ def test_e9_catches_one_dropped_table_row() -> None:
     # 12 cases, one of which (index 0) takes the pack-absent exit and never
     # calls this builder — so 11 bodies lose the rows and 11 must be caught.
     assert len(dropped) == 11, f'the counter-proof removed rows from {len(dropped)} cases'
+    # 桩删的必须**正好是 31 表的一整表行**（31 行），不是「某种形状的行」。
+    # 这条防的是桩的匹配面被别的段污染：新段里若出现同形状的行而被误删，
+    # 计数会变成 31 的倍数或别的数，这里立刻报出来。
+    assert set(dropped) == {'31 table row(s)'}, (
+        f'桩删的不止 31 表整表行：{set(dropped)}'
+    )
     assert e9 == 11, f'a lost 31-table row on writeback went unnoticed (E9={e9})'
     assert produced == 1, produced
 
