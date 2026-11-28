@@ -33606,6 +33606,13 @@ def emit_pipeline_deepseek_tg_report(m_obj, i=0, total=0, all_first_scores=None,
         six_market_fact_tg_lines=_six_fact_lines,
         deepseek_section_lines=_ds_section_lines,
         ds_payload=_ds_payload,
+        # 四段「市均−竞彩」新段要队名：队名只在段首出现一次（见各渲染器）。
+        home=str((rec.get('home_team') or (_ds_payload or {}).get('home') or '') if isinstance(rec, dict) else ''),
+        away=str((rec.get('away_team') or (_ds_payload or {}).get('away') or '') if isinstance(rec, dict) else ''),
+        # `源=`/`通道=` 只从记录取；`cs_route_used` 由另一条在途 PR 引入，
+        # 这里不假定它存在，缺了渲染器自己落 `—`。
+        source_label=str(rec.get('correct_score_channel') or '') if isinstance(rec, dict) else '',
+        channel_label=str(rec.get('cs_route_used') or '') if isinstance(rec, dict) else '',
     )
     if _convergence_lines:
         _final_sections = [*_final_sections, '\n'.join(_convergence_lines)]

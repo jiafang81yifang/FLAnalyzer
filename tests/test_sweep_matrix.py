@@ -441,7 +441,15 @@ def _check_case(pool_size, water, channel, source, stub_shape, gap_state) -> lis
     # Section headers must all be present. An individual matrix may honestly say
     # 未形成 on this synthetic flat-odds input (no qualifying row), which is fine —
     # what must never happen is the whole assembly collapsing to 未形成-only.
-    if _tg16.count('未形成') >= 3:
+    # Count per **section**, not per body: the report now also carries 市均−竞彩
+    # 原始赔率差 的四个新段（★市短/市热/进球网格…），它们在这份「31 项同价」
+    # 合成输入上会合法地报未形成。按全篇数字数会把「新段没数据」误判成
+    # 「三张主表全塌」——那正是这条守卫要区分开的两件事。
+    _degraded = [
+        _name for _name in ('31项市均×竞彩对比表', '市短矩阵', '市热矩阵')
+        if pipe.DeepSeekAnalyzer._section_is_empty(_tg16, _name)
+    ]
+    if len(_degraded) >= 3:
         fails.append('(xvi) TG assembly degraded all three sections despite a pack')
 
     return fails
