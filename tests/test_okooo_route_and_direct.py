@@ -121,10 +121,10 @@ def test_route_proxy_still_uses_the_proxy(env_proxy, monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. auto 默认直连优先（设计变更）
+# 3. auto 的两种语义：澳客直连优先，通用入口（境外 API 也走它）代理优先
 # --------------------------------------------------------------------------- #
-def test_auto_prefers_direct_and_keeps_proxy_as_fallback(monkeypatch) -> None:
-    """auto：直连第一、代理第二。
+def test_auto_prefers_direct_for_okooo_and_keeps_proxy_as_fallback(monkeypatch) -> None:
+    """**澳客专用**顺序：直连第一、代理第二。
 
     澳客是国内站点，把请求交给本机代理之后出口就变成了代理规则集的产物，
     程序看不到也无法在日志里证明；直连用的才是这台机器自己的出口。
@@ -132,7 +132,7 @@ def test_auto_prefers_direct_and_keeps_proxy_as_fallback(monkeypatch) -> None:
     monkeypatch.setenv('OKOOO_ROUTE', 'auto')
     monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
     monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
-    routes = app._http_routes()
+    routes = app._okooo_http_routes()
     assert routes[0] == app._DIRECT_PROXIES, routes
     assert {'http': PROXY, 'https': PROXY} in routes, routes
 
@@ -141,7 +141,98 @@ def test_auto_without_proxy_has_a_single_direct_route(monkeypatch) -> None:
     monkeypatch.setenv('OKOOO_ROUTE', 'auto')
     monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
     monkeypatch.setattr(app, '_local_proxies', lambda: None)
+    assert app._okooo_http_routes() == [app._DIRECT_PROXIES]
     assert app._http_routes() == [app._DIRECT_PROXIES]
+
+
+def test_generic_routes_stay_proxy_first_for_foreign_apis(monkeypatch) -> None:
+    """通用入口对**境外 URL** 必须代理优先。
+
+    `_http_routes()` 不只服务澳客：`safe_api_get` 也用它。境外 API 在境内网络下通常必须
+    走代理；若这里也直连优先，每次都会先超时再回退。「澳客直连优先」是澳客的业务判断，
+    不能外溢到境外目标。
+    """
+    monkeypatch.setenv('OKOOO_ROUTE', 'auto')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    routes = app._http_routes('https://v3.football.api-sports.io/fixtures')
+    assert routes[0] == {'http': PROXY, 'https': PROXY}, routes
+    assert routes[0] is not app._DIRECT_PROXIES, routes
+    assert routes[-1] == app._DIRECT_PROXIES, routes
+
+
+def test_generic_routes_without_target_are_proxy_first(monkeypatch) -> None:
+    """不知道目标时按代理优先（保守一侧留给不确定的情况）。"""
+    monkeypatch.setenv('OKOOO_ROUTE', 'auto')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    routes = app._http_routes(None)
+    assert routes[0] == {'http': PROXY, 'https': PROXY}, routes
+
+
+@pytest.mark.parametrize('url', [
+    'https://odds.500.com/fenxi/shuju-1430592.shtml',
+    'https://m.okooo.com/match/history.php?MatchID=1341275',
+    'https://www.okooo.com/soccer/match/1341275/history/',
+])
+def test_generic_routes_are_direct_first_for_domestic_hosts(url, monkeypatch) -> None:
+    """国内站（500 / 澳客）经通用入口时仍是直连优先。"""
+    monkeypatch.setenv('OKOOO_ROUTE', 'auto')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    routes = app._http_routes(url)
+    assert routes[0] == app._DIRECT_PROXIES, (url, routes)
+
+
+def test_domestic_host_rule_does_not_match_lookalikes() -> None:
+    """主机规则要按域名边界匹配，不能被 `okooo.com.evil.io` 这类串进去。"""
+    assert app._is_domestic_target('https://m.okooo.com/x') is True
+    assert app._is_domestic_target('https://www.500.com/x') is True
+    assert app._is_domestic_target('https://okooo.com.evil.io/x') is False
+    assert app._is_domestic_target('https://notokooo.com/x') is False
+    assert app._is_domestic_target('https://v3.football.api-sports.io/fixtures') is False
+    assert app._is_domestic_target(None) is False
+
+
+@pytest.mark.parametrize('url', [
+    'https://v3.football.api-sports.io/fixtures',
+    'https://v3.football.api-sports.io/predictions',
+    'https://v3.football.api-sports.io/odds',
+])
+def test_safe_api_get_tries_the_proxy_first_for_foreign_apis(url, monkeypatch) -> None:
+    """`safe_api_get` 对境外 URL 的第一条路由必须是代理。
+
+    注：这三个 api-sports.io 地址当前在 `safe_api_get` 里是**短路返回 None**
+    （欧洲库路径，从不发请求），所以这里打桩 `requests.get` 并断言「即使发了，
+    第一条也是代理」——用它钉住 `_http_routes(url)` 的选路，而不是钉住那条短路。
+    """
+    monkeypatch.setenv('OKOOO_ROUTE', 'auto')
+    monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
+    monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
+    routes = app._http_routes(url)
+    assert routes[0] == {'http': PROXY, 'https': PROXY}, (url, routes)
+
+
+def test_safe_api_get_passes_its_url_to_the_router() -> None:
+    """`safe_api_get` 必须把自己的 URL 传进选路，否则国内/境外规则根本不生效。"""
+    source = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
+    start = source.index('def safe_api_get(')
+    body = source[start: start + 2000]
+    assert '_http_routes(url)' in body, body[:600]
+
+
+def test_okooo_call_sites_use_the_okooo_order() -> None:
+    """澳客那几处调用点必须走 `_okooo_http_routes()`，而不是通用入口。"""
+    source = (ROOT / 'app_v84_hermes.py').read_text(encoding='utf-8')
+    # scrape_okooo_detail 的路由选择
+    marker = 'def scrape_okooo_detail('
+    body = source[source.index(marker):]
+    body = body[: body.index('\n    # ===== 5.')]
+    assert '_okooo_http_routes()' in body, body[:400]
+    # 手机盈亏（m.okooo.com）与 500 的两处循环
+    assert source.count('for _px in _okooo_http_routes():') == 2, (
+        '澳客/500 的两处路由循环应改为 _okooo_http_routes()'
+    )
 
 
 def test_route_order_is_reported_in_the_log(monkeypatch, capsys) -> None:
@@ -150,11 +241,11 @@ def test_route_order_is_reported_in_the_log(monkeypatch, capsys) -> None:
     monkeypatch.setattr(app, '_CLI_OKOOO_ROUTE', '')
     monkeypatch.setattr(app, '_local_proxies', lambda: {'http': PROXY, 'https': PROXY})
     app._OKOOO_ROUTE_LOGGED.clear()
-    app._announce_route_once(app._http_routes(), tag='测试路由')
+    app._announce_route_once(app._okooo_http_routes(), tag='测试路由')
     out = capsys.readouterr().out
     assert '直连' in out and PROXY in out, out
     # 一轮只打一条。
-    app._announce_route_once(app._http_routes(), tag='测试路由')
+    app._announce_route_once(app._okooo_http_routes(), tag='测试路由')
     assert capsys.readouterr().out == ''
 
 

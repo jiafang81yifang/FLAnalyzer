@@ -5,6 +5,7 @@ import sys
 import time
 import warnings
 from typing import Any, ClassVar, cast, overload
+from urllib.parse import urlsplit, urlunsplit
 
 
 # >>> FLANALYZER_EMBEDDED_RUNTIME_MODULES >>>
@@ -493,18 +494,48 @@ def _forget_dead_proxy():
 _OKOOO_ROUTE_LOGGED: set[str] = set()
 
 
-def _http_routes():
-    """澳客抓取的路由顺序。**auto 默认直连优先**。
+# 澳客/500 这类国内站：直连优先（理由见 `_okooo_http_routes`）。
+# 境外站（api-sports.io 等）必须代理优先：境内网络下直连通常超时，先直连等于每场多等两次。
+_DOMESTIC_DIRECT_HOSTS = ('okooo.com', 'okooo.cn', '500.com')
 
-    为什么 auto 改成直连优先：澳客是国内站点，把请求交给本机代理（Clash 等）之后，
-    出口取快于代理的规则集，程序无法知道、也无法在日志里证明那一跳到底用了哪个 IP。
-    这层不可见的转发正是「405 到底为什么」长期说不清的原因；而直连用的就是这台机器
-    自己的出口，是澳客本来要的那个。所以 auto 先直连，代理只作兜底。
 
-    `OKOOO_ROUTE` 三态保留，语义如下：
-      * `direct` —— 只直连（代理从不尝试）；
-      * `proxy`  —— 代理优先，直连兜底；
-      * `auto`   —— 直连优先，代理兜底（本函数的默认）。
+def _is_domestic_target(url=None):
+    """目标是否是「应当直连优先」的国内站点。
+
+    `url=None` 返回 False：没有目标信息时按最保守的「代理优先」处理，
+    因为未知目标很可能是境外 API。
+    """
+    text = str(url or '').strip().lower()
+    if not text:
+        return False
+    try:
+        host = (urlsplit(text).hostname or '').lower()
+    except ValueError:
+        host = ''
+    if not host:
+        return False
+    return any(host == h or host.endswith('.' + h) for h in _DOMESTIC_DIRECT_HOSTS)
+
+
+def _http_routes(target_url=None):
+    """**通用**请求入口的路由顺序：按目标主机决定。
+
+    `_http_routes()` 不只服务澳客：`safe_api_get()`（`:872`）也用它。那条路上既有国内站
+    （`odds.500.com`、`m.okooo.com`、`www.okooo.com`），也有境外 API
+    （`v3.football.api-sports.io` 的 fixtures / predictions / odds）。两类站点的最优顺序相反：
+
+      * 国内站 → **直连优先**：交给本机代理之后出口取决于代理规则集，程序看不到也证明不了；
+        直连用的才是这台机器自己的出口（澳客 405 长期说不清，正是这层不可见转发）。
+      * 境外站 → **代理优先**：境内网络下直连通常超时，先直连只会每场多等两次再回退。
+
+    所以顺序由目标决定，不由一个全局常量决定。`target_url=None`（不知道目标）按代理优先，
+    与改动前一致——保守的一侧留给不确定的情况。澳客链路还可以用 `_okooo_http_routes()`
+    显式声明意图，不必依赖 URL 形态。
+
+    `OKOOO_ROUTE` 三态：
+      * `direct` —— 只直连（代理从不尝试），两侧一致；
+      * `proxy`  —— 代理优先，直连兜底，两侧一致；
+      * `auto`   —— 按上面两条主机规则决定。
 
     注意「直连」必须是 `{'http': None, 'https': None}` 这种显式写法：
     `proxies=None` 会去合并环境变量（`HTTPS_PROXY`），并不等于直连。
@@ -512,17 +543,36 @@ def _http_routes():
     route = _blade_normalize_okooo_route(os.environ.get("OKOOO_ROUTE") or _CLI_OKOOO_ROUTE or "auto")
     if route == "direct":
         _forget_dead_proxy()
-        routes = [_DIRECT_PROXIES]
-    elif route == "proxy":
-        _px = _local_proxies()
-        routes = [_px, _DIRECT_PROXIES] if _px else [_DIRECT_PROXIES]
-    else:
-        # auto：直连优先。代理仍作为兜底，但只有直连拿不到可用数据时才会用到。
-        _px = _local_proxies()
-        routes = [_DIRECT_PROXIES, _px] if _px else [_DIRECT_PROXIES]
-        if not _px:
-            _forget_dead_proxy()
-    return routes
+        return [_DIRECT_PROXIES]
+    _px = _local_proxies()
+    if route == "proxy":
+        return [_px, _DIRECT_PROXIES] if _px else [_DIRECT_PROXIES]
+    if not _px:
+        _forget_dead_proxy()
+        return [_DIRECT_PROXIES]
+    # auto：国内站直连优先，其余（含未知）代理优先。
+    if _is_domestic_target(target_url):
+        return [_DIRECT_PROXIES, _px]
+    return [_px, _DIRECT_PROXIES]
+
+
+def _okooo_http_routes():
+    """**澳客专用**路由顺序：auto 一律直连优先（不看 URL）。
+
+    与 `_http_routes('https://m.okooo.com/')` 等价，但显式声明意图：澳客链路不该依赖
+    「调用方记得把 URL 传进来」这件事。境外 API 不会走到这里，它们走 `_http_routes(url)`。
+    """
+    route = _blade_normalize_okooo_route(os.environ.get("OKOOO_ROUTE") or _CLI_OKOOO_ROUTE or "auto")
+    if route == "direct":
+        _forget_dead_proxy()
+        return [_DIRECT_PROXIES]
+    _px = _local_proxies()
+    if route == "proxy":
+        return [_px, _DIRECT_PROXIES] if _px else [_DIRECT_PROXIES]
+    if not _px:
+        _forget_dead_proxy()
+        return [_DIRECT_PROXIES]
+    return [_DIRECT_PROXIES, _px]
 
 
 def _describe_route(route):
@@ -860,7 +910,7 @@ def safe_api_get(url, headers=None, timeout=20, params=None):
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    _proxies_list = _http_routes()
+    _proxies_list = _http_routes(url)
     _net_errors = (
         requests.exceptions.SSLError,
         requests.exceptions.ConnectionError,
@@ -28137,13 +28187,15 @@ def scrape_okooo_detail(match_id, proxies=None, jc_handicap=None, _water_attempt
         return {}
     result = {'okooo_match_id': str(match_id), 'markets': {}}
     if proxies is None:
-        _routes = _http_routes()
+        # 澳客专用顺序（auto 直连优先）。通用入口 `_http_routes()` 保持代理优先，
+        # 因为那条路还服务境外 API——见 `_okooo_http_routes` 的 docstring。
+        _routes = _okooo_http_routes()
     else:
         _routes = [proxies]
     _announce_route_once(_routes)
     _proxies = _routes[0]
     print(f"      [澳客手机] 直接抓比分市均与六盘口 match_id={match_id}")
-    # 路由回退：`_http_routes()` 给出的是**有序的**候选，不是只取第一条。
+    # 路由回退：`_okooo_http_routes()` 给出的是**有序的**候选，不是只取第一条。
     # 以前这里只取 `[0]`，于是「代理连不上就直连」这个设计在澳客抓取路径上从未生效。
     # 现在按序尝试，但只在「这一条没拿到可用数据」时换下一条——真实 200 不会重抓。
     _route_used = _proxies
@@ -28432,7 +28484,7 @@ def scrape_betfair_profit_loss(match_info):
         if referer:
             _h['Referer'] = referer
         for _retry in range(_max_retries):
-            for _px in _http_routes():
+            for _px in _okooo_http_routes():
                 try:
                     _proxies = cast(dict[str, str] | None, None if _px is _DIRECT_PROXIES else _px)
                     resp = requests.get(url, headers=_h, proxies=_proxies,
@@ -28680,7 +28732,7 @@ def scrape_betfair_profit_loss(match_info):
             print("      📡 [必发盈亏] 尝试数据源0: 手机交易盈亏页（竞足保存盈亏/人气盈亏/必发）...")
             _pnl_url = f'https://m.okooo.com/match/exchanges.php?MatchID={_mid_pnl}'
             _pnl_resp = None
-            for _px in _http_routes():
+            for _px in _okooo_http_routes():
                 try:
                     _proxies_p = cast(dict[str, str] | None, None if _px is _DIRECT_PROXIES else _px)
                     _cand = requests.get(
