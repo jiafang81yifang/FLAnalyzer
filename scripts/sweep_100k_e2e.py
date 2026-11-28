@@ -75,12 +75,17 @@ DESKTOP_CS_FIXTURE = ROOT / 'tests' / 'fixtures' / 'okooo_desktop_cs_1347776.htm
 
 # Six standard sections of the TG report, in reading order.  Names come from
 # `DeepSeekAnalyzer.build_deepseek_only_tg_sections`, not from this docstring.
+# 后四段是「市均−竞彩」原始赔率差的四种视图（与前面那几段并存，不替换）。
 TG_SECTIONS = (
     '31项市均×竞彩对比表',
-    '市短矩阵',
-    '市热矩阵',
-    '市热超理论专表',
     '市均***竞彩对比表',
+    '市短矩阵',
+    '★市短·胜平负比分矩阵',
+    '市热矩阵',
+    '市热·胜平负比分矩阵',
+    '【市热·市短分布｜冷门窗口】',
+    '市热超理论专表',
+    '市均前15·进球赔率矩阵',
     'DeepSeek 数据分析研判报告',
 )
 DEGRADED_MARKERS = (

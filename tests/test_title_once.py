@@ -188,6 +188,25 @@ def _e9_shard(drop: str = '', n: int = 12, seed: int = 20261127,
     orig = S.PIPE.DeepSeekAnalyzer.build_deepseek_only_tg_sections
     real_run_once = S._run_once
     replaying = {'on': False}
+    # 当前正在跑的 case 标识 + 它在本次 shard 里的调用序号。
+    #
+    # 不能用 match id 当标识：`_build_case` 是 `rng.choice(MATCH_IDS)`，固定池里
+    # 随机抽，12 个 case 里必然撞 id（实测 seed 20261127+4 与 +10 都抽到
+    # `1347776`，两场却是不同比赛）。用 id 计数会把「两场不同比赛」当成
+    # 「同一场跑了两遍」，这条反证就不再测它名字里说的那件事。
+    #
+    # 用「第几次 writeback 调用」+ 比赛名，两者合起来才能既识别 case、
+    # 又能看出「同一次调用被重复记账」。
+    current_case: dict[str, str] = {'id': ''}
+    wb_counter = {'n': 0}
+
+    def _case_id(case):
+        wb_counter['n'] += 1
+        name = ''
+        if isinstance(case, dict):
+            rec = case.get('rec') if isinstance(case.get('rec'), dict) else case
+            name = str(rec.get('cn_name') or rec.get('match') or '')
+        return f'call#{wb_counter["n"]} {name}'.strip()
 
     def _truncating(*a, **k):
         sections = orig(*a, **k)
@@ -197,25 +216,42 @@ def _e9_shard(drop: str = '', n: int = 12, seed: int = 20261127,
             out = []
             for sec in sections:
                 lines = sec.splitlines()
-                kept = [ln for ln in lines
-                        if not (ln.startswith('  ') and ln[2:4].strip().isdigit())]
-                if len(kept) != len(lines) and dropped is not None:
-                    dropped.append(f'{len(lines) - len(kept)} table row(s)')
+                # 只从 **31 项对比表那一节**删行，且要求该行同时含 `市均` 和 `竞彩`。
+                # 这条桩的全部意义是「写回时丢了一行 31 表数据」；判据收窄到
+                # 「哪一节」+「行里到底是什么」之后，新加的段（★市短 / 市热 /
+                # 进球网格…）就不会被同形状的行误命中，反证才仍然证明的是它
+                # 名字里说的那件事。
+                if '31项市均×竞彩对比表' not in sec:
+                    out.append(sec)
+                    continue
+                kept = [
+                    ln for ln in lines
+                    if not (ln.startswith('  ') and ln[2:4].strip().isdigit()
+                            and '市均' in ln and '竞彩' in ln)
+                ]
+                removed = len(lines) - len(kept)
+                if removed and dropped is not None:
+                    dropped.append(
+                        f"case={current_case['id']} {removed} table row(s)"
+                    )
                 out.append('\n'.join(kept or lines))
             return out
         if drop == 'fact_panel':
             kept = [sec for sec in sections if '六盘口' not in sec]
             if len(kept) != len(sections) and dropped is not None:
-                dropped.append('六盘口事实板')
+                dropped.append(f"case={current_case['id']} 六盘口事实板")
             return kept
         return sections
 
     def _spy(case, hist_path, reseed=True):
+        previous = current_case['id']
+        current_case['id'] = _case_id(case)
         replaying['on'] = not reseed
         try:
             return real_run_once(case, hist_path, reseed=reseed)
         finally:
             replaying['on'] = False
+            current_case['id'] = previous
 
     with mock.patch.object(S, '_run_once', side_effect=_spy), \
          mock.patch.object(S.PIPE.DeepSeekAnalyzer,
@@ -246,7 +282,25 @@ def test_e9_catches_one_dropped_table_row() -> None:
     produced, e9 = _e9_shard(drop='table_row', dropped=dropped)
     # 12 cases, one of which (index 0) takes the pack-absent exit and never
     # calls this builder — so 11 bodies lose the rows and 11 must be caught.
-    assert len(dropped) == 11, f'the counter-proof removed rows from {len(dropped)} cases'
+    assert len(dropped) == 11, (
+        f'the counter-proof removed rows from {len(dropped)} cases '
+        f'(expected 11). 每条都带 case 标识，多出来的那条就是线索：\n'
+        + '\n'.join(f'  [{i}] {d}' for i, d in enumerate(dropped))
+    )
+    # 桩删的必须**正好是 31 表的一整表行**（31 行），不是「某种形状的行」。
+    # 这条防的是桩的匹配面被别的段污染：新段里若出现同形状的行而被误删，
+    # 计数会变成 31 的倍数或别的数，这里立刻报出来。
+    assert all(d.endswith('31 table row(s)') for d in dropped), (
+        '桩删的不止 31 表整表行：\n' + '\n'.join(f'  [{i}] {d}' for i, d in enumerate(dropped))
+    )
+    # 每一次 writeback 调用只许记账一次：同一个 `call#N` 出现两遍，说明
+    # 同一次渲染被记了两次账（或 `_truncating` 里重复 append），这条反证的
+    # 分母就不可信了。
+    calls = [d.split(' ')[0] for d in dropped]
+    assert len(set(calls)) == len(calls), (
+        '同一次 writeback 调用被记账多次：\n'
+        + '\n'.join(f'  [{i}] {d}' for i, d in enumerate(dropped))
+    )
     assert e9 == 11, f'a lost 31-table row on writeback went unnoticed (E9={e9})'
     assert produced == 1, produced
 
@@ -255,7 +309,17 @@ def test_e9_catches_a_dropped_fact_panel() -> None:
     dropped: list = []
     produced, e9 = _e9_shard(drop='fact_panel', dropped=dropped)
     # Same denominator as the table-row case: index 0 bypasses this builder.
-    assert dropped == ['六盘口事实板'] * 11, dropped
+    assert len(dropped) == 11, (
+        f'the counter-proof removed the fact panel from {len(dropped)} cases '
+        f'(expected 11)：\n' + '\n'.join(f'  [{i}] {d}' for i, d in enumerate(dropped))
+    )
+    assert all(d.endswith('六盘口事实板') for d in dropped), (
+        '桩删的不止六盘口事实板：\n' + '\n'.join(f'  [{i}] {d}' for i, d in enumerate(dropped))
+    )
+    assert len({d.split(' ')[0] for d in dropped}) == len(dropped), (
+        '同一个 case 被删了两次（说明它跑了不止一遍）：\n'
+        + '\n'.join(f'  [{i}] {d}' for i, d in enumerate(dropped))
+    )
     assert e9 == 11, f'a lost 六盘口 panel on writeback went unnoticed (E9={e9})'
     assert produced == 1, produced
 
