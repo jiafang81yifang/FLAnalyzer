@@ -38,7 +38,9 @@ try {
 # daa0ad1 = 发报质量门真的会拦(缺六盘口/缺DeepSeek外壳拒发) + 空HTML不再顶掉整份正文
 # 8d779bb = 删除与并集逻辑矛盾的旧路径(500页解析/旧引擎发报链) + 六盘口诊断每场每阶段一行
 # 9edddaa = 竞彩31/市场26·25 比分口径模块上线(同口径桶比较进报告) + 10万组e2e压测与冻结时钟
-$PinCommit = '9edddaa56215f36c53960e427c73ae8d2e95745a'
+# da5f14c = 澳客双路由按序回退(直连优先)+NO_PROXY 不再被当日志出口+cookie预热真的发生
+#           +六盘口整侧未抓不再报0条+测试不再依赖开球时间
+$PinCommit = 'da5f14cd40c9acd06788fae25e626b01515fdbfb'
 $RepoSlug = 'jiafang81yifang/FLAnalyzer'
 $AppName = 'app_v84_hermes.py'
 $ConfigName = 'configure_blade_quant.ps1'
