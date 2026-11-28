@@ -245,21 +245,21 @@ def _parse_odds(val: Any, label: str) -> float:
     ``decimal.InvalidOperation`` 一起在此收口，绝不让数值域异常漏给调用方。
     """
     if isinstance(val, bool) or val is None:
-        raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率缺失或非法: {val!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 赔率缺失或非法: {val!r}")
     if not isinstance(val, (int, float, str)):
-        raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率类型非法: {type(val).__name__}")
+        raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 赔率类型非法: {type(val).__name__}")
     try:
         num = float(val)
         # 放在同一个 try 里：转换和有限性判定任何一步的数值域异常都统一收口。
         finite = math.isfinite(num)
     except (TypeError, ValueError, OverflowError, InvalidOperation) as exc:
         raise MatrixIntegrityError(
-            f"[矩阵熔断] '{label}' 赔率无法解析为有限数值（溢出或非数值）: {val!r}"
+            f"[矩阵熔断] {_cn_error_label(label)} 赔率无法解析为有限数值（溢出或非数值）: {val!r}"
         ) from exc
     if not finite:
-        raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率数值非法: {num!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 赔率数值非法: {num!r}")
     if num <= 1.0:
-        raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 赔率必须 > 1.0: {num!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 赔率必须 > 1.0: {num!r}")
     return round(num, 4)
 
 
@@ -271,29 +271,29 @@ def _check_heat_seats(val: Any, label: str) -> int:
     （``1.9`` 会被静默截成 1）。
     """
     if isinstance(val, bool) or val is None:
-        raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 热度席位非法: {val!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 热度席位非法: {val!r}")
     if isinstance(val, int):
         num = val
     elif isinstance(val, float):
         if not math.isfinite(val) or not float(val).is_integer():
-            raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 热度席位必须为整数: {val!r}")
+            raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 热度席位必须为整数: {val!r}")
         num = int(val)
     elif isinstance(val, str):
         try:
             dec = Decimal(val.strip())
         except (InvalidOperation, ValueError) as exc:
             raise MatrixIntegrityError(
-                f"[矩阵熔断] '{label}' 热度席位无法解析为整数: {val!r}"
+                f"[矩阵熔断] {_cn_error_label(label)} 热度席位无法解析为整数: {val!r}"
             ) from exc
         if not dec.is_finite() or dec != dec.to_integral_value():
-            raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 热度席位必须为整数: {val!r}")
+            raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 热度席位必须为整数: {val!r}")
         num = int(dec)
     else:
         raise MatrixIntegrityError(
-            f"[矩阵熔断] '{label}' 热度席位类型非法: {type(val).__name__}"
+            f"[矩阵熔断] {_cn_error_label(label)} 热度席位类型非法: {type(val).__name__}"
         )
     if num < 0:
-        raise MatrixIntegrityError(f"[矩阵熔断] '{label}' 热度席位不得为负: {num!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] {_cn_error_label(label)} 热度席位不得为负: {num!r}")
     return num
 
 
@@ -301,17 +301,17 @@ def _check_match_id(match_id: Any) -> str:
     """match_id 会进 Markdown 与 TG：非空、<=64 字符、不含换行与竖线。"""
     if not isinstance(match_id, str):
         raise MatrixIntegrityError(
-            f"[矩阵熔断] match_id 必须为字符串: {type(match_id).__name__}"
+            f"[矩阵熔断] 场次号（match_id）必须为字符串: {type(match_id).__name__}"
         )
     text = match_id.strip()
     if not text:
-        raise MatrixIntegrityError("[矩阵熔断] match_id 不能为空")
+        raise MatrixIntegrityError("[矩阵熔断] 场次号（match_id）不能为空")
     if len(text) > 64:
-        raise MatrixIntegrityError(f"[矩阵熔断] match_id 长度 {len(text)} 超过上限 64")
+        raise MatrixIntegrityError(f"[矩阵熔断] 场次号（match_id）长度 {len(text)} 超过上限 64")
     if "\n" in text or "\r" in text:
-        raise MatrixIntegrityError(f"[矩阵熔断] match_id 不得包含换行: {text!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] 场次号（match_id）不得包含换行: {text!r}")
     if "|" in text:
-        raise MatrixIntegrityError(f"[矩阵熔断] match_id 不得包含竖线: {text!r}")
+        raise MatrixIntegrityError(f"[矩阵熔断] 场次号（match_id）不得包含竖线: {text!r}")
     return text
 
 
@@ -323,7 +323,7 @@ def _mean(values: Sequence[float], label: str) -> float:
     """
     if not values:
         raise MatrixIntegrityError(
-            f"[矩阵熔断] '{label}' 样本为空，均值无定义（拒绝默认值兜底）"
+            f"[矩阵熔断] {_cn_error_label(label)} 样本为空，均值无定义（拒绝默认值兜底）"
         )
     return statistics.mean(values)
 
@@ -341,18 +341,18 @@ def _validate_tactical_pool_definitions(
     pool_ids: set[str] = set()
     for pool_id, _pool_name, pool_scores in definitions:
         if pool_id in pool_ids:
-            raise MatrixIntegrityError(f"[矩阵熔断] 战术池 id 重复: '{pool_id}'")
+            raise MatrixIntegrityError(f"[矩阵熔断] 战术池编号重复: {pool_id}")
         pool_ids.add(pool_id)
         if not pool_scores:
-            raise MatrixIntegrityError(f"[矩阵熔断] 战术池 '{pool_id}' 为空，未包含任何比分")
+            raise MatrixIntegrityError(f"[矩阵熔断] 战术池 {pool_id} 为空，未包含任何比分")
         for score in pool_scores:
             if score not in expected:
                 raise MatrixIntegrityError(
-                    f"[矩阵熔断] 战术池 '{pool_id}' 含未知比分 '{score}'，不在 31 项全集内"
+                    f"[矩阵熔断] 战术池 {pool_id} 含未知比分 {score}，不在 31 项全集内"
                 )
             if score in seen:
                 raise MatrixIntegrityError(
-                    f"[矩阵熔断] 比分 '{score}' 同时出现在 '{seen[score]}' 与 '{pool_id}'，违反互斥"
+                    f"[矩阵熔断] 比分 {score} 同时出现在 {seen[score]} 与 {pool_id} 两个战术池，违反互斥"
                 )
             seen[score] = pool_id
     missing = [score for score in THIRTY_ONE_SCORES if score not in seen]
@@ -479,13 +479,13 @@ def build_score_matrices(
     """
     clean_match_id = _check_match_id(match_id)
     if not isinstance(market_avg_scores, dict) or not isinstance(jc_scores_data, dict):
-        raise MatrixIntegrityError("[矩阵熔断] market_avg_scores 与 jc_scores_data 必须为字典")
+        raise MatrixIntegrityError("[矩阵熔断] 市均比分表（market_avg_scores）与竞彩比分表（jc_scores_data）必须为字典")
 
     unpriced = {str(s).replace(':', '-').strip() for s in (unpriced_scores or ())}
     unknown_unpriced = sorted(unpriced - set(THIRTY_ONE_SCORES))
     if unknown_unpriced:
         raise MatrixIntegrityError(
-            f"[矩阵熔断] unpriced_scores 含未知比分: {unknown_unpriced}"
+            f"[矩阵熔断] 无市均报价项列表（unpriced_scores）含未知比分: {unknown_unpriced}"
         )
 
     # 入口先校验 15 战术池定义表，避免漏项/重复/未知比分拖到中途才炸。
@@ -499,13 +499,13 @@ def build_score_matrices(
         missing = sorted(expected_set - actual_m_set)
         extra = sorted(actual_m_set - expected_set)
         raise MatrixIntegrityError(
-            f"[矩阵熔断] market_avg_scores 31 比分不完整，缺失={missing}，多余={extra}"
+            f"[矩阵熔断] 市均比分表（market_avg_scores）31 比分不完整，缺失={missing}，多余={extra}"
         )
     if actual_j_set != expected_set:
         missing = sorted(expected_set - actual_j_set)
         extra = sorted(actual_j_set - expected_set)
         raise MatrixIntegrityError(
-            f"[矩阵熔断] jc_scores_data 31 比分不完整，缺失={missing}，多余={extra}"
+            f"[矩阵熔断] 竞彩比分表（jc_scores_data）31 比分不完整，缺失={missing}，多余={extra}"
         )
 
     # 1. 构建 31 个比分矩阵
@@ -515,7 +515,7 @@ def build_score_matrices(
     for sc in THIRTY_ONE_SCORES:
         j_item = jc_scores_data[sc]
         if not isinstance(j_item, dict):
-            raise MatrixIntegrityError(f"[矩阵熔断] jc_scores_data['{sc}'] 非字典")
+            raise MatrixIntegrityError(f"[矩阵熔断] 竞彩比分表（jc_scores_data）里的 {sc} 项不是字典")
         j_odd = _parse_odds(j_item.get("odds"), f"jc_scores_data.{sc}.odds")
         heat = _check_heat_seats(j_item.get("heat_seats"), f"jc_scores_data.{sc}.heat_seats")
 
@@ -675,6 +675,35 @@ def _cell(value: Any) -> str:
 NO_PRICE_MARK = "—"  # 无报价：与「赔率为 0」区分开，0 是贴着盘口的极端值
 
 
+#: 矩阵错误文案里出现的**内部字段路径** → 中文。错误文案会原样进
+#: 「未形成（…）」并出现在用户读的正文里，所以路径名也必须说中文。
+#: 英文原路径放在括号里，排障时照旧能定位到代码。
+_ERROR_PATH_LABELS: dict[str, str] = {
+    'market_avg_scores': '市均比分表',
+    'jc_scores_data': '竞彩比分表',
+    'unpriced_scores': '无市均报价项列表',
+    'odds': '赔率',
+    'heat_seats': '热度席位',
+    'match_id': '场次号',
+}
+
+
+def _cn_error_label(label: Any) -> str:
+    """把 `jc_scores_data.1-0.odds` 这类字段路径翻成中文。
+
+    逐段翻译，已知段换中文、未知段（比分、池 id）原样保留——比分是数据，
+    不能翻译；未知字段名原样留着也比空串好。整条路径最后括进括号，
+    让排障者一眼能对照代码里的键名。
+    """
+    token = str(label or '').strip()
+    if not token:
+        return '未知字段'
+    parts = token.split('.')
+    translated = [_ERROR_PATH_LABELS.get(part, part) for part in parts]
+    human = '.'.join(translated)
+    return f'{human}（{token}）' if human != token else token
+
+
 def _fmt_odds(value: float | None, spec: str = ".2f") -> str:
     return NO_PRICE_MARK if value is None else format(value, spec)
 
@@ -685,6 +714,28 @@ def _fmt_delta(value: float | None) -> str:
 
 def _fmt_abs(value: float | None) -> str:
     return NO_PRICE_MARK if value is None else f"{value:.4f}"
+
+
+#: 方向键 → 中文。矩阵正文只印中文方向，英文键仍在结构化结果里。
+_DIRECTION_CN_LABELS: dict[str, str] = {'WIN': '胜', 'DRAW': '平', 'LOSS': '负'}
+
+
+def _direction_cn_label(direction: Any) -> str:
+    token = str(direction or '').strip()
+    return _DIRECTION_CN_LABELS.get(token, token)
+
+
+def _pool_label(pool: Any) -> str:
+    """战术池 → `中文池名（英文池 id）`。
+
+    池 id 是代码里的稳定标识，删掉它读者与排障者就都追不回是哪一桶；
+    保留在括号里，中文名在前面承担「给人读」的职责。
+    """
+    name = str(getattr(pool, 'pool_name', '') or '').strip()
+    pid = str(getattr(pool, 'pool_id', '') or '').strip()
+    if name and pid:
+        return f'{name}（{pid}）'
+    return name or pid or '未命名战术池'
 
 
 def format_matrices_markdown(bundle: CompleteScoreMatrices) -> str:
@@ -819,10 +870,13 @@ def format_matrices_telegram(bundle: CompleteScoreMatrices, max_len: int = 4096)
     """把三套矩阵排成可直接发给 Telegram 的消息列表（按行分页，永不截断）。
 
     市均无报价的行显示 ``—``，不显示 0.00；池均差同理。
+
+    正文只说中文：方向列、战术池名、三向摘要标签全部走中文；战术池的英文 id
+    仍留在括号里（`P01_WIN_LOW_LOCK`），排障时照旧能追回代码。
     """
     m31_rows = [
         (
-            f"{r.score:<5s} {r.direction:<4s} "
+            f"{r.score:<5s} {_direction_cn_label(r.direction):<4s} "
             f"市均{_fmt_odds(r.market_avg_odds, '>7.2f') if r.market_avg_odds is not None else '      —'} "
             f"竞彩{r.lottery_odds:>7.2f} "
             f"Δ{(' ' + _fmt_delta(r.delta)) if r.delta is not None else '      —'} "
@@ -833,14 +887,14 @@ def format_matrices_telegram(bundle: CompleteScoreMatrices, max_len: int = 4096)
         for r in bundle.matrix_31
     ]
     pool_rows = [
-        f"{p.pool_id:<22s} 均Δ{_fmt_delta(p.avg_delta):>8s} 热{p.total_heat_seats:>3d} "
+        f"{_pool_label(p):<22s} 均Δ{_fmt_delta(p.avg_delta):>8s} 热{p.total_heat_seats:>3d} "
         f"核{p.core_count}/{len(p.scores)} 有价{p.priced_count}/{len(p.scores)} "
         f"核热{'无定义' if p.core_heat_ratio is None else format(p.core_heat_ratio, '.2f')}"
         for p in bundle.matrix_tactical_pools
     ]
     top8_rows = [
-        f"#{t.rank} {t.score:<5s} {t.direction:<4s} |Δ|{t.abs_delta:.4f} "
-        f"竞彩{t.lottery_odds:>6.2f} 热{t.heat_seats} {t.ratio_to_rank1:.2f}x"
+        f"#{t.rank} {t.score:<5s} {_direction_cn_label(t.direction):<4s} |Δ|{t.abs_delta:.4f} "
+        f"竞彩{t.lottery_odds:>6.2f} 热{t.heat_seats} {t.ratio_to_rank1:.2f}倍"
         for t in bundle.top_8_min_abs_delta
     ]
     cs = bundle.channel_summary
@@ -856,12 +910,13 @@ def format_matrices_telegram(bundle: CompleteScoreMatrices, max_len: int = 4096)
         if bundle.is_even_match is None
         else ("均势" if bundle.is_even_match else "非均势")
     )
+    # 三个通道名翻成中文；`cs.min_channel` 本身是英文键，用同一个映射。
     summary_rows = [
-        f"WIN  {_chan(cs.win_mean_abs_delta, cs.win_priced_count, cs.win_count)}",
-        f"DRAW {_chan(cs.draw_mean_abs_delta, cs.draw_priced_count, cs.draw_count)}",
-        f"LOSS {_chan(cs.loss_mean_abs_delta, cs.loss_priced_count, cs.loss_count)}",
+        f"主胜 {_chan(cs.win_mean_abs_delta, cs.win_priced_count, cs.win_count)}",
+        f"平局 {_chan(cs.draw_mean_abs_delta, cs.draw_priced_count, cs.draw_count)}",
+        f"客胜 {_chan(cs.loss_mean_abs_delta, cs.loss_priced_count, cs.loss_count)}",
         (
-            f"最小通道 {cs.min_channel or '—'}"
+            f"最小通道 {_direction_cn_label(cs.min_channel) or '—'}"
             f"{'(有方向无可比价,仅其余方向比较)' if cs.min_channel_partial else ''}"
             f"，极差 {spread}"
         ),
@@ -1023,13 +1078,13 @@ def _matrix_heat_seats_from_rec(rec: Mapping[str, Any] | None) -> dict[str, int]
     heat = record.get(MATRIX_HEAT_KEY)
     if not isinstance(heat, Mapping):
         raise MatrixIntegrityError(
-            f"[矩阵熔断] 热度席位缺失：记录无 {MATRIX_HEAT_KEY}"
-            "（无法按热度榜单排名位次取 heat_seats）"
+            "[矩阵熔断] 热度席位缺失：记录没有市热榜（score_market_heat）"
+            "，无法按热度榜单排名位次取 heat_seats（热度席位）"
         )
     rows = _heat_ranking_records(record)
     if not rows:
         raise MatrixIntegrityError(
-            f"[矩阵熔断] 热度席位缺失：{MATRIX_HEAT_KEY}.ranking 为空"
+            "[矩阵熔断] 热度席位缺失：市热榜排名列表（score_market_heat.ranking）为空"
         )
     best_rank: dict[str, int] = {}
     for position, row in enumerate(rows, start=1):

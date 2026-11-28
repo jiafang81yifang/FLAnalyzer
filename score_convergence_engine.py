@@ -122,14 +122,14 @@ _VETO_WEIGHT_FACTOR = {
 LIVE_EVENT_TYPES = ('goal', 'red_card', 'penalty', 'var')
 
 _ERROR_TEXT = {
-    'step1_missing_inputs': 'Step1 中止：四档方向判定全部无结论',
-    'step2_missing_inputs': 'Step2 中止：大小球路径所需输入缺失',
-    'step3_missing_inputs': 'Step3 中止：31 项完备树所需输入缺失或非法',
-    'step4_missing_inputs': 'Step4 中止：联动与市热/市短所需输入缺失',
-    'step5_missing_inputs': 'Step5 中止：六盘口维度输入缺失',
-    'step6_missing_inputs': 'Step6 中止：候选子集不足 2 个比分',
+    'step1_missing_inputs': '第一步中止：四档方向判定全部无结论',
+    'step2_missing_inputs': '第二步中止：大小球路径所需输入缺失',
+    'step3_missing_inputs': '第三步中止：31 项完备树所需输入缺失或非法',
+    'step4_missing_inputs': '第四步中止：联动与市热/市短所需输入缺失',
+    'step5_missing_inputs': '第五步中止：六盘口维度输入缺失',
+    'step6_missing_inputs': '第六步中止：候选子集不足 2 个比分',
     'upstream_aborted': '上游步骤中止，本步不产出',
-    'step3_direction_conflict': 'Step3 自洽断言失败：候选比分与 Step1/Step2 结论冲突',
+    'step3_direction_conflict': '第三步自洽断言失败：候选比分与第一/二步结论冲突',
     'invalid_handicap_side': '盘口方向取值未识别',
     'invalid_goal_expect': '进球预期取值未识别',
     'invalid_handicap_line': '让球盘口线无法归一化到 0.25 刻度',
@@ -618,7 +618,7 @@ def step1_direction(payload: dict[str, Any], log: AuditLog) -> dict[str, Any]:
                 })
                 result.update({
                     'status': 'aborted',
-                    'reason': 'Step1 中止：显式指定方向在 31 项树中无候选',
+                    'reason': '第一步中止：显式指定方向在 31 项树中无候选',
                     'override_audit': directive['override_audit'],
                 })
                 log.add('DIRECTION', 'DIRECTIVE_REJECTED', {
@@ -1059,9 +1059,9 @@ def step3_candidate_tree(
         score = row['score']
         reason = ''
         if not _direction_matches(score, direction):
-            reason = f'赛果与 Step1 方向 {direction}（{_DIRECTION_CN[direction]}）冲突'
+            reason = f'赛果与第一步方向 {direction}（{_DIRECTION_CN[direction]}）冲突'
         elif not _ou_matches(score, ou_path, line):
-            reason = f'总进球与 Step2 路径 {ou_path}（盘口 {line:g}）冲突'
+            reason = f'总进球与第二步路径 {ou_path}（盘口 {line:g}）冲突'
         if reason:
             rejected.append({'score': score, 'bucket': row['bucket'], 'reason': reason})
             continue
@@ -1142,7 +1142,7 @@ def direction_consistency_check(
     if out['conflict']:
         out['detail'] = (
             f'31项池方向密度主导 {out["dominant"]}（{shares[dominant]:.2f}%）'
-            f'与 Step1 {direction} 不一致；以 Step1 为准'
+            f'与第一步 {direction} 不一致；以第一步为准'
         )
     return out
 
@@ -1368,14 +1368,14 @@ def macro_handicap_verdict(payload: dict[str, Any], step1: dict[str, Any], log: 
     if not aligned:
         result['conflicts'].append({
             'code': 'HANDICAP_AGAINST_STEP1',
-            'detail': f'盘口 {line:g}（{side}）利好 {handicap_favours}，Step1 方向 {direction}',
+            'detail': f'盘口 {line:g}（{side}）利好 {handicap_favours}，第一步方向 {direction}',
         })
     if not strength_aligned:
         result['conflicts'].append({
             'code': 'TIER_AGAINST_STEP1',
             'detail': (
                 f'tier_diff={tier_diff}（{tier["source"]}）利好 {strength_direction}，'
-                f'Step1 方向 {direction}'
+                f'第一步方向 {direction}'
             ),
         })
     log.add('MACRO_VETO', 'MACRO_VERDICT', {
@@ -1836,7 +1836,7 @@ def step4_linkage(
             'code': 'LINKAGE_MUTUAL_ATTACK',
             'detail': (
                 f'让球盘 {normalized["line"]:g} 利好 {handicap_favours}，'
-                f'与 Step1 {direction} 相反'
+                f'与第一步 {direction} 相反'
             ),
         })
 
@@ -2104,7 +2104,7 @@ def step5_consistency(
                 'code': 'DIMENSION_CONFLICT',
                 'dimension': key,
                 'dimension_label': label,
-                'detail': dim.get('detail') or '与 Step1/Step2 结论不一致',
+                'detail': dim.get('detail') or '与第一/二步结论不一致',
             })
         # 不可变因子审计的 confidence 直接乘在 tempo 维度得分上（真的参与）。
         if key == 'tempo' and dim.get('available'):
@@ -2553,8 +2553,63 @@ def _pool31_provenance_payload(data: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # 报告/UI 渲染（纯文本；不 import streamlit）
 # --------------------------------------------------------------------------- #
+def _cn_label(value: Any, table: dict[str, str]) -> str:
+    """内部键 → 中文名；未知键保留原样（数据不为空，比空串好）。"""
+    token = str(value or '').strip()
+    if not token:
+        return ''
+    return table.get(token) or token
+
+
+def _cn_field(value: Any) -> str:
+    """字段名 → 中文名。翻译表的真源在 `blade_deepseek_pipeline`，缺席时保留原名。"""
+    token = str(value or '').strip()
+    if not token:
+        return ''
+    try:
+        from blade_deepseek_pipeline import field_label  # noqa: PLC0415 - 延迟导入，避免与内嵌顺序耦合
+        return field_label(token)
+    except Exception:  # noqa: BLE001 - 兄弟模块缺席时保留原字段名
+        return token
+
+
+#: 六步的步骤键 → 中文名。报告正文只说中文；英文键仍在结构化结果里，
+#: 供日志与 JSON 复盘使用。
+_STEP_LABELS = {
+    'step1_direction': '第一步·方向判定',
+    'step2_ou_path': '第二步·大小球路径',
+    'step3_candidate_tree': '第三步·31 项完备树',
+    'step4_linkage': '第四步·盘口联动',
+    'step5_consistency': '第五步·六盘口互洽',
+    'step6_lock': '第六步·锁定比分',
+}
+
+#: 权重分项的键 → 中文名。合计恒等式不变，只是每一项的名字变中文。
+_COMPONENT_LABELS = {
+    'theory': '理论',
+    'market_prob': '市场概率',
+    'heat': '市热',
+    'short': '市短',
+    'linkage': '联动',
+    'veto_scale': '宏观修正',
+}
+
+#: 方向来源的键 → 中文名。
+_SOURCE_LABELS = {
+    'directive': '人工指令',
+    'model_market': '模型与市场一致',
+    'pairwise': '两两投票',
+    'absolute_fallback': '绝对赔率兜底',
+}
+
+
 def format_convergence_tg_lines(result: Any) -> list[str]:
-    """把结果渲染成 Telegram「六步收敛」段（逐字给出规范要求的六项）。"""
+    """把结果渲染成 Telegram「六步收敛」段（逐字给出规范要求的六项）。
+
+    正文只说中文：步骤键、字段名、方向来源、权重分项名全部走中文映射。
+    比分、赔率、百分比、`Δ`、`pp` 是数据，原样保留。内部的英文键仍在结构化
+    结果里（日志、JSON 复盘、测试断言用），只是不印进用户读的那一段。
+    """
     res = result if isinstance(result, dict) else {}
     head = '🧭【六步收敛】'
     lines = [head]
@@ -2570,15 +2625,30 @@ def format_convergence_tg_lines(result: Any) -> list[str]:
 
     def _why(step_name: str) -> str:
         reason = reasons.get(step_name) or ''
-        return f'（{step_name} 中止：{reason}）' if reason else f'（{step_name} 中止）'
+        label = _cn_label(step_name, _STEP_LABELS)
+        # 原因串自己常常已经写了「第N步中止：…」；再前面挂一次步骤名会读成
+        # 「第二步中止：第二步中止：…」。重复前缀在这里去掉，语义不变。
+        prefix = label.split('·')[0] + '中止：'
+        if reason.startswith(prefix):
+            reason = reason[len(prefix):]
+        return f'（{label}中止：{reason}）' if reason else f'（{label}中止）'
+
+    def _field_reason(item: Any) -> str:
+        """`缺失/异常` 里的一项：步骤.字段 → 中文，原因原样（已是中文）。"""
+        entry = item if isinstance(item, dict) else {}
+        step = _cn_label(entry.get('step'), _STEP_LABELS)
+        field = _cn_field(entry.get('field'))
+        reason = str(entry.get('reason') or '')
+        head_text = f'{step}.{field}' if step else field
+        return f'{head_text}：{reason}' if reason else head_text
 
     lines.append(
         f'  方向: {direction or ("未形成" + _why("step1_direction"))}'
         f'{("（" + direction_cn + "）") if direction_cn else ""}'
-        f'{(" 来源=" + source) if source else ""}'
+        f'{(" 来源=" + _cn_label(source, _SOURCE_LABELS)) if source else ""}'
     )
     lines.append(
-        f'  O/U 路径: {ou_path or ("未形成" + _why("step2_ou_path"))}'
+        f'  大小球路径: {ou_path or ("未形成" + _why("step2_ou_path"))}'
         f'{("（" + ou_cn + "）") if ou_cn else ""}'
     )
     lines.append(f'  候选集大小: {res.get("candidate_count", 0)}/31')
@@ -2596,7 +2666,9 @@ def format_convergence_tg_lines(result: Any) -> list[str]:
         )
         for item in locked:
             comp = item.get('components') or {}
-            detail = ' '.join(f'{k}={comp.get(k)}' for k in WEIGHT_COMPONENTS)
+            detail = ' '.join(
+                f'{_cn_label(k, _COMPONENT_LABELS)}={comp.get(k)}' for k in WEIGHT_COMPONENTS
+            )
             lines.append(f'    {item.get("score")}: {detail} 合计={item.get("total")}')
         check = res.get('step4') or {}
         if (check.get('lowest_odds_check') or {}).get('conflict_code'):
@@ -2605,19 +2677,17 @@ def format_convergence_tg_lines(result: Any) -> list[str]:
         lines.append(f'  锁定2个比分: 未形成{_why("step6_lock") if "step6_lock" in aborted else "（候选不足 2 个）"}')
     if aborted:
         for name in aborted:
-            lines.append(f'  中止: {name} — {reasons.get(name) or "原因未记录"}')
+            lines.append(
+                f'  中止: {_cn_label(name, _STEP_LABELS)} — {reasons.get(name) or "原因未记录"}'
+            )
     missing = res.get('missing') or []
     invalid = res.get('invalid') or []
     if missing:
-        shown = '; '.join(
-            f'{m.get("step")}.{m.get("field")}: {m.get("reason")}' for m in missing[:8]
-        )
+        shown = '；'.join(_field_reason(m) for m in missing[:8])
         more = f' 等{len(missing)}项' if len(missing) > 8 else ''
         lines.append(f'  缺失: {shown}{more}')
     if invalid:
-        shown = '; '.join(
-            f'{m.get("step")}.{m.get("field")}: {m.get("reason")}' for m in invalid[:8]
-        )
+        shown = '；'.join(_field_reason(m) for m in invalid[:8])
         more = f' 等{len(invalid)}项' if len(invalid) > 8 else ''
         lines.append(f'  异常: {shown}{more}')
     conflicts = (res.get('step5') or {}).get('conflicts') or []

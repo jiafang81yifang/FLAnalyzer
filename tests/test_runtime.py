@@ -2271,8 +2271,11 @@ def test_merged_record_table_renders_22_9_and_keeps_the_extras() -> None:
     pack = _pack_from_record('1347776')
     lines = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
     summary = next(ln for ln in lines if '汇总' in ln)
-    assert 'desktop_cs=22' in summary, summary
-    assert 'jc_official=9' in summary, summary
+    # 正文只说中文：来源名是「澳客桌面比分均」，原标识留在括号里作排障位。
+    assert '澳客桌面比分均（desktop_cs）=22' in summary, summary
+    assert '竞彩官方比分（jc_official）=9' in summary, summary
+    # 反向：裸令牌（括号外）不得再作为来源名出现在汇总行里。
+    assert 'desktop_cs=22' not in summary.replace('（desktop_cs）=22', ''), summary
     note = next((ln for ln in lines if '附注' in ln), '')
     for extra in ('4-3', '3-4', '4-4'):
         assert extra in note, (extra, note)
@@ -2369,8 +2372,9 @@ def test_old_record_table_labels_nine_and_says_it_inferred_them() -> None:
 
         lines = pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(pack)
         summary = next(ln for ln in lines if '汇总' in ln)
-        assert 'desktop_cs=22' in summary and 'jc_official=9' in summary, summary
-        assert '出处:反推' in summary, summary
+        assert '澳客桌面比分均（desktop_cs）=22' in summary, summary
+        assert '竞彩官方比分（jc_official）=9' in summary, summary
+        assert '出处：反推' in summary, summary
         note = next((ln for ln in lines if '附注' in ln), '')
         for extra in ('4-3', '3-4', '4-4'):
             assert extra in note, (extra, note)
@@ -2465,9 +2469,11 @@ def test_recorded_and_derived_counts_agree_for_any_jc_subset() -> None:
         der_line = next(
             ln for ln in pipe_mod.DeepSeekAnalyzer.format_theo_mkt_31_tg_lines(derived)
             if '汇总' in ln)
-        assert f'jc_official={expected_jc[name]}' in rec_line or expected_jc[name] == 0, rec_line
-        assert rec_line.replace(' | 出处:反推(老记录无cs31_provenance)', '') == der_line.replace(
-            ' | 出处:反推(老记录无cs31_provenance)', ''), (name, rec_line, der_line)
+        assert (f'竞彩官方比分（jc_official）={expected_jc[name]}' in rec_line
+                or expected_jc[name] == 0), rec_line
+        marker = '｜出处：反推（老记录无逐项来源记录）'
+        assert rec_line.replace(marker, '') == der_line.replace(marker, ''), (
+            name, rec_line, der_line)
 
 
 def test_empty_market_rows_carry_no_source_or_count() -> None:

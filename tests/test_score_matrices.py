@@ -1066,7 +1066,8 @@ def test_heat_seats_missing_heat_block_fuses_not_zero() -> None:
 def test_heat_seats_empty_ranking_fuses_not_zero() -> None:
     rec = _real_rec()
     rec['score_market_heat'] = {'available': False, 'ranking': [], 'reason': 'x'}
-    with pytest.raises(sm.MatrixIntegrityError, match='ranking 为空'):
+    # 文案已改为中文；英文路径只留在括号里作排障位。
+    with pytest.raises(sm.MatrixIntegrityError, match='市热榜排名列表.*为空'):
         sm._matrix_heat_seats_from_rec(rec)
 
 

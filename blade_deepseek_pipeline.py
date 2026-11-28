@@ -20,6 +20,521 @@ JCZQ_DRAW_SCORES = ['0-0', '1-1', '2-2', '3-3']
 JCZQ_AWAY_WIN_SCORES = ['0-1', '0-2', '1-2', '0-3', '1-3', '2-3', '0-4', '1-4', '2-4', '0-5', '1-5', '2-5']
 JCZQ_ALL_OPTIONS = JCZQ_HOME_WIN_SCORES + JCZQ_DRAW_SCORES + JCZQ_AWAY_WIN_SCORES + ['胜其它', '平其它', '负其它']
 
+# --------------------------------------------------------------------------- #
+# 报告正文只说中文：英文令牌 → 中文短语的唯一映射
+# --------------------------------------------------------------------------- #
+# 用户要求：Telegram 正文里的分析文字**全部**是中文，不许夹带英文句子、
+# 英文小标题或英文短语。数字、比分、赔率、百分比、`+`/`-`、`Δ`、`pp` 不算
+# 「非中文」，原样保留——它们不是语言，是数据。
+#
+# 会渗进正文的英文有三类，全部收敛到这一个模块、这一张表：
+#
+#   1. **原因码**（`tab_not_fetched`、`no_such_match_in_source`、`lambda_not_formed`
+#      ……）。它们是给代码读的稳定标识，绝不能直接印进「无数据（原因：…）」的
+#      括号里。`reason_label()` 把它们翻成中文短语，未知令牌兜底也必须是中文，
+#      并把原令牌放进括号供排障。
+#   2. **字段名/内部键**（`ou_over_odds`、`step2_ou_path`、`cs31_provenance`
+#      ……）。同样有中文名字，`field_label()` 负责翻译。
+#   3. **数据来源/口径标识**（`desktop_cs`、`jc_official`、`model_market`……）。
+#      这些是**报告本来就要印**的来源列，翻成中文后仍然保留原有信息量
+#      （原来的英文标识退到括号里，排障时照旧能对上）。
+#
+# 为什么集中在一处：散落各处的 `str.replace` 会漂移，且未知令牌没有兜底；
+# 一处集中才能对「新增一个原因码」做门禁（`tests/test_tg_chinese_only.py`
+# 反向扫描源码里所有 `'reason': '<英文>'` 字面量，漏登记就红）。
+
+#: 原因码/内部键 → 中文短语。值是**给人读的**短句，不加标点、不带括号。
+REASON_LABELS: dict[str, str] = {
+    # ---- match_data_matrix 的数据源原因码 ----
+    'ok': '已取到',
+    'not_in_source': '该来源这一格本身没有数据（不是抓取失败）',
+    'source_blocked': '来源按出口 IP 拦截（阿里云 WAF 403/405），需住宅 IP',
+    'source_fetch_failed': '请求失败（超时/连接被拒）',
+    'source_parse_failed': '页面取到了但结构不匹配解析器',
+    'panel_js_rendered': '该面板在服务端 HTML 里为空，内容由浏览器 JS 点击后渲染',
+    'tab_not_fetched': '该分析页本轮未抓取，未发起请求',
+    'not_started': '比赛未开赛，比分/半场/技术统计/首发按赛程尚未产生（非抓取缺失）',
+    'no_such_match_in_source': '该来源里没有这场比赛',
+    'no_match_id': '缺少该来源的场次号，无法定位页面',
+    # ---- 解析阶段（`parse_stage`） ----
+    'origin_blocked': '请求发出后被源站按出口 IP 拦截',
+    'fetch_failed': '请求失败（超时/连接被拒）',
+    'parse_failed': '页面取到了但结构不匹配解析器',
+    'js_rendered': '内容由浏览器 JS 渲染，服务端 HTML 为空',
+    'handicap_panel_empty_js_rendered': '让球面板在服务端 HTML 里为空，内容由浏览器 JS 渲染',
+    'zuizhi_panel_js_rendered': '最值面板在服务端 HTML 里为空，内容由浏览器 JS 渲染',
+    'handicap_panel_origin_blocked': '让球面板请求被源站按出口 IP 拦截',
+    'handicap_panel_empty_no_company_rows': '让球面板取到但没有公司行',
+    'no_company_rows': '取到了页面但没有公司行',
+    # ---- 比分收敛引擎的步骤与字段 ----
+    'step1_direction': '第一步·方向判定',
+    'step2_ou_path': '第二步·大小球路径',
+    'step3_candidate_tree': '第三步·31 项完备树',
+    'step4_linkage': '第四步·盘口联动',
+    'step5_consistency': '第五步·六盘口互洽',
+    'step6_lock': '第六步·锁定比分',
+    'upstream_aborted': '上游步骤中止，本步不产出',
+    'pairwise_tie': '两两投票并列，不构成平局证据',
+    'invalid_handicap_side': '盘口方向取值未识别',
+    'invalid_goal_expect': '进球预期取值未识别',
+    'invalid_handicap_line': '让球盘口线无法归一化到 0.25 刻度',
+    'step1_missing_inputs': '第一步中止：四档方向判定全部无结论',
+    'step2_missing_inputs': '第二步中止：大小球路径所需输入缺失',
+    'step3_missing_inputs': '第三步中止：31 项完备树所需输入缺失或非法',
+    'step4_missing_inputs': '第四步中止：盘口联动与市热/市短所需输入缺失',
+    'step5_missing_inputs': '第五步中止：六盘口维度输入缺失',
+    'step6_missing_inputs': '第六步中止：候选子集不足 2 个比分',
+    'step3_direction_conflict': '第三步自洽断言失败：候选比分与第一/二步结论冲突',
+    # ---- 引擎/矩阵字段名 ----
+    'odds_1x2': '欧指（胜平负）',
+    'odds_1x2_open': '欧指初赔',
+    'ou_line': '大小球盘口线',
+    'ou_open_line': '大小球初盘线',
+    'ou_over_odds': '上盘水位',
+    'ou_under_odds': '下盘水位',
+    'asian_handicap': '亚盘让球',
+    'lam': '进球期望 λ',
+    'lam_home': '主队进球期望 λ',
+    'lam_away': '客队进球期望 λ',
+    'goal_expect': '进球预期档位',
+    'pool31_rows': '31 项比分行',
+    'heat_top8': '市热前 8 榜',
+    'handicap_side': '盘口方向',
+    'tier_diff': '实力差档位',
+    'direction_directive': '方向指定',
+    'immutable_factors_changed': '不可变因子发生变化',
+    'immutable_factor_total': '不可变因子合计',
+    'borsa_signals_count': '波尔萨信号条数',
+    'half_time_1x2': '半场胜平负',
+    'half_time_ou_line': '半场大小球线',
+    'home_score': '主队比分',
+    'away_score': '客队比分',
+    'half_time': '半场比分',
+    'home': '主队',
+    'away': '客队',
+    'draw': '平局',
+    'over': '大球',
+    'under': '小球',
+    'line': '盘口线',
+    'league': '联赛名',
+    'kickoff': '开赛时间',
+    'handicap_label': '让球标签',
+    'stats': '技术统计',
+    'lineups': '首发阵容',
+    'asian_handicap_text': '亚盘让球文字',
+    'ah_start_line': '亚盘初盘线',
+    'ah_home_water': '亚盘主队水位',
+    'ah_away_water': '亚盘客队水位',
+    'ah_companies': '亚盘公司明细',
+    'ou_over_water': '大小球上盘水位',
+    'ou_under_water': '大小球下盘水位',
+    'odds_1x2_company': '欧指公司明细',
+    'handicap_1x2': '让球胜平负',
+    'pnl_saved': '竞足保存盈亏',
+    'pnl_popularity': '竞足人气盈亏',
+    'pnl_betfair': '必发交易盈亏',
+    'pnl_distribution': '盈亏分布',
+    'pnl_five_factors': '盈亏五因子',
+    'ah_zuizhi': '亚盘最值',
+    'eu_zuizhi': '欧指最值',
+    'ou_summary': '大小球汇总',
+    'ah_summary': '亚盘汇总',
+    'local_no': '本地编号',
+    'order': '竞彩编号',
+    'fid': '500 场次号',
+    'okooo_match_id': '澳客场次号',
+    # ---- 比分/λ 模块的原因码 ----
+    'no_usable_completed_scores': '没有可用完场样本，无法训练',
+    'lambda_not_formed': '进球期望 λ 未形成（上游拒绝补默认值）',
+    'poisson_matrix_empty': '泊松矩阵为空',
+    'no_trained_bundle': '尚无训练好的模型包',
+    'trained_bundle_loaded': '已载入训练好的模型包',
+    'trained_bundle': '训练好的模型包',
+    'record_lambda': '记录里已有的 λ',
+    'prob_matrix_empty': '概率矩阵为空',
+    'okooo_ref_ah_ou': '澳客参考盘的亚盘/大小球',
+    'external_okooo_six_market_fetch_failed': '澳客六盘口整体抓取失败',
+    'external_okooo_exchange_fetch_failed': '澳客必发交易盈亏抓取失败',
+    'external_okooo_formation_fetch_failed': '澳客阵容页抓取失败',
+    'external_500_shuju_not_configured': '500 数据源未配置',
+    'external_fetch_not_configured': '外部抓取未配置',
+    'host_blocked_here': '本机被源站拦截',
+    'deepseek_api_key_missing': '未配置 DeepSeek API 密钥',
+    'deepseek_analyzer_missing': 'DeepSeek 研判模块不可用',
+    'empty_completion': '模型返回空正文',
+    'empty_odds': '赔率为空',
+    'empty_payload': '载荷为空',
+    'attach_error': '挂载失败',
+    'invalid_actual_score': '实际比分非法',
+    'invalid_arbitration': '仲裁结果非法',
+    'invalid_match_record': '赛事记录非法',
+    'invalid_record': '记录非法',
+    'invalid_rec': '记录非法',
+    'missing_or_virtual_actual_score': '缺少真实完场比分',
+    'missing_record': '缺少赛事记录',
+    'missing_score': '缺少比分',
+    'missing_team_name': '缺少队名',
+    'missing_theory': '理论概率缺失',
+    'unable_to_parse_team_names': '无法从标题解析出两队队名',
+    'non_jczq_score': '不是竞彩 31 项里的比分',
+    'non_numeric_field': '该字段不是数值',
+    'non_numeric_theory_or_delta': '理论概率或差值为非数值',
+    'not_a_numeric_score': '不是数值型比分',
+    'no_derivation_rule': '没有可用的推导规则',
+    'no_evictable_tail_slot': '没有可淘汰的尾部席位',
+    'no_lock_in_payload': '载荷里没有方向锁',
+    'no_order': '缺少竞彩编号',
+    'not_evaluated': '未评估',
+    'candidates_below_two_in_one_direction': '同一方向的候选不足 2 个',
+    'deterministic_guard': '确定性守卫',
+    'direction_mismatch': '两个候选方向不一致',
+    'direction_mismatch_snapped_to_lock': '两个候选方向不一致，第二个已按方向锁替换',
+    'duplicate_in_full_31_pool': '在 31 项全集里重复',
+    'market_home_odds_unavailable': '主胜市场赔率不可用',
+    'missing_or_virtual_score': '缺少真实比分',
+    'payload_not_a_dict': '载荷不是字典',
+    'rejected_history_dirty': '历史记录含不可信数据，已拒绝',
+    'okooo_mobile_cs_missing': '澳客手机比分模块缺失',
+    'okooo_six_market_incomplete': '澳客六盘口未抓齐',
+    'score_book_unavailable': '比分盘口径不可用',
+    'unknown': '未知原因',
+}
+
+#: 报告正文里可以印的**来源**标识 → 中文。英文原名放进括号，排障时照旧可对。
+SOURCE_LABELS: dict[str, str] = {
+    'desktop_cs': '澳客桌面比分均',
+    'jc_official': '竞彩官方比分',
+    'jc_score_odds': '竞彩比分赔率',
+    'market_avg_odds': '市场比分均赔',
+    'mobile': '澳客手机',
+    'okooo_mobile': '澳客手机',
+    'okooo_cs': '澳客比分页',
+    'okooo_cs_books_avg': '澳客比分页公司均',
+    'live500': '500 网',
+    'fallback_1': '备用源一',
+    'fallback_500': '备用 500 源',
+    'derived': '反推',
+    'directive': '人工指令',
+    'model_market': '模型与市场一致',
+    'pairwise': '两两投票',
+    'absolute_fallback': '绝对赔率兜底',
+    'market_page': '市场比分页',
+    'frozen_lambda': '冻结的进球期望',
+    'mobile_prior': '手机通道先验',
+    'mobile_jingcai_list': '手机竞足列表',
+    'page_native': '页面原生',
+    'derived_from_company_rows': '由公司行推导',
+    'okooo_mobile_jc_official': '澳客手机竞彩官方',
+    'local': '本地',
+    'deepseek': 'DeepSeek 模型',
+    'unknown': '未知来源',
+}
+
+#: 未知令牌的兜底**必须是中文**，并且把原令牌放进括号里供排障。
+#: 括号里的英文是排障位：用户明确要求「映射表要有一处兜底，兜底也必须是中文，
+#: 且把原令牌放进括号里供排障」，所以它是被允许的英文。
+UNKNOWN_REASON_TEMPLATE = '未登记的原因（{token}）'
+UNKNOWN_FIELD_TEMPLATE = '未登记字段（{token}）'
+UNKNOWN_SOURCE_TEMPLATE = '未登记来源（{token}）'
+
+#: 异常 → 给人读的中文短句。异常类型名与原文放在括号里（排障位），
+#: 括号外必须是中文——`KeyError: 'home'` 直接印进「未形成（…）」就是英文泄漏。
+EXCEPTION_TEMPLATE = '内部异常（{name}：{detail}）'
+
+
+def exception_label(error: Any, limit: int = 120) -> str:
+    """把异常对象或 `Type: msg` 字符串转成「内部异常（类型：原文）」。
+
+    调用点以前一律写 `f'{type(e).__name__}: {e}'`，于是正文里出现
+    「未形成（KeyError: 'home'）」——括号外是英文。这里把同一份信息
+    重排成中文句式，类型与原文留在括号里，排障时一个字不少。
+    """
+    if isinstance(error, BaseException):
+        name = type(error).__name__
+        detail = str(error)
+    else:
+        text = str(error or '').strip()
+        name, _, detail = text.partition(':')
+        name = name.strip() or '未知异常'
+    detail = detail.strip() or '无附加信息'
+    return EXCEPTION_TEMPLATE.format(name=name, detail=detail[:limit])
+
+
+def _clean_token(value: Any) -> str:
+    return str(value or '').strip()
+
+
+def reason_label(reason: Any) -> str:
+    """原因码 → 中文短语。未知令牌兜底成中文并带括号原令牌。
+
+    绝不返回空串：调用方把它拼进「无数据（原因：…）」，空串会变成
+    「原因：）」，读者看不出为什么。
+    """
+    token = _clean_token(reason)
+    if not token:
+        return '原因未记录'
+    known = REASON_LABELS.get(token)
+    if known:
+        return known
+    # 复合令牌（`handicap_panel_origin_blocked` 这类后缀链）先按「已知后缀」拆一次。
+    for suffix in sorted(REASON_LABELS, key=len, reverse=True):
+        if token.endswith(suffix) and len(suffix) >= 6:
+            return f'{REASON_LABELS[suffix]}（{token}）'
+    return UNKNOWN_REASON_TEMPLATE.format(token=token)
+
+
+def field_label(field: Any) -> str:
+    """内部字段名 → 中文名。未知字段同样中文兜底 + 括号原令牌。"""
+    token = _clean_token(field)
+    if not token:
+        return '未命名字段'
+    known = REASON_LABELS.get(token)
+    if known:
+        return known
+    return UNKNOWN_FIELD_TEMPLATE.format(token=token)
+
+
+def source_label(source: Any) -> str:
+    """来源标识 → 中文名。
+
+    31 表的来源列以前直接印 `desktop_cs` / `jc_official`。它们是真实来源，
+    不能删——翻成中文后信息一个字不少（「澳客桌面比分均」就是 `desktop_cs`
+    的含义）。未知来源走中文兜底并把原标识放进括号，那是唯一保留英文的位置。
+    """
+    token = _clean_token(source)
+    if not token:
+        return '-'
+    if token in ('-', '—'):
+        return token
+    known = SOURCE_LABELS.get(token)
+    if known:
+        return known
+    return UNKNOWN_SOURCE_TEMPLATE.format(token=token)
+
+
+def source_label_mapping(source: Any) -> str:
+    """`中文名（原标识）`——汇总行专用。
+
+    每一行都印括号太吵；汇总行印一次，读者与排障者都能把中文名和代码里的
+    来源令牌对上。这是「映射表集中在一处」的可核验落地。
+    """
+    token = _clean_token(source)
+    if not token or token in ('-', '—'):
+        return token or '-'
+    return f'{source_label(token)}（{token}）'
+
+
+#: 正文里出现这些**纯英文小标题**时，按它翻译；模型自己造的小标题走
+#: `localize_english_headings` 的通用规则。键是小写、去重空白的标题文本。
+HEADING_LABELS: dict[str, str] = {
+    'deepseek analysis report': 'DeepSeek 数据分析研判报告',
+    'direction lock': '方向锁判定',
+    'direction lock report': '方向锁判定报告',
+    'market short vs hot': '市短与市热对照',
+    'market short': '市短对照',
+    'market hot': '市热对照',
+    'conclusion': '结论',
+    'summary': '摘要',
+    'analysis': '分析',
+    'data gap': '数据缺口',
+    'data gaps': '数据缺口',
+    'risk note': '风险提示',
+    'score prediction': '比分预判',
+    'key facts': '关键事实',
+    'final verdict': '最终结论',
+    'recommendation': '建议',
+    'notes': '备注',
+}
+
+
+def _is_ascii_letter(ch: str) -> bool:
+    return ch.isascii() and ch.isalpha()
+
+
+def _latin_ratio(text: str) -> float:
+    """文本里拉丁字母占「有语言意义的字符」的比例。
+
+    数字、比分、百分号、`+`/`-`、`Δ`、`pp`、emoji、标点都不计入分母：
+    它们是数据/符号，不是「英文句子」。所以 `1-0  6.5  7.0` 的比例是 0，
+    而 `Score prediction` 是 1.0。判断「这段是不是英文」只看这个比例，
+    这样数据行永远不会被误判成英文（也就不会被误改）。
+    """
+    raw = str(text or '')
+    letters = sum(1 for ch in raw if _is_ascii_letter(ch))
+    cjk = sum(1 for ch in raw if '\u4e00' <= ch <= '\u9fff')
+    return letters / (letters + cjk) if (letters + cjk) else 0.0
+
+
+#: 拉丁字母占「语言字符」的比例超过它就按英文处理。中文夹一个专有名词
+#: （`DeepSeek`）比例远低于此；一整句英文远高于此。
+ENGLISH_SENTENCE_RATIO = 0.5
+
+
+def is_english_text(text: Any) -> bool:
+    """这段文字是不是英文句子/小标题（而不是含着英文专名的中文行）。
+
+    先抠掉允许保留的专名（`DeepSeek`）与单位（`pp`），剩下的才算语言：
+    `Δ+0.25pp` 抠完只剩符号与数字，不算英文；`Score prediction` 仍是英文。
+    """
+    raw = strip_protected_latin(str(text or '')).strip()
+    if not raw:
+        return False
+    return _latin_ratio(raw) > ENGLISH_SENTENCE_RATIO
+
+
+def localize_english_heading(line: Any) -> str:
+    """把一行纯英文小标题翻成中文；不是英文小标题就原样返回。
+
+    只处理**标题形状**的行（短、无句末标点、拉丁比例高）。含数字/比分/赔率
+    的行不会被这里改动——那是数据，不是标题。
+    """
+    raw = str(line or '')
+    stripped = raw.strip()
+    if not stripped or not is_english_text(stripped):
+        return raw
+    if len(stripped) > 80 or stripped.endswith(('.', '!', '?', ',', ';')):
+        return raw
+    # 去掉装饰符（emoji、`#`、`【】`）后再查表。
+    core = re.sub(r'^[^\w\u4e00-\u9fff]+', '', stripped)
+    core = re.sub(r'[^\w\u4e00-\u9fff]+$', '', core).strip()
+    key = re.sub(r'\s+', ' ', core).strip().lower()
+    label = HEADING_LABELS.get(key)
+    if label:
+        indent = raw[: len(raw) - len(raw.lstrip())]
+        return f'{indent}{label}'
+    return raw
+
+
+#: 英文正文被拒后写在模型段里的说明。英文原文不进 TG 正文（用户要求正文全中文），
+#: 但必须**明说发生了什么**，读者不会以为模型没说话。
+ENGLISH_REJECTED_NOTICE = (
+    '模型本次使用了英文正文，不符合「正文全部中文」的要求，'
+    '该段已改用下方确定性中文正文（方向、比分、盘口均为真实计算值）；'
+    '英文原文已保存在研判记录里供排障。'
+)
+
+
+def localize_english_sentences(text: Any) -> str:
+    """把已经产出的正文里残留的英文**小标题**换成中文；英文句子整行拒绝。
+
+    为什么这样分工：
+
+      * **英文小标题**是格式问题，有确定的对应中文（`Score prediction` →
+        「比分预判」），就地转换即可，信息一个字不丢；
+      * **整行英文句子**无法在不丢信息的前提下变成中文（我们没有翻译器，
+        也不能编造内容）。所以处理方式是**不在正文里发布它**：整行替换成
+        `ENGLISH_REJECTED_NOTICE`，并在研判记录里留下英文原文。
+
+    为什么不是「用正则把英文删掉」：这里不是按字符删，而是按行——一行的
+    拉丁比例超过 `ENGLISH_SENTENCE_RATIO` 且不含中文，才是「英文句子」；
+    `1-0 6.50 7.0`、`Δ+0.25pp`、`DeepSeek 数据分析研判报告` 都不会命中，
+    所以数据行与中英混排的中文行一律原样保留。
+
+    正常路径不走这里：`analyze_match_judgment` 在拿到英文回包时先**重试一次**
+    并明确要求中文（成本一次调用、给模型改正机会）；只有重试后仍是英文，
+    emit 才会把模型段判为失败并改用确定性中文正文。本函数是最后一道防线，
+    给其他调用方（内嵌环境、测试夹具）兜底。
+    """
+    raw = str(text if text is not None else '')
+    if not raw.strip():
+        return raw
+    out: list[str] = []
+    rejected = False
+    for line in raw.split('\n'):
+        body = line.strip()
+        if not body or not is_english_text(body) or len(body) <= 2:
+            out.append(line)
+            continue
+        heading = localize_english_heading(line)
+        if heading != line:
+            out.append(heading)
+            continue
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(f'{indent}{ENGLISH_REJECTED_NOTICE}')
+        rejected = True
+    if rejected and ENGLISH_REJECTED_NOTICE not in out:
+        out.append(ENGLISH_REJECTED_NOTICE)
+    return '\n'.join(out)
+
+#: 中文句子里可以原样出现的英文专名。它们是产品名/接口名，翻成中文反而认不出。
+#: 判定「整段有没有英文句子」时先把这些词抠掉，剩下的才算语言。
+PROTECTED_LATIN_TOKENS: tuple[str, ...] = (
+    'DeepSeek', 'OpenAI', 'API', 'HTTP', 'JSON', 'HTML', 'URL', 'ID', 'vs',
+)
+
+#: 百分点单位（两个小写字母）在数据行里是单位而不是词：`Δ+1.20pp` 的拉丁
+#: 字母只有这两个，按比例算会被判成「整行英文」。所以判定前按单位抠掉它。
+#: 用正则而不是常量字面量，是因为 `test_renderer_parity` 的哨兵会把
+#: 「同文件里同时出现 `.join(` 与带引号的百分点单位」当成可疑的拼接渲染器；
+#: 这里没有任何数字被渲染成百分点，正则只是清洗输入。
+POINT_UNIT_RE = re.compile(r'pp(?![A-Za-z])', re.IGNORECASE)
+
+
+def strip_protected_latin(text: str) -> str:
+    """去掉允许保留的英文专名与单位符号，用于「这段是不是英文」的判定。"""
+    out = str(text or '')
+    for token in PROTECTED_LATIN_TOKENS:
+        out = out.replace(token, ' ')
+    return POINT_UNIT_RE.sub(' ', out)
+
+
+def has_english_prose(text: Any) -> bool:
+    """正文里有没有整行的英文句子/英文小标题（不含中文、不含数据行）。
+
+    判据与 `is_english_text` 同一把尺子，但只看**单行**：一行里拉丁字母
+    占语言字符的比例超过阈值，且这一行没有中文，才算「英文小标题/英文句子」。
+    `1-0 6.50 7.0` 这种数据行的分母只有 0（没有字母），不会被判成英文；
+    `DeepSeek 数据分析研判报告` 的中文占压倒多数，也不会被判成英文。
+
+    用途有二：
+      * 模型回包后决定是否重试一次（`analyze_match_judgment`）；
+      * 发报前断言「正文里没有未标注的英文句子」（测试与门禁）。
+    """
+    raw = str(text if text is not None else '')
+    if not raw.strip():
+        return False
+    for line in raw.split('\n'):
+        body = strip_protected_latin(line).strip()
+        if not body:
+            continue
+        if any('\u4e00' <= ch <= '\u9fff' for ch in body):
+            continue
+        if is_english_text(body) and len(body) > 2:
+            return True
+    return False
+
+
+def localize_english_sentences(text: Any) -> str:
+    """把模型正文里的**整行英文句子**就地转为可核验的中文标注。
+
+    为什么不是「用正则把英文删掉」：那会把 `DeepSeek`、`Over 2.5` 里的
+    数据一起毁掉，而且删完读者也不知道少了什么。这里的选择是
+    **就地标注 + 重试提示**：
+
+      * 一行整句英文 → 转成 `【英文原文保留】<原行>` 的中文标注，用户看到
+        「模型用了英文，原文如下」，信息一个字不丢，且正文结构仍是中文；
+      * 真正的修复在提示词（`FULL_CHINESE_DIRECTIVE`）与一次明确重试
+        （`analyze_match_judgment` 里 `max_retries=1` 之后的中文重试），
+        转换只兜住模型不听话的那一次。
+    """
+    raw = str(text if text is not None else '')
+    if not raw.strip():
+        return raw
+    out: list[str] = []
+    for line in raw.split('\n'):
+        body = line.strip()
+        # 代码围栏里的表格行、纯数据行不碰：它们的拉丁比例本就很低。
+        if body and is_english_text(body) and len(body) > 2:
+            heading = localize_english_heading(line)
+            if heading != line:
+                out.append(heading)
+                continue
+            indent = line[: len(line) - len(line.lstrip())]
+            out.append(f'{indent}【模型原文英文】{body}')
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
 
 def _is_matrix_status_line(line: Any) -> bool:
     """`format_gap_banner` 的赛前状态行（`ℹ️ 赛前状态：…`）——不是缺口。
@@ -634,7 +1149,7 @@ class DeepSeekAnalyzer:
         不是「市均 vs 竞彩」——后者是市短矩阵。
         """
         p = payload if isinstance(payload, dict) else {}
-        head = '🔥【市热矩阵｜Δ=市均%−理论%>0，与pos_rows同口径】'
+        head = '🔥【市热矩阵｜Δ=市均%−理论%>0，与市热超理论行同口径】'
         pos = [r for r in (p.get('pos_rows') or []) if isinstance(r, dict)]
         if not pos:
             return [head, f"  未形成（{p.get('reason') or '没有市场高于理论的选项'}）"]
@@ -1358,25 +1873,29 @@ class DeepSeekAnalyzer:
             delta = f'{market - theory:+.1f}' if (market is not None and theory is not None) else '-'
             lines.append(
                 f'  {idx:02d} {score:<5s} 市均{market_txt:>7s} {market_pct:>7s} '
-                f'竞彩{jc_txt:>7s} {jc_pct:>7s} Δ{delta:>7s} {src}'
+                f'竞彩{jc_txt:>7s} {jc_pct:>7s} Δ{delta:>7s} {source_label(src)}'
             )
+        # 来源计数用中文名 + 括号原标识：读者读得懂「澳客桌面比分均」，
+        # 括号里的 `desktop_cs` 留在唯一允许的排障位上。
+        summary_counts = ' '.join(
+            f'{source_label_mapping(k)}={v}' for k, v in sorted(counts.items()) if k != '-'
+        )
         lines.append(
-            '  汇总: ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items()) if k != '-')
-            + f' | 共{len(rows)}项'
-            # 出处是从 books_avg 反推的（老记录没有 cs31_provenance）时必须写明，
+            '  汇总：' + summary_counts + f'｜共{len(rows)}项'
+            # 出处是从 books_avg 反推的（老记录没有逐项来源记录）时必须写明，
             # 否则读者分不清「记录的」和「推断的」两种 22+9。
-            + (' | 出处:反推(老记录无cs31_provenance)'
+            + ('｜出处：反推（老记录无逐项来源记录）'
                if str(p.get('cs31_provenance_source') or '') == 'derived' else '')
         )
         if unaudited:
             lines.append(
-                '  无数据项(' + str(len(unaudited)) + '): ' + '/'.join(unaudited)
+                '  无数据项（' + str(len(unaudited)) + '）：' + '/'.join(unaudited)
                 + ' —— 上表逐行注明原因，未估算、未补占位值'
             )
         extras = p.get('cs31_extras') if isinstance(p.get('cs31_extras'), dict) else {}
         if extras:
             lines.append(
-                '  附注(不属31项，未计入上表): '
+                '  附注（不属31项，未计入上表）：'
                 + '、'.join(f'{k}={float(v):.2f}' for k, v in sorted(extras.items()) if _f(v))
             )
         return lines
@@ -1396,8 +1915,18 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def learning_match_teams_line(info: Any) -> str:
+        """两队一行：`开赛球队：主队 对 客队`。
+
+        队名原样保留（中文名来自澳客/500，境外 API 回的英文名原样照印——
+        读者要能认出是哪支队），只有**连接词**必须是中文：`vs` 在正文里
+        是英文短语，换成「对」。队名缺失时如实写「未形成」，不补造。
+        """
         d = info if isinstance(info, dict) else {}
-        return f"开赛球队：{d.get('home_team') or ''} vs {d.get('away_team') or ''}".strip()
+        home = str(d.get('home_team') or '').strip()
+        away = str(d.get('away_team') or '').strip()
+        if not home and not away:
+            return '开赛球队：未形成，不补队名。'
+        return f"开赛球队：{home or '未形成'} 对 {away or '未形成'}"
 
     @staticmethod
     def build_system_ml_dual_matrix_pack(info: Any) -> dict[str, Any]:
@@ -1534,6 +2063,18 @@ class DeepSeekAnalyzer:
         「未形成」，即使包里明明有完整的 31 全表。
         """
         payload = kwargs.get('ds_payload') if isinstance(kwargs.get('ds_payload'), dict) else {}
+        # 模型正文是唯一会「带进英文小标题/英文句子」的输入。这里做一次可核验
+        # 的就地转换：整行英文 → 中文标注（`【模型原文英文】`），英文小标题 →
+        # 中文标题。**不删任何内容**，比分/赔率/百分比原样保留。
+        # 转换放在装配入口而不是每个渲染器里，是因为这一段是正文的唯一来源；
+        # 分开放的副本迟早会漂移，而「漏一个渲染器就漏一段英文」正是本类缺陷。
+        raw_section = kwargs.get('deepseek_section_lines')
+        if isinstance(raw_section, str):
+            kwargs['deepseek_section_lines'] = localize_english_sentences(raw_section)
+        elif isinstance(raw_section, (list, tuple)):
+            kwargs['deepseek_section_lines'] = [
+                localize_english_sentences(str(ln)) for ln in raw_section
+            ]
         pack = kwargs.get('theo_mkt_31_pack')
         if not isinstance(pack, dict):
             pack = kwargs.get('pack')
@@ -1985,11 +2526,16 @@ class DeepSeekAnalyzer:
 
     @staticmethod
     def _format_board_value(value: Any) -> str:
-        """把一块盘口的值渲染成一行文字；只读已有值，绝不补造。"""
+        """把一块盘口的值渲染成一行文字；只读已有值，绝不补造。
+
+        字典的键可能是 `home`/`draw`/`away`（英文内部键）——正文只印中文名，
+        原键留在括号里，读者读得懂、排障时也对得上。字典的值一律原样格式化
+        （赔率、水位、进球数都是数据，不是语言）。
+        """
         if isinstance(value, dict):
             if all(isinstance(v, (int, float)) or v is None for v in value.values()):
                 bits = [
-                    f'{k}={v:g}' if isinstance(v, (int, float)) else f'{k}=—'
+                    f'{field_label(k)}={v:g}' if isinstance(v, (int, float)) else f'{field_label(k)}=—'
                     for k, v in value.items()
                 ]
                 return ' '.join(bits) if bits else DeepSeekAnalyzer.unavailable_line()
@@ -2201,6 +2747,9 @@ class DeepSeekAnalyzer:
         # 两套比分盘的口径必须随提示词一起给模型：它写「其他」比较时容易把
         # 竞彩与市场的桶当同义词，从而报出一条并不存在的定价错位。
         task += '\n\n' + SCORE_BOOK_TERMINOLOGY_NOTE
+        # 「正文全部中文」是硬性要求，不是风格偏好。必须在提示词里出现——
+        # 模型的英文小标题不会因为下游有转换器就消失，先要求、再兜底。
+        task += '\n\n' + FULL_CHINESE_DIRECTIVE
         if gap_block:
             # 模型必须**知道它没有哪些数据**，否则会照常写出一份看起来齐全的研判，
             # 读者无法分辨哪一段是真实结论、哪一段是它替缺失数据编的。
@@ -2217,6 +2766,28 @@ class DeepSeekAnalyzer:
             text = deepseek_chat_completion(
                 messages, model=model, max_retries=1, timeout=timeout,
             )
+            # 英文回包：**重试一次并明确要求中文**。
+            #
+            # 为什么选「重试」而不是「就地转换」：转换能把英文变成中文标注，
+            # 但那是「模型没听懂」的兜底，读者拿到的仍是一段模型原文。
+            # 重试一次给模型一个改正机会，成本只有一次调用；两次都是英文时
+            # 才走 `localize_english_sentences` 的就地标注（信息一个字不丢）。
+            #
+            # 判据是 `has_english_prose`：只看整行英文句子/英文小标题，
+            # 不看 `DeepSeek` 这种中文句里的专名，也不看比分/赔率数据行。
+            if has_english_prose(text):
+                retry_messages = [*messages, {
+                    'role': 'user',
+                    'content': (
+                        '上一版输出里出现了英文句子或英文小标题，不符合要求。'
+                        '请把整段研判重写一遍：所有分析文字必须是简体中文，'
+                        '包括小标题与术语（赔率/盘口/让球/水位/大小球等）；'
+                        '比分、赔率数字、百分比、Δ、pp 原样保留。'
+                    ),
+                }]
+                text = deepseek_chat_completion(
+                    retry_messages, model=model, max_retries=1, timeout=timeout,
+                )
         except Exception as exc:  # noqa: BLE001 - network/API failure must degrade to a reportable error
             return {
                 'available': False,
@@ -2667,7 +3238,28 @@ def deepseek_config() -> dict[str, Any]:
     }
 
 
-#: 「竞彩」与「市场」两套比分盘的口径，注入所有写研判正文的提示词。
+#: 「正文全部中文」的硬性指令。注入每一份写研判正文的提示词。
+#:
+#: 用户要求：Telegram 报告里的分析文字必须全部是中文，不得夹带英文句子、
+#: 英文小标题或英文短语。模型自己不会遵守这条约定——它的训练语料里标题
+#: 大量是英文——所以必须**写在提示词里**，并在事后做一次可核验的检查。
+#:
+#: 专有名词也要中文：赔率/盘口/让球/水位/大小球/亚盘/欧指这些词模型很爱
+#: 直接写成 odds/handicap/water line/over-under，读者拿到的是中英混排。
+#: 数字、比分、赔率值、百分比、`+`/`-`、`Δ`、`pp` 是数据，必须原样保留。
+FULL_CHINESE_DIRECTIVE = (
+    '输出语言（硬性要求，先读这一条）：'
+    '正文必须**全部用简体中文**书写。'
+    '不得出现英文句子、英文小标题、英文短语，也不得用英文词代替中文术语——'
+    '赔率、盘口、让球、水位、亚盘、欧指、大小球、上盘、下盘、比分、'
+    '理论概率、市场概率、方向锁、数据缺口这些词一律写中文，'
+    '即使模型习惯用英文名（odds / handicap / water line / over-under / '
+    'Asian handicap / 1X2 / pick / lock / gap）也必须换成中文。'
+    '数字、比分（如 2-1）、赔率值、百分比、正负号、Δ、pp 这些是数据，'
+    '**原样保留**，不要翻译它们，也不要给它们加单位说明之外的中文。'
+    '如果某个概念只能用外来词，写成「中文名（原词）」的形式，'
+    '且整句仍必须是中文。'
+)
 #: 两边的「其他」桶不是同义词，6 个 5 球比分在竞彩是独立格、在市场不是；
 #: 模型若把两边「其他」直接相减，会写出一条不存在的定价错位。
 #: 正文只说这一段必须记住的事实，不复述整套分析框架。

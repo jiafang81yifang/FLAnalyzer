@@ -518,7 +518,10 @@ def test_reason_text_covers_every_reason_code() -> None:
     for code in mdm.REASON_CODES:
         assert mdm.REASON_TEXT[code].strip(), code
         assert mdm.reason_text(code) == mdm.REASON_TEXT[code]
-    assert '未知原因码' in mdm.reason_text('no_such_code')
+    # 未知码的兜底也必须是中文，原令牌放在括号里供排障
+    unknown = mdm.reason_text('no_such_code')
+    assert '未登记的原因' in unknown, unknown
+    assert 'no_such_code' in unknown, unknown
 
 
 def test_gap_banner_prints_chinese_not_codes_only(rec: dict[str, Any]) -> None:
