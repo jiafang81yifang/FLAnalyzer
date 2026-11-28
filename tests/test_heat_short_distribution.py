@@ -254,31 +254,42 @@ def test_reading_sentence_is_generated_from_data() -> None:
 # --------------------------------------------------------------------------- #
 # 排序：市热组内按差**降序**、市短组内按差**升序**
 # --------------------------------------------------------------------------- #
-def test_hot_groups_are_sorted_by_diff_descending() -> None:
+def test_hot_groups_follow_the_shared_score_order() -> None:
+    """市热组内按共用规则：总进球升序 → 净胜球升序 → 其它末位。
+
+    **不是**按差值降序（那是用户 2026-11-28 明确作废的旧指令）。
+    """
     pack = _sample_pack()
-    rows = {r['score']: r for r in DSA._raw_odds_rows(pack)}
     seq = _field(_lines(pack), '市热比分：').split('：', 1)[1].split('/')
-    # 组内（胜/平/负各自）按差降序，最正的最前。
-    for group in ('胜', '平', '负'):
-        diffs = [rows[s]['diff'] for s in seq if rows[s]['wdl'] == group]
-        assert diffs == sorted(diffs, reverse=True), (group, diffs)
-
-
-def test_short_groups_are_sorted_by_diff_ascending() -> None:
-    pack = _sample_pack()
     rows = {r['score']: r for r in DSA._raw_odds_rows(pack)}
-    seq = _field(_lines(pack), '市短比分：').split('：', 1)[1].split('/')
     for group in ('胜', '平', '负'):
-        diffs = [rows[s]['diff'] for s in seq if rows[s]['wdl'] == group]
-        assert diffs == sorted(diffs), (group, diffs)
+        items = [s for s in seq if rows[s]['wdl'] == group]
+        assert items == pipe.sort_scores(items), (group, items)
 
 
-def test_short_list_leading_item_is_the_most_negative() -> None:
-    rows = {r['score']: r for r in DSA._raw_odds_rows(_sample_pack())}
-    seq = _field(_lines(_sample_pack()), '市短比分：').split('：', 1)[1].split('/')
-    assert rows[seq[0]]['diff'] == min(
-        rows[s]['diff'] for s in seq if rows[s]['wdl'] == rows[seq[0]]['wdl']
-    )
+def test_short_groups_follow_the_shared_score_order() -> None:
+    """市短组内同一套规则（两段共用一个比较器，不再各写一份）。"""
+    pack = _sample_pack()
+    seq = _field(_lines(pack), '市短比分：').split('：', 1)[1].split('/')
+    rows = {r['score']: r for r in DSA._raw_odds_rows(pack)}
+    for group in ('胜', '平', '负'):
+        items = [s for s in seq if rows[s]['wdl'] == group]
+        assert items == pipe.sort_scores(items), (group, items)
+
+
+def test_short_list_leading_item_is_the_smallest_total_goals() -> None:
+    """组内首项是总进球最少的那个（同球数再取净胜球最负）。"""
+    pack = _sample_pack()
+    seq = _field(_lines(pack), '市短比分：').split('：', 1)[1].split('/')
+    rows = {r['score']: r for r in DSA._raw_odds_rows(pack)}
+    for group in ('胜', '平', '负'):
+        items = [s for s in seq if rows[s]['wdl'] == group]
+        if not items:
+            continue
+        first = items[0]
+        assert pipe.score_sort_key(first) == min(pipe.score_sort_key(s) for s in items), (
+            group, items,
+        )
 
 
 # --------------------------------------------------------------------------- #

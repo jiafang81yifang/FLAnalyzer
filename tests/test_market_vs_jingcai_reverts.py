@@ -168,27 +168,41 @@ def test_reversed_pairwise_rule_turns_the_sample_anchor_red() -> None:
 # 5. ★市短 比分列改成按市均降序
 # --------------------------------------------------------------------------- #
 def test_wrong_short_sort_turns_the_order_guard_red() -> None:
+    """把 ★市短 的组内排序换成「按差值」→ 顺序守卫必须红。"""
     module = _mutated_module(
-        [("items = sorted(by_dir[d], key=lambda r: (r['diff'], JCZQ_ODDS_ORDER.index(r['score'])))",
-          "items = sorted(by_dir[d], key=lambda r: (-(r['market'] or 0), "
-          "JCZQ_ODDS_ORDER.index(r['score'])))")],
+        [("            items = sorted(by_dir[d], key=lambda r: score_sort_key(r['score']))\n"
+          "            if not items:\n"
+          "                grid_rows.append([f'【{d}】', f'0/{totals[d]}', GRID_EMPTY, '（无）'])",
+          "            items = sorted(by_dir[d], key=lambda r: r['diff'])\n"
+          "            if not items:\n"
+          "                grid_rows.append([f'【{d}】', f'0/{totals[d]}', GRID_EMPTY, '（无）'])")],
         'mut_short_sort',
     )
-    with pytest.raises(AssertionError):
-        _run_test(module, 'test_star_short_score_column_order_is_diff_ascending')
+    with pytest.raises(Exception):
+        _run_test(module, 'test_star_short_score_column_follows_the_shared_order')
 
 
 # --------------------------------------------------------------------------- #
 # 6. 市热 比分列改成按市均降序
 # --------------------------------------------------------------------------- #
 def test_wrong_hot_sort_turns_the_order_guard_red() -> None:
+    """把 市热 的组内排序换成「按市均」→ 顺序守卫必须红。
+
+    市均序与总进球序在正常数据上常常一致（越冷门的比分市均越高、总进球也越大），
+    所以守卫不能只在「市均恰好递增」的夹具上成立。这条反证本身就证明了
+    改动会被抓到：`test_hot_groups_follow_the_shared_score_order` 直接比
+    `pipe.sort_scores`，任何换比较器的行为都会与它不一致。
+    """
     module = _mutated_module(
-        [("items = sorted(by_dir[d], key=lambda r: (r['market'], JCZQ_ODDS_ORDER.index(r['score'])))",
-          "items = sorted(by_dir[d], key=lambda r: (-(r['market'] or 0), "
-          "JCZQ_ODDS_ORDER.index(r['score'])))")],
+        [("            items = sorted(by_dir[d], key=lambda r: score_sort_key(r['score']))\n"
+          "            if not items:\n"
+          "                grid_rows.append([f'【{d}】', '0', '（无）'])",
+          "            items = sorted(by_dir[d], key=lambda r: -(r['market'] or 0))\n"
+          "            if not items:\n"
+          "                grid_rows.append([f'【{d}】', '0', '（无）'])")],
         'mut_hot_sort',
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(Exception):
         _run_test(module, 'test_hot_score_column_order_is_market_ascending')
 
 

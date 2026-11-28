@@ -72,6 +72,48 @@ GRID_SEP = '|'
 #: 空单元格标记。是「无」，不是 0，绝不填数值。
 GRID_EMPTY = '—'
 
+#: 三个「其它」汇总格。它们没有主客进球数，排序时一律排该组末位。
+SUMMARY_SCORES: tuple[str, ...] = ('胜其它', '平其它', '负其它')
+
+#: 末位排序哨兵：比任何真实总进球都大。
+_LAST_SENTINEL = 10 ** 6
+
+
+def score_sort_key(score: Any) -> tuple[int, int, int]:
+    """比分的展示序：**总进球升序 → 净胜球升序 → 「XX其它」末位**。
+
+    这是全仓**唯一**一处「组内按什么顺序排」的定义。★市短 / 市热 /
+    市均***竞彩对比表 / 冷门窗口都调它，不再各写一份比较器。
+
+    规则（用户 2026-11-28 确认，五组样本+排除法验到唯一解）：
+
+      1. 总进球升序（0-0 在最前，5-2 / 4-3 这种大比分在后）；
+      2. 同总进球时按净胜球（主 − 客）升序，即「让球更彻底」的在前：
+         3 球里 `0-3`(净−3) 在 `1-2`(净−1) 前；4 球里 `0-4`(净−4) 在
+         `1-3`(净−2) 前；
+      3. `胜其它` / `平其它` / `负其它` 三个汇总格没有主客进球数，
+         一律排该组末位。
+
+    **样本里唯一对不上的一处**：市热负组的样本把 `1-3` 写在 `0-4` 前面。
+    那是用户把 `0-4` 的总进球误算成 5（4+0→以为是 5）的结果——按 5 球算，
+    整组立刻与样本逐字一致，且这是唯一能解释该处的假设。按规则、用正确的
+    4 球，`0-4` 在前。**不为单个样本的算术错误在代码里开特例。**
+    """
+    text = _norm_score(score)
+    if text in SUMMARY_SCORES:
+        return (_LAST_SENTINEL, _LAST_SENTINEL, _LAST_SENTINEL)
+    match = re.match(r'^\s*(\d+)\s*-\s*(\d+)\s*$', text)
+    if not match:
+        # 认不出的写法（脏数据）也不许抛：排末尾并保持稳定。
+        return (_LAST_SENTINEL, _LAST_SENTINEL, _LAST_SENTINEL + 1)
+    home, away = int(match.group(1)), int(match.group(2))
+    return (home + away, home - away, 0)
+
+
+def sort_scores(scores: Any) -> list[str]:
+    """把一组比分按 `score_sort_key` 排好。稳定排序，空输入给空 list。"""
+    return sorted((str(s) for s in (scores or ())), key=score_sort_key)
+
 
 def _cell_fit(text: Any, width: int, align: str) -> str:
     """把一格内容按显示宽度填到固定宽度。放不下就抛错，**绝不截断**。
@@ -1844,7 +1886,10 @@ class DeepSeekAnalyzer:
         abs_means: dict[str, float] = {}
         grid_rows: list[list[str]] = []
         for d in ('胜', '平', '负'):
-            items = sorted(by_dir[d], key=lambda r: (r['diff'], JCZQ_ODDS_ORDER.index(r['score'])))
+            # 顺序走共用规则（总进球升序 → 净胜球升序 → 其它末位）。
+            # 这里曾经各写一份 `sorted(..., r['diff'])`，与 ★市短 / 冷门窗口
+            # 分叉：同一个比分在两段里顺序不同，且「其它」会跑到组首。
+            items = sorted(by_dir[d], key=lambda r: score_sort_key(r['score']))
             if not items:
                 grid_rows.append([f'【{d}】', f'0/{totals[d]}', GRID_EMPTY, '（无）'])
                 continue
@@ -2001,19 +2046,12 @@ class DeepSeekAnalyzer:
                 f'头向【{lead["direction"]}】（{lead["count"]}/{lead["total"]}{tie}）'
             )
 
-        def _ordered(items: list[dict[str, Any]], *, descending: bool) -> list[str]:
-            """组内排序：市热按差降序、市短按差升序。两把尺子，不共用一个比较器。
+        def _ordered(items: list[dict[str, Any]]) -> list[str]:
+            """组内排序：三向各自按 `score_sort_key` 排。
 
-            **同差时的次序**：按 `JCZQ_ODDS_ORDER`（31 项阅读顺序）兜底。
-
-            已知与用户样本不一致，且已查证：样本「市热比分」负向是
-            `0-2/0-3/1-2/1-3/0-4/1-4/2-3/负其它`，其**总进球数严格单调**
-            2→3→3→4→4→5→5→7；而顺序表给的是
-            `0-2/0-3/0-4/1-2/1-3/1-4/2-3/负其它`（在 `0-4` 处回退，顺序表下标
-            19,20,23,24,21,25,27,30）。所以样本同差时的次序另有来源——
-            最像是「总进球数，再按同进球内的字母序」，但没有第二份真实同差
-            数据可验，**不据一个样本反推排序规则**。这里保持确定性的顺序表兜底，
-            并在报告里把这条列为待用户确认项。
+            顺序由 `score_sort_key` 统一定义（总进球升序 → 净胜球升序 →
+            「XX其它」末位），**不再按差值、也不再按阅读顺序兜底**。
+            用户 2026-11-28 明确指出：先前「按 市均−竞彩 升序」的指令是错的。
             """
             by_dir: dict[str, list[dict[str, Any]]] = {d: [] for d in ('胜', '平', '负')}
             for row in items:
@@ -2021,18 +2059,11 @@ class DeepSeekAnalyzer:
                     by_dir[row['wdl']].append(row)
             out: list[str] = []
             for d in ('胜', '平', '负'):
-                group = sorted(
-                    by_dir[d],
-                    key=lambda r: (
-                        -r['diff'] if descending else r['diff'],
-                        JCZQ_ODDS_ORDER.index(r['score']),
-                    ),
-                )
-                out.extend(str(r['score']) for r in group)
+                out.extend(sort_scores(str(r['score']) for r in by_dir[d]))
             return out
 
-        hot_seq = _ordered(hot, descending=True)
-        short_seq = _ordered(short, descending=False)
+        hot_seq = _ordered(hot)
+        short_seq = _ordered(short)
         only_hot = [s for s in hot_seq if s not in short_scores]
         only_short = [s for s in short_seq if s not in hot_scores]
 
@@ -2158,7 +2189,7 @@ class DeepSeekAnalyzer:
         lines.append(' 计数：' + ' '.join(f'{d}{len(by_dir[d])}' for d in ('胜', '平', '负')))
         grid_rows: list[list[str]] = []
         for d in ('胜', '平', '负'):
-            items = sorted(by_dir[d], key=lambda r: (r['market'], JCZQ_ODDS_ORDER.index(r['score'])))
+            items = sorted(by_dir[d], key=lambda r: score_sort_key(r['score']))
             if not items:
                 grid_rows.append([f'【{d}】', '0', '（无）'])
                 continue

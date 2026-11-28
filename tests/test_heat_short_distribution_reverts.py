@@ -97,14 +97,19 @@ def test_keeping_summary_buckets_turns_the_guard_red() -> None:
 # --------------------------------------------------------------------------- #
 # 4. 市热组内排序改成升序
 # --------------------------------------------------------------------------- #
-def test_hot_ascending_sort_turns_the_guard_red() -> None:
+def test_reading_order_instead_of_the_shared_rule_turns_the_guard_red() -> None:
+    """把组内排序换回阅读顺序 → 共用规则守卫必须红。
+
+    这是用户明确作废的旧实现之一（另一处是「按差值」）。
+    """
     module = _mutated(
-        [("        hot_seq = _ordered(hot, descending=True)",
-          "        hot_seq = _ordered(hot, descending=False)")],
-        'mut_hot_asc',
+        [("                out.extend(sort_scores(str(r['score']) for r in by_dir[d]))",
+          "                out.extend(str(r['score']) for r in sorted("
+          "by_dir[d], key=lambda r: JCZQ_ODDS_ORDER.index(str(r['score']))))")],
+        'mut_reading_order',
     )
     with pytest.raises(AssertionError):
-        _run(module, 'test_hot_groups_are_sorted_by_diff_descending')
+        _run(module, 'test_hot_groups_follow_the_shared_score_order')
 
 
 # --------------------------------------------------------------------------- #

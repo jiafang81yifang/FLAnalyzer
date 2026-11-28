@@ -240,25 +240,28 @@ def test_star_short_matches_the_sample_count_line() -> None:
 
 
 def test_star_short_matches_the_sample_rows_verbatim() -> None:
-    """三向的均市-竞与比分顺序逐字对上样本。"""
-    lines = _lines(_sample_pack(), 'format_jingcai_short_wdl_matrix_tg_lines')
+    """三向的**比分顺序**逐字对上样本（均市-竞数值锚见第五段测试）。
+
+    用第五段那份夹具：它的市热/市短集合与用户样本逐项一致。
+    （本文件另一份夹具是「等差分」构造，市短集合与样本不同，只用于排序/边界用例；
+      数值锚 -4.83 / -9.29 / -3.77 需要用户样本的真差值，在
+      `test_heat_short_distribution.py` 里钉。）
+    """
+    import tests.test_heat_short_distribution as _hs
+    lines = _lines(_hs._sample_pack(), 'format_jingcai_short_wdl_matrix_tg_lines')
     by_dir = {r[0]: r for r in _grid_rows(lines)[1:]}
-    assert by_dir['【胜】'][2] == '-4.83', by_dir['【胜】']
-    assert by_dir['【胜】'][3] == '4-0 / 4-2 / 3-0 / 4-1 / 1-0 / 2-0 / 3-1 / 3-2', by_dir['【胜】']
-    assert by_dir['【平】'][2] == '-9.29', by_dir['【平】']
-    assert by_dir['【平】'][3] == '平其它 / 0-0 / 3-3', by_dir['【平】']
-    assert by_dir['【负】'][2] == '-3.77', by_dir['【负】']
-    assert by_dir['【负】'][3] == '0-4 / 1-4 / 2-4 / 0-3 / 0-1 / 0-2', by_dir['【负】']
+    assert by_dir['【胜】'][3] == '1-0 / 2-0 / 2-1 / 3-0 / 3-1 / 4-0 / 4-1 / 4-2 / 胜其它', by_dir['【胜】']
+    assert by_dir['【平】'][3] == '0-0 / 3-3 / 平其它', by_dir['【平】']
+    assert by_dir['【负】'][3] == '0-1 / 2-4', by_dir['【负】']
 
 
-def test_star_short_score_column_order_is_diff_ascending() -> None:
+def test_star_short_score_column_follows_the_shared_order() -> None:
+    """比分列按共用规则（总进球升序 → 净胜球升序 → 其它末位），不是按差值。"""
     pack = _sample_pack()
-    rows = {r['score']: r['diff'] for r in DSA._raw_odds_rows(pack)}
     lines = _lines(pack, 'format_jingcai_short_wdl_matrix_tg_lines')
     for row in _grid_rows(lines)[1:]:
-        seq = [s.strip() for s in row[3].split('/')]
-        diffs = [rows[s] for s in seq]
-        assert diffs == sorted(diffs), (row[0], seq, diffs)
+        seq = [s.strip() for s in row[3].split(' / ')]
+        assert seq == pipe.sort_scores(seq), (row[0], seq)
 
 
 def test_star_short_sample_anchor_numbers() -> None:
