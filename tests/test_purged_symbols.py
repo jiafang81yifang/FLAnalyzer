@@ -15,11 +15,13 @@ test that recomputed it could not notice a name being re-added.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib
 import inspect
 import io
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -75,6 +77,8 @@ PURGED = (
     'EUROPA_TOPOLOGY_DB_FILE',
     # the only two users of these were the unread daily-learning files
     'REPORTS_DIR',
+    # dead since #28 deleted the mark_* call block; definition-only, zero callers
+    'settle_display_score_pair',
 )
 
 
@@ -126,6 +130,70 @@ def test_embedded_payload_does_not_reintroduce_a_purged_name() -> None:
     payload = app_src[start:end]
     for name in PURGED:
         assert f'def {name}(' not in payload, f'embedded payload defines purged {name}'
+
+
+def test_purged_names_are_absent_from_both_side_and_embedded_source() -> None:
+    """Same guard, one step earlier: the *sibling* module files may not define them either.
+
+    The embedded block is generated, so until someone reruns
+    `scripts/build_single_file.py` it can lag the sibling file. Asserting on the sources
+    too means re-adding a purged function goes red on the same run, not on the next build.
+
+    Counter-proof: put `def settle_display_score_pair(` back into
+    `blade_deepseek_pipeline.py` without rebuilding →
+    `test_purged_symbols.py::test_purged_names_are_absent_from_both_side_and_embedded_source`
+    fails naming that module.
+    """
+    siblings = sorted({*_embedded_module_names(), 'blade_deepseek_pipeline.py'})
+    for module_file in siblings:
+        path = ROOT / module_file
+        source = path.read_text(encoding='utf-8')
+        for name in PURGED:
+            assert f'def {name}(' not in source, f'{module_file} defines purged {name}'
+
+
+def _embedded_module_names() -> list[str]:
+    """Read the module list the build script embeds, instead of hardcoding it again."""
+    script = (ROOT / 'scripts' / 'build_single_file.py').read_text(encoding='utf-8')
+    match = re.search(r'MODULES = \[(.*?)\]', script, re.S)
+    assert match, 'build_single_file.py MODULES list not found'
+    return [f'{name}.py' for name in re.findall(r"'([^']+)'", match.group(1))]
+
+
+def test_settle_display_score_pair_has_no_surviving_caller() -> None:
+    """The purge is only safe while nothing calls it — including by string dispatch.
+
+    `rg -n "settle_display_score_pair"` used to show two hits: the definition and the
+    embedded `_sources` copy. Both are gone; this asserts no *reference* ever returns.
+
+    Parsed with `ast`, not grepped: a bare substring scan counts this guard's own
+    `PURGED` entry and its docstring as offenders. Only a parsed `ast.Name` (a real
+    identifier use) or `ast.Attribute` (a `pipe.settle_display_score_pair` use) counts,
+    so a dynamically-built name (`getattr(pipe, 'settle_' + 'display_score_pair')`) still
+    shows up as a string constant and is checked separately below.
+    """
+    target = 'settle_display_score_pair'
+    offenders: list[str] = []
+    for path in ROOT.rglob('*.py'):
+        if any(part in {'.git', 'node_modules', 'dist'} for part in path.parts):
+            continue
+        if path == Path(__file__).resolve():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == target:
+                offenders.append(f'{path.relative_to(ROOT)}:{node.lineno}: {target}')
+            elif isinstance(node, ast.Attribute) and node.attr == target:
+                offenders.append(f'{path.relative_to(ROOT)}:{node.lineno}: .{target}')
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if 'settle_display' in node.value:
+                    offenders.append(
+                        f'{path.relative_to(ROOT)}:{node.lineno}: string {node.value!r}'
+                    )
+    assert not offenders, f'{target} still referenced: {offenders}'
 
 
 def test_report_generator_guard_survives_its_deletion() -> None:
