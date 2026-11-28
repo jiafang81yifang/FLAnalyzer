@@ -120,6 +120,10 @@ def _emit(rec: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 
     monkeypatch.setattr(app, 'HISTORY_FILE', str(tmp_path / 'match_history.json'))
     monkeypatch.setattr(app, '_ensure_mobile_six', lambda *a, **k: False)
+    # 闸门钉成「未开赛」：这里测的是「闸门通过后正文有没有被渲染/推送」，
+    # 不是闸门本身。不打桩时 `time` 里写死的日期一过，真实 `datetime.now()` 就会
+    # 判「已开赛」并把整场跳过，测试于是在某个日期之后自己变红。
+    monkeypatch.setattr(app, 'is_history_match_not_started', lambda *a, **k: True)
     # Return False: "nothing was enriched", so the emit path keeps the bundle we
     # prebuilt. Returning True makes it pop the bundle and re-scrape the network.
     monkeypatch.setattr(app, 'enrich_history_okooo_cs_facts', lambda *a, **k: False)

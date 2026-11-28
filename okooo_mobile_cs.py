@@ -34,9 +34,27 @@ def _cache_path(kind: str, match_id: Any) -> Path:
     return _cache_dir() / f'{kind}_{_safe_id(match_id)}.json'
 
 
-def _proxy_dict(proxies: Any = None) -> dict[str, str] | None:
+def _proxy_dict(proxies: Any = None) -> dict[str, Any] | None:
+    """把路由对象翻成 requests 的 `proxies=` 参数。
+
+    两种语义**不能合并**：
+
+      * `proxies=None`  —— 未指定。这里的既有行为是「读环境变量挑一个代理」，
+        返回 `None` 表示交给 requests 走它自己的环境合并；
+      * 显式直连 —— `{'http': None, 'https': None}`。它的 `None` 值在 requests 里
+        表示「这一路不走代理」，是这个意思的唯一写法。
+
+    历史缺陷：这里曾用 `{k: v for k, v in proxies.items() if isinstance(v, str) and v}`
+    过滤 dict，`None` 不是 `str` 所以被抹掉 → 返回 `{}`。而 requests 里
+    `proxies={}` 的语义是「我没指定，去合并环境变量」，**不是**直连。于是
+    `_DIRECT_PROXIES` 与 `OKOOO_ROUTE=direct` 这两条本该绕开代理的路，在环境里
+    设了 `HTTPS_PROXY` 时依然走代理，日志里也看不出差异。
+
+    现在 dict 形状原样保留（含 `None` 值），只有非 dict 的老式入参才去读环境。
+    """
     if isinstance(proxies, dict):
-        return {k: v for k, v in proxies.items() if isinstance(v, str) and v}
+        # 原样保留：`{'http': None}` 是 requests 表达「显式直连」的写法。
+        return dict(proxies)
     proxy = str(
         proxies
         or os.environ.get('OKOOO_PROXY')
@@ -47,12 +65,28 @@ def _proxy_dict(proxies: Any = None) -> dict[str, str] | None:
     return {'http': proxy, 'https': proxy} if proxy else None
 
 
+_DIRECT_PROXIES: dict[str, None] = {'http': None, 'https': None}
+
+# requests 合并环境后会把这些键放进 `proxies` 字典。只有前三个**真正参与转发**：
+#   http / https / all  —— 代理地址
+#   no / no_proxy       —— 排除规则（`NO_PROXY`），**不是代理**
+# 历史缺陷：`_effective_proxies` 曾把「任何非空 value 都算代理」，于是 app 启动时无条件
+# 设置的 `NO_PROXY=localhost,127.0.0.1,::1` 被当成了一个代理地址，`_route_label` 打出
+# `proxy localhost,127.0.0.1,::1`——而这一轮其实是直连。这条日志在**所有**运行里都是假的。
+_FORWARDING_PROXY_KEYS = ('http', 'https', 'all')
+_NON_PROXY_KEYS = ('no', 'no_proxy')
+
+
 def _effective_proxies(proxies: Any = None) -> dict[str, str]:
-    """按 requests 自己的合并规则，算出这一轮真正生效的代理。
+    """按 requests 自己的合并规则，算出这一轮真正生效的**转发代理**。
 
     不能用 `_proxy_dict(proxies)` 的结果当结论：`proxies={}` 在 requests 里表示
     「我没指定，去合并环境变量」，和「直连」不是一回事。只有走
     `Session.merge_environment_settings` 才能拿到最终口径，所以这里直接问它。
+
+    但合并结果里**混着排除规则**：`NO_PROXY` 会以 `no` 键出现。它不是代理，
+    所以这里只保留真正参与转发的键（`http` / `https` / `all`）且值非空的项。
+    否则「直连」会被标成 `proxy localhost,127.0.0.1,::1`。
     """
     try:
         merged = requests.Session().merge_environment_settings(
@@ -61,14 +95,28 @@ def _effective_proxies(proxies: Any = None) -> dict[str, str]:
     except Exception:  # noqa: BLE001 - 只是日志口径，取不到就如实说不知道
         return {}
     raw = merged.get('proxies') if isinstance(merged, dict) else None
-    return {str(k): str(v) for k, v in (raw or {}).items() if v}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key).strip().lower()
+        if name in _NON_PROXY_KEYS:
+            # 排除规则，不是出口。`NO_PROXY` 的存在不改变这一轮走不走代理。
+            continue
+        if name not in _FORWARDING_PROXY_KEYS:
+            # 未登记的键不当成代理：宁可少报，也不把 `no` 之类的元数据说成出口。
+            continue
+        if value:
+            out[name] = str(value)
+    return out
 
 
 def _route_label(proxies: Any = None) -> str:
     """这一轮实际的出口类型，供日志与不可用原因引用。
 
     `direct` 表示 requests 合并后没有任何代理；否则把代理地址写出来。
-    用户排障时最需要的就是这一行：到底走的是代理还是直连。
+    用户排障时最需要的就是这一行：到底走的是代理还是直连。判据只有
+    `_effective_proxies`（requests 自己的合并结果），不另写一套猜测。
     """
     effective = _effective_proxies(proxies)
     if not effective:
@@ -224,8 +272,18 @@ def _referers_for(url: str) -> list[str]:
 def _warm_session(proxies: Any = None, mobile: bool = False, referer: str | None = None) -> Any:
     """建一个带站点 cookie 的会话。
 
-    澳客对没有 cookie 的直连请求直接回 405/403（阿里云 WAF 拦截页），
-    先用会话访问一个正常页拿到 cookie，再抓详情页就正常。
+    澳客对没有 cookie 的请求可能回 405/403（阿里云 WAF 拦截页）；先用会话访问一个
+    正常页拿到 cookie，再抓详情页才有机会正常。
+
+    **这条路径此前是死代码**：`_fetch_detail` 只在「`transport_error` 且
+    `retries >= 2`」时才调它，而全部 13 个调用点都传 `retries=1`（`range(0)` 空循环），
+    405 又会被 `origin_blocked` 排除掉。于是文档承诺的 cookie 预热一次都没发生过。
+    现在 `_fetch_detail` 在 200 之外的第一次失败后会真的建一次会话并**在同一个 session
+    上重发一次**（每来源最多「无 cookie 1 次 + 有 cookie 1 次」）。
+
+    对照：`okooo_jczq_scraper` 那条链一直是有预热的
+    （`fetch_match_list` 与 `_thread_session` 都走这里），这也是同一台机器上
+    `/jczq/` 能 200 而 `/cs/` 405 的一个结构性差异——两条链的会话初始化方式不同。
     """
     try:
         sess = requests.Session()
@@ -351,20 +409,20 @@ def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: i
     返回 {ok, url, status, bytes, title, blocked, error, html, encoding, referer}
     外加缓存证据 `origin_blocked` / `cache_hit` / `age` / `x_cache_status` / `server`。
 
-    **`origin_blocked` 只有在 `_referers_for` 的候选全部试过之后才成立。**
-    桌面波胆页的现实（仓库 `_referers_for` 文档记载的现场核对）：首页作 Referer 是
-    405，换成同场次页/`/odds/` 是 200。两种 405 的响应体一模一样（都是那句
-    `your request has been blocked`），所以**只看响应体无法区分「Referer 不对」和
-    「出口 IP 被拦」**，必须先沿候选把 Referer 换完：
-      * 换 Referer 后能成功 → 这是可恢复错误，绝不能被判成终态；
-      * 全部候选都 405 → 才是源站按出口 IP 拦截。
-    有界性：桌面页通常 2 个候选、手机页 1 个，所以最多 2 次往返，不会无限重试。
-    过程中**不换 UA、不换 session、不改 URL**，只沿 `_referers_for` 的顺序换 Referer。
+    尝试结构（有界，每来源最多 3 次往返）：
+      1. 沿 `_referers_for` 的候选逐个试一次 Referer（桌面页 2 个、手机页 1 个）；
+      2. 全部失败后**真的建一次带 cookie 的会话**（`_warm_session`）并在**同一个
+         session 上**把最后一个 Referer 重发一次；
+      3. 若这次是传输错误（超时/5xx）且 `retries >= 2`，再按 `retries` 退避重试。
 
-    真正的 IP 拦截（全部候选都 405）也不再重试：2026-11-26 逐条实测证明客户端侧
-    全部无效（TLS 指纹、真实 Chrome CDP、Googlebot UA、随机 query、双 A 记录直连、
-    POST/HEAD/OPTIONS、带 acw_tc cookie、第三方 r.jina.ai 出口，都是同一个拦截页）。
-    返回里带 `referers_tried`，日志能看出试过哪些、不是一次就放弃。
+    第 2 步是这次补上的：以前它藏在「`transport_error` 且 `retries >= 2`」的条件里，
+    而全部 13 个调用点都传 `retries=1`，405 又被 `origin_blocked` 排除，所以
+    `_warm_session` 在生产路径上**一次都没被调用过**——文档承诺的 cookie 预热是死代码。
+
+    **`origin_blocked` 只描述「这一次 HTTP 往返看到了什么」**，不描述「这台机器是不是
+    被源站整体拦掉」。后者只能由同出口探针（`_canary_probe`）判定：两种 405 的响应体
+    一模一样（都是 `your request has been blocked`），只看响应体无法区分「Referer/
+    路径不对」与「出口被拦」。返回里带 `referers_tried` / `warm_session_used`。
     """
     is_mobile = 'm.okooo.com' in url
     referers = _referers_for(url) or [_WARMUP_URL]
@@ -385,21 +443,50 @@ def _fetch_detail(url: str, proxies: Any = None, session: Any = None, retries: i
         last_error = str(info.get('error') or 'empty response')
         tried.append(f'{referer} → {last_error}')
         if info['origin_blocked']:
-            # 这个 Referer 被拦：先别下结论，换下一个候选；全部试完才算 IP 拦截。
+            # 这个 Referer 被拦：先别下结论，换下一个候选。
             continue
         if not info.get('transport_error') and 400 <= int(info['status']) < 500:
             # 非 WAF 的 4xx（404 等）：换 Referer 也不会让页面回来，直接返回。
             break
         time.sleep(min(3, 2 ** len(referers_tried)))
-    # 非 WAF 的可重试错误（超时/5xx）再按 retries 走退避；IP 拦截不再重试。
-    if not info.get('ok') and not info.get('origin_blocked') and info.get('transport_error'):
+
+    # ② cookie 预热：这一次必须真的发生。只在还没有可用 session 时才建，
+    #    复用的是**调用方给的 session**（同一条出口、同一份 cookie 罐）。
+    warm_info: dict[str, Any] = {}
+    if not info.get('ok') and active_session is None and referers_tried:
+        active_session = _warm_session(
+            proxies, mobile=is_mobile, referer=referers_tried[-1],
+        )
+        info['warm_session_used'] = True
+        warm_info = _http_attempt(
+            url, proxies=proxies, session=active_session,
+            referer=referers_tried[-1], timeout=timeout,
+        )
+        warm_info['referers_tried'] = list(referers_tried)
+        warm_info['warm_session_used'] = True
+        info['cookie_retry'] = {
+            'status': int(warm_info.get('status') or 0),
+            'blocked': bool(warm_info.get('blocked')),
+            'origin_blocked': bool(warm_info.get('origin_blocked')),
+            'cache_hit': bool(warm_info.get('cache_hit')),
+            'transport_error': str(warm_info.get('transport_error') or ''),
+        }
+        if warm_info.get('ok'):
+            warm_info['error'] = ''
+            return warm_info
+        last_error = str(warm_info.get('error') or 'empty response')
+        tried.append(f'cookie-session → {last_error}')
+        info = dict(warm_info, cookie_retry=info.get('cookie_retry'))
+
+    # ③ 传输错误才继续按 retries 退避；WAF/4xx 不再重试。
+    if not info.get('ok') and info.get('transport_error'):
         for attempt in range(max(0, max(1, retries) - 1)):
             active_session = active_session or _warm_session(
-                proxies, mobile=is_mobile, referer=referers_tried[-1],
+                proxies, mobile=is_mobile, referer=referers_tried[-1] if referers_tried else None,
             )
             info = _http_attempt(
                 url, proxies=proxies, session=active_session,
-                referer=referers_tried[-1], timeout=timeout,
+                referer=referers_tried[-1] if referers_tried else _WARMUP_URL, timeout=timeout,
             )
             info['referers_tried'] = list(referers_tried)
             if info['ok']:
