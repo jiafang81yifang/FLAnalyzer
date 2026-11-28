@@ -3095,6 +3095,14 @@ def _contradiction_store(match_id: Any = None) -> Path:
 
 
 def save_six_market_contradictions(match_id_or_items: Any, items: Any = None) -> bool:
+    """落盘对账缺口。
+
+    两种载荷都必须能落盘：
+      * 列表（旧调用形状）：只写矛盾项；
+      * dict（带检测状态）：额外写出 `detected` / `block_reason` / `gaps`，
+        这样下游读文件时能区分「检测过、没矛盾」与「没抓到、没检测」——
+        只写一个空列表会让两者长得一模一样，正是「0 条」被当成「没问题」的根因。
+    """
     match_id = None if items is None else match_id_or_items
     payload = match_id_or_items if items is None else items
     path = _contradiction_store(match_id)
@@ -3128,3 +3136,35 @@ def load_six_market_contradictions(match_id: Any = None) -> list[Any]:
         print(f"   ℹ️ [澳客手机CS] 对账缺口文件不可读，按空处理: {path.name} ({type(exc).__name__})")
         return []
     return data if isinstance(data, list) else []
+
+
+def load_six_market_contradiction_status(match_id: Any = None) -> dict[str, Any]:
+    """读取某场的对账缺口**状态**（区分「检测过没矛盾」与「没抓到没检测」）。
+
+    落盘格式有两种：旧版是裸列表（只有矛盾项），新版是带
+    `detected` / `block_reason` / `gaps` 的 dict。裸列表无法区分那两种情形，
+    所以这里如实返回 `detected=None`（未知），而不是替它猜一个 False 或 True。
+    """
+    path = _contradiction_store(match_id)
+    if not path.exists():
+        return {'detected': None, 'blocked': None, 'block_reason': '',
+                'gaps': [], 'count': 0, 'contradictions': [], 'source': 'absent'}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {'detected': None, 'blocked': None, 'block_reason': '',
+                'gaps': [], 'count': 0, 'contradictions': [], 'source': 'unreadable'}
+    if isinstance(data, dict):
+        out = dict(data)
+        out['source'] = 'status'
+        items = out.get('contradictions')
+        out['contradictions'] = items if isinstance(items, list) else []
+        out.setdefault('count', len(out['contradictions']))
+        out.setdefault('gaps', [])
+        return out
+    if isinstance(data, list):
+        return {'detected': None, 'blocked': None, 'block_reason': '',
+                'gaps': [], 'count': len(data), 'contradictions': data,
+                'source': 'legacy_list'}
+    return {'detected': None, 'blocked': None, 'block_reason': '',
+            'gaps': [], 'count': 0, 'contradictions': [], 'source': 'unknown'}
