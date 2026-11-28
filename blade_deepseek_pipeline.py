@@ -2626,11 +2626,13 @@ class DeepSeekAnalyzer:
 
         # 4b) 0球~7+ 均赔/比分表：必须排在 31 项表与市短/市热之后、研判正文之前。
         #     缺数据时调用方传的是「未形成（原因）」那一行，不会静默消失。
+        #     表固定两页（0~3 球 / 4~7+），这里用 `\x0c` 强制分页：两页各自
+        #     独立成条，否则 send_tg 重切时第 1 页的尾巴会和第 2 页表头挤在一起。
         _goal_lines = _as_lines(kwargs.get('goal_table_tg_lines'))
         if not _goal_lines and isinstance(payload, dict):
             _goal_lines = _as_lines(payload.get('goal_table_tg_lines'))
         if _goal_lines:
-            sections.append('\n'.join(_goal_lines))
+            sections.append('\x0c'.join(_goal_lines))
 
         # 4b2) 市均前15·进球赔率矩阵：两页网格，等宽对齐。
         #      与上面那张 0球~7+ 表不同：那张按总进球盘口给均赔，这张按

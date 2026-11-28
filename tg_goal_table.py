@@ -17,10 +17,11 @@
        「赔率保留≤2位小数」，不让读者误以为看到的是 1 位小数的数。
     D3 7 个键缺任一个 -> 抛 ``GoalTableDataError``（ValueError 子类），不再静默整
        行变 "-"。单个单元格是 "-"/""/None 仍渲染 "-"，那是「无该比分」。
-    D4 Telegram 单条 4096 字符上限：``build_telegram_goal_table`` 保持单条字符串，
-       超限抛 ``GoalTableTooLongError``（docstring 已写明）；要发超长表用
-       ``build_telegram_goal_table_messages``，按行切分、每块重挂表头与 ``<pre>``
-       包装，单行永不劈开。
+    D4 Telegram 单条 4096 字符上限：``build_telegram_goal_table`` 保持 8 列单条
+       字符串，超限抛 ``GoalTableTooLongError``（docstring 已写明）。对外发送改用
+       ``build_telegram_goal_table_messages``：**固定两页**（0~3 球 / 4~7+），一页
+       一条、每页各自重挂标题与表头，页内仍超长才按行再拆，单行永不劈开。
+       8 列整表与两页共用 ``_render_rows`` / ``_format_rows``，只按列切片。
     D5 本模块不发送任何东西：没有 token 参数、没有 HTTP 客户端导入、没有
        ``send_telegram_html``。发送由调用方现有通道（``_tg_post``/``send_tg``）负责，
        4xx 的 description 也由那条通道带出。
@@ -42,10 +43,21 @@ import html
 import math
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 COLS = ["0球", "1球", "2球", "3球", "4球", "5球", "6球", "7+"]
+
+# 固定两页，切分点与 score_matrices.GOAL_MATRIX_PAGE_SPECS 一致：
+# 第 1 页 0~3 球，第 2 页 4/5/6/7+。**不按长度自动决定**——列多时 8 列一条
+# 在手机上必然横向溢出，永远两页是版式契约，不是长度启发式。
+PAGE_SPECS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (1, ("0球", "1球", "2球", "3球")),
+    (2, ("4球", "5球", "6球", "7+")),
+)
+PAGE_TOTAL = len(PAGE_SPECS)
+
+DEFAULT_TITLE = "⚽【0球~7+ 均赔/比分表】"
 
 DATA_KEYS = (
     "avg",
@@ -186,20 +198,29 @@ def _cell_text(raw: Any, is_odds: bool, compact: bool) -> str:
 
 
 # --------------------------------------------------------------------- 渲染
-def build_goal_table_lines(data: Any, compact: bool = False) -> list[str]:
-    """渲染为纯文本行（表头 + 7 行）；每行去掉尾随空格后显示列宽完全相等。"""
-    valid = validate_goal_table_data(data)
+def _render_rows(valid: Mapping[str, Mapping[Any, Any]], columns: Iterable[str],
+                 compact: bool) -> list[tuple[str, list[str]]]:
+    """按给定列切片构造 (行标签, 单元格文本) —— 8 列整表与每页都走这一份代码。"""
+    cols = list(columns)
     built: list[tuple[str, list[str]]] = []
     for label, key, is_odds in ROW_DEFS:
         src = valid[key]
         built.append(
-            (label, [_cell_text(src.get(col, "-"), is_odds, compact) for col in COLS])
+            (label, [_cell_text(src.get(col, "-"), is_odds, compact) for col in cols])
         )
+    return built
 
+
+def _format_rows(columns: Iterable[str], built: list[tuple[str, list[str]]]) -> list[str]:
+    """给一份已构造好的行挂表头并按**本份列**独立算列宽，返回等宽行列表。
+
+    列宽只由传入的 `columns` 决定，所以第 2 页不会继承第 1 页某列被撑开的宽度。
+    """
+    cols = list(columns)
     first_width = max(display_width("项"), *(display_width(lbl) for lbl, _ in built))
     col_widths = [
         max(display_width(col), *(display_width(cells[idx]) for _, cells in built))
-        for idx, col in enumerate(COLS)
+        for idx, col in enumerate(cols)
     ]
 
     def format_line(first_text: str, cells: Iterable[str]) -> str:
@@ -208,8 +229,38 @@ def build_goal_table_lines(data: Any, compact: bool = False) -> list[str]:
         # 不做 rstrip：行尾空格也是列宽的一部分，裁掉会让最后一列的行宽变短。
         return f"{head}|{body}"
 
-    return [format_line("项", COLS)] + [
+    return [format_line("项", cols)] + [
         format_line(label, cells) for label, cells in built
+    ]
+
+
+def build_goal_table_lines(data: Any, compact: bool = False) -> list[str]:
+    """渲染为**完整 8 列**纯文本行（表头 + 7 行）；每行显示列宽完全相等。"""
+    valid = validate_goal_table_data(data)
+    return _format_rows(COLS, _render_rows(valid, COLS, compact))
+
+
+def build_goal_table_page_lines(
+    data: Any, page_no: int, compact: bool = False
+) -> list[str]:
+    """渲染**某一页**（4 列）的纯文本行：本页自己的表头 + 7 个行标签。
+
+    `page_no` 取 1 或 2。本页列宽按本页 4 列独立计算，不受另一页影响——
+    第 1 页某格特别长时不会把第 2 页的列撑成同一宽度。
+    """
+    spec = {no: cols for no, cols in PAGE_SPECS}.get(int(page_no))
+    if spec is None:
+        raise ValueError(f"0球~7+ 表只有 {PAGE_TOTAL} 页，收到 page_no={page_no!r}")
+    valid = validate_goal_table_data(data)
+    return _format_rows(spec, _render_rows(valid, spec, compact))
+
+
+def build_goal_table_pages_lines(data: Any, compact: bool = False) -> list[list[str]]:
+    """两页的行列表，一页一项；顺序固定 0~3 球 → 4/5/6/7+。"""
+    valid = validate_goal_table_data(data)
+    return [
+        _format_rows(cols, _render_rows(valid, cols, compact))
+        for _no, cols in PAGE_SPECS
     ]
 
 
@@ -227,28 +278,32 @@ def _wrap_table_text(table_text: str, use_html_pre: bool) -> str:
 def build_telegram_goal_table(
     data: dict, compact: bool = False, use_html_pre: bool = True
 ) -> str:
-    """渲染成**单条** Telegram 消息（HTML ``<pre>`` 或 ```text 围栏）。
+    """渲染成**单条 8 列** Telegram 消息（HTML ``<pre>`` 或 ```text 围栏）。
 
     返回值永远是单条字符串。渲染后的最终文本超过 Telegram 4096 上限时抛
-    ``GoalTableTooLongError``——本函数不会静默截断，也不返回半张表。需要发超长
-    表请改用 ``build_telegram_goal_table_messages``（按行拆条）。
+    ``GoalTableTooLongError``——本函数不会静默截断，也不返回半张表。要发
+    固定两页请改用 ``build_telegram_goal_table_messages``（一页一条）。
     """
     message = _wrap_table_text(build_goal_table_text(data, compact=compact), use_html_pre)
     if len(message) > TELEGRAM_TEXT_LIMIT:
         raise GoalTableTooLongError(
             f"0球~7+ 表单条 {len(message)} 字符，超过 Telegram {TELEGRAM_TEXT_LIMIT} 上限；"
-            "请用 build_telegram_goal_table_messages 按行拆条发送"
+            "请用 build_telegram_goal_table_messages 按页发送"
         )
     return message
 
 
 def _chunk_rows(
-    header: str, rows: list[str], limit: int, use_html_pre: bool
+    header: str, rows: list[str], limit: int, renderer: Callable[[str], str]
 ) -> list[list[str]]:
-    """按行把 rows 切成若干块（表头另挂），单行装不下就抛错，绝不劈开一行。"""
+    """按行把 rows 切成若干块（表头另挂），单行装不下就抛错，绝不劈开一行。
+
+    ``renderer`` 把「表体纯文本」变成最终形态（HTML ``<pre>`` 或原样），
+    长度闸门按**渲染后**的长度算，所以两种形态共用这一份切分逻辑。
+    """
 
     def rendered_len(chunk: list[str]) -> int:
-        return len(_wrap_table_text("\n".join([header, *chunk]), use_html_pre))
+        return len(renderer("\n".join([header, *chunk])))
 
     if rendered_len(rows) <= limit:
         return [rows]
@@ -273,31 +328,120 @@ def _chunk_rows(
     return chunks
 
 
+def page_title(title: str, columns: Iterable[str], page_no: int) -> str:
+    """页码标题：原表名后只加「列范围 + 页码」，不改表名本身。"""
+    cols = list(columns)
+    return f"{title}{cols[0]}~{cols[-1]}（{page_no}/{PAGE_TOTAL}）"
+
+
+def render_page_block(body: str, use_html_pre: bool) -> str:
+    """页内表体：HTML 模式包 ``<pre>``，纯文本模式**直接给表体**。
+
+    纯文本不带任何围栏/语言标识——页与页之间只靠各自的页标题分隔，
+    所以本模块的纯文本输出不依赖围栏写法（``_wrap_table_text`` 的
+    纯文本分支另有在途改动，这里不去耦合它）。
+    """
+    if use_html_pre:
+        return f"<pre>{html.escape(body)}</pre>"
+    return body
+
+
+def _page_messages(
+    page_rows: list[str],
+    title_line: str,
+    note_lines: list[str],
+    limit: int,
+    use_html_pre: bool,
+) -> list[str]:
+    """一页 -> 1..n 条消息：页内仍超长时才按行兜底，每块重挂本页表头与页标题。
+
+    ``note_lines``（出处行 / 缺项说明）**只挂在本页第一条**：一页被拆成多条时
+    它们也不会跟着复制，全仓同一信息仍然只出现一次。
+    """
+    header, rows = page_rows[0], page_rows[1:]
+
+    def heads(first: bool) -> list[str]:
+        lines = [title_line, *note_lines] if first else [title_line]
+        return [html.escape(line) if use_html_pre else line for line in lines]
+
+    def rendered(chunk_text: str) -> str:
+        return render_page_block(chunk_text, use_html_pre)
+
+    max_head_len = max(
+        len("\n".join(heads(first=True))), len("\n".join(heads(first=False)))
+    )
+    inner_limit = limit - (max_head_len + 1)
+    if inner_limit <= 0:
+        raise GoalTableTooLongError(
+            f"0球~7+ 表页标题 {max_head_len} 字符，已占满 {limit} 上限，无法容纳表体"
+        )
+    out: list[str] = []
+    for index, chunk in enumerate(_chunk_rows(header, rows, inner_limit, rendered)):
+        table = rendered("\n".join([header, *chunk]))
+        out.append("\n".join([*heads(first=index == 0), table]))
+    return out
+
+
+def _all_page_messages(
+    data: Any,
+    compact: bool,
+    max_len: int,
+    title: str,
+    notes: Iterable[str],
+    use_html_pre: bool,
+) -> list[str]:
+    """两页 -> 消息列表的**唯一**装配路径（Telegram 与纯文本共用）。
+
+    每页先出自己的页码标题；``notes`` 只随第 1 页走，所以「出处行/缺项说明
+    全仓只出现一次」由这一处保证，两条出口不可能各写一份而漂移。
+    """
+    limit = int(max_len or TELEGRAM_TEXT_LIMIT)
+    pages = build_goal_table_pages_lines(data, compact=compact)
+    note_lines = [str(note) for note in notes if str(note).strip()]
+    out: list[str] = []
+    for index, ((page_no, columns), rows) in enumerate(zip(PAGE_SPECS, pages)):
+        out.extend(
+            _page_messages(
+                rows,
+                page_title(title, columns, page_no),
+                note_lines if index == 0 else [],
+                limit,
+                use_html_pre,
+            )
+        )
+    return out
+
+
 def build_telegram_goal_table_messages(
     data: dict,
     compact: bool = False,
     use_html_pre: bool = True,
     max_len: int = TELEGRAM_TEXT_LIMIT,
+    title: str = DEFAULT_TITLE,
+    notes: Iterable[str] = (),
 ) -> list[str]:
-    """按行把表格拆成多条消息，每块重挂表头与 ``<pre>`` 包装。
+    """渲染成**固定两页**的 Telegram 消息，一页一条。
 
-    每块长度（含 HTML 转义后）都 <= max_len；单行本身装不下时抛
-    ``GoalTableTooLongError``——宁可报错，也不把一行劈成两半破坏对齐。
+    第 1 页 0球~3球、第 2 页 4球~7+（切分点与 ``score_matrices`` 一致），
+    每页各自重挂表头与 7 个行标签、按本页 4 列独立算列宽。``notes``
+    （出处行 / 缺项说明）只挂在第 1 页，第 2 页不重复。
+
+    正常情况下返回长度恰为 2 的列表；某页仍超过 ``max_len`` 时该页按行再拆，
+    单行本身装不下时抛 ``GoalTableTooLongError``——宁可报错，也不把一行劈成
+    两半破坏对齐。
     """
-    limit = int(max_len or TELEGRAM_TEXT_LIMIT)
-    lines = build_goal_table_lines(data, compact=compact)
-    chunks = _chunk_rows(lines[0], lines[1:], limit, use_html_pre)
-    return [_wrap_table_text("\n".join([lines[0], *chunk]), use_html_pre) for chunk in chunks]
+    return _all_page_messages(data, compact, max_len, title, notes, use_html_pre)
 
 
 def build_goal_table_messages_text(
-    data: Any, compact: bool = False, max_len: int = TELEGRAM_TEXT_LIMIT
+    data: Any,
+    compact: bool = False,
+    max_len: int = TELEGRAM_TEXT_LIMIT,
+    title: str = DEFAULT_TITLE,
+    notes: Iterable[str] = (),
 ) -> list[str]:
-    """纯文本（无围栏）的分块结果，供 Streamlit/日志按块展示。"""
-    limit = int(max_len or TELEGRAM_TEXT_LIMIT)
-    lines = build_goal_table_lines(data, compact=compact)
-    chunks = _chunk_rows(lines[0], lines[1:], limit, False)
-    return ["\n".join([lines[0], *chunk]) for chunk in chunks]
+    """纯文本（无围栏）的**固定两页**结果，供 Streamlit/日志按页展示。"""
+    return _all_page_messages(data, compact, max_len, title, notes, False)
 
 
 # ------------------------------------------------------------ 数据缺口可见化
@@ -470,25 +614,23 @@ def build_goal_table_section(
     source_note: str = "",
     max_len: int = TELEGRAM_TEXT_LIMIT,
 ) -> list[str]:
-    """组装成可直接发给 Telegram 的段落（若干条消息）。
+    """组装成可直接发给 Telegram 的**固定两页**段落（一页一条）。
 
-    第一条带标题与缺口说明，表格本身按 D4 拆条；缺口说明永远在，缺数据不可能
-    被当成「整表正常」。
+    标题、压缩说明、出处行与缺口说明全部只挂在第 1 页；第 2 页只有自己的
+    页码标题和表体，所以「同一信息全仓只出现一次」。缺口说明永远在，缺数据
+    不可能被当成「整表正常」。
     """
-    notes = [title]
+    notes: list[str] = []
     if compact:
         notes.append("窄屏压缩：赔率保留≤2位小数（22.02/22.39/21.85 仍可区分）")
     if source_note:
         notes.append(source_note)
     notes.append(format_goal_table_coverage_note(data))
-    limit = int(max_len or TELEGRAM_TEXT_LIMIT)
-    head = "\n".join(notes)
-    head_message = html.escape(head) if use_html_pre else head
-
-    messages = build_telegram_goal_table_messages(
-        data, compact=compact, use_html_pre=use_html_pre, max_len=limit
+    return build_telegram_goal_table_messages(
+        data,
+        compact=compact,
+        use_html_pre=use_html_pre,
+        max_len=int(max_len or TELEGRAM_TEXT_LIMIT),
+        title=title,
+        notes=notes,
     )
-    first = f"{head_message}\n{messages[0]}"
-    if len(first) > limit:
-        return [head_message, *messages]
-    return [first, *messages[1:]]
