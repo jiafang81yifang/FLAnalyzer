@@ -443,6 +443,116 @@ def test_route_label_distinguishes_direct_from_proxy(env_proxy: str) -> None:
     assert PROXY in cs._route_label({'http': PROXY, 'https': PROXY})
 
 
+# --------------------------------------------------------------------------- #
+# 5b. NO_PROXY 是排除规则，不是代理
+#
+# app_v84_hermes 启动时**无条件**写 `NO_PROXY=localhost,127.0.0.1,::1`
+# （`app_v84_hermes.py:467` / `:473`）。requests 的 merge_environment_settings 会把它
+# 并进 `proxies` 字典，键名是 `no`。`_effective_proxies` 曾把「任何非空 value 都算代理」，
+# 于是 `_route_label(DIRECT)` 打出 `proxy localhost,127.0.0.1,::1`——而这一轮其实是直连。
+# 这条日志在**所有**运行里都是假的，而且它正是探针文案（`_canary_line` 里的 `route=`）
+# 的证据来源，所以「同出口探针」这条最硬的证据也跟着带了假出口标签。
+#
+# 下面每条都显式设/清环境变量，不依赖机器上有没有真代理。
+# --------------------------------------------------------------------------- #
+_NO_PROXY_VALUE = 'localhost,127.0.0.1,::1'
+
+
+def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清掉所有代理相关环境变量，让每条断言的起点都一样。"""
+    for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+                'ALL_PROXY', 'all_proxy', 'OKOOO_PROXY'):
+        monkeypatch.delenv(key, raising=False)
+    for key in ('NO_PROXY', 'no_proxy'):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_no_proxy_alone_is_not_a_proxy(monkeypatch) -> None:
+    """只有 `NO_PROXY`、没有任何 `*_PROXY` → 显式直连仍然是 `direct`。"""
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv('NO_PROXY', _NO_PROXY_VALUE)
+
+    merged = cs.requests.Session().merge_environment_settings(
+        'https://m.okooo.com/', {'http': None, 'https': None}, None, None, None,
+    )['proxies']
+    # 前提：requests 确实把 NO_PROXY 以 `no` 键并了进来（这是缺陷的入口）。
+    assert dict(merged).get('no') == _NO_PROXY_VALUE, dict(merged)
+
+    assert cs._effective_proxies({'http': None, 'https': None}) == {}, (
+        '_effective_proxies 把 NO_PROXY 排除规则当成了代理'
+    )
+    assert cs._route_label({'http': None, 'https': None}) == 'direct', cs._route_label(
+        {'http': None, 'https': None}
+    )
+
+
+def test_no_proxy_does_not_hide_a_real_proxy(monkeypatch) -> None:
+    """`NO_PROXY` + `HTTPS_PROXY` → 显式直连仍是直连，代理路由仍报代理。"""
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv('NO_PROXY', _NO_PROXY_VALUE)
+    monkeypatch.setenv('HTTPS_PROXY', PROXY)
+
+    assert cs._route_label({'http': None, 'https': None}) == 'direct'
+    label = cs._route_label({'http': PROXY, 'https': PROXY})
+    assert label.startswith('proxy '), label
+    assert PROXY in label, label
+    # `no` 不许混进值里。
+    assert 'localhost' not in label, label
+    assert '127.0.0.1:1' not in label.replace(PROXY, ''), label
+
+
+def test_effective_proxies_ignores_exclusion_keys(monkeypatch) -> None:
+    """`no` / `no_proxy` 两个写法都不算代理；未登记的键也不当代理。"""
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv('NO_PROXY', _NO_PROXY_VALUE)
+    out = cs._effective_proxies({'http': None, 'https': None})
+    assert out == {}, out
+    for key in cs._NON_PROXY_KEYS:
+        assert key not in out, (key, out)
+
+
+def test_proxy_dict_never_reads_no_proxy(monkeypatch) -> None:
+    """`_proxy_dict` 只读 `OKOOO_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY`，不读 `NO_PROXY`。"""
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv('NO_PROXY', _NO_PROXY_VALUE)
+    assert cs._proxy_dict(None) is None, cs._proxy_dict(None)
+    assert cs._proxy_dict({'http': None, 'https': None}) == {'http': None, 'https': None}
+    # 有真代理时才给出代理，且值里不含 NO_PROXY 的内容。
+    monkeypatch.setenv('HTTPS_PROXY', PROXY)
+    out = cs._proxy_dict(None)
+    assert out == {'http': PROXY, 'https': PROXY}, out
+
+
+def test_route_label_under_app_startup_no_proxy(monkeypatch) -> None:
+    """复刻 app 启动后的状态：`NO_PROXY` 被无条件写入，且没有任何 `*_PROXY`。
+
+    这是用户实机看到的那个组合——日志打 `route=proxy localhost,127.0.0.1,::1`
+    而实际是直连。
+    """
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv('NO_PROXY', _NO_PROXY_VALUE)
+    assert cs._route_label(app._DIRECT_PROXIES) == 'direct', cs._route_label(app._DIRECT_PROXIES)
+
+
+def test_no_proxy_misread_would_be_red(monkeypatch) -> None:
+    """反证：把 `_effective_proxies` 的键过滤去掉，同一组断言必然给出假出口。
+
+    这条不测实现细节，它证明「上面那几条确实咬住了这个缺陷」：只要过滤失效，
+    `NO_PROXY` 就会被当成代理地址。
+    """
+    _clear_proxy_env(monkeypatch)
+    monkeypatch.setenv('NO_PROXY', _NO_PROXY_VALUE)
+    raw = cs.requests.Session().merge_environment_settings(
+        'https://m.okooo.com/', {'http': None, 'https': None}, None, None, None,
+    )['proxies']
+    naive = {str(k): str(v) for k, v in dict(raw).items() if v}
+    assert naive and 'no' in naive, naive
+    # 旧实现在这种环境下会把它拼成「代理 + 排除串」。
+    assert 'proxy ' + _NO_PROXY_VALUE == 'proxy ' + naive['no']
+    # 修复后的实现不这么看。
+    assert cs._effective_proxies({'http': None, 'https': None}) == {}
+
+
 def test_describe_route_is_readable(monkeypatch) -> None:
     assert app._describe_route(app._DIRECT_PROXIES) == '直连'
     assert 'proxy' not in app._describe_route({'http': PROXY, 'https': PROXY})

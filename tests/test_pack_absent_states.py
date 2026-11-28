@@ -45,6 +45,10 @@ def _emit(rec, monkeypatch, tmp_path, send=None):
     monkeypatch.setattr(app, '_ensure_mobile_six', lambda *a, **k: False)
     monkeypatch.setattr(app, 'enrich_history_okooo_cs_facts', lambda *a, **k: False)
     monkeypatch.setattr(app, 'JUDGMENT_TG_REPORT_OUTPUT', True)
+    # 这组测的是「三种缺包状态各自的正文」，与「发不发」正交。不桩闸门的话，
+    # `_base_rec` 里写死的开球时间一过，真实 `datetime.now()` 会判「已开赛」跳过整场，
+    # 三条测试在某个日期之后自己变红。
+    monkeypatch.setattr(app, 'is_history_match_not_started', lambda *a, **k: True)
     with mock.patch('requests.get', side_effect=ConnectionError('offline')), \
             mock.patch('requests.post', side_effect=ConnectionError('offline')), \
             mock.patch('time.sleep', side_effect=lambda *a, **k: None):

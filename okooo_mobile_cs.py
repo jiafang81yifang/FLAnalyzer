@@ -67,13 +67,26 @@ def _proxy_dict(proxies: Any = None) -> dict[str, Any] | None:
 
 _DIRECT_PROXIES: dict[str, None] = {'http': None, 'https': None}
 
+# requests 合并环境后会把这些键放进 `proxies` 字典。只有前三个**真正参与转发**：
+#   http / https / all  —— 代理地址
+#   no / no_proxy       —— 排除规则（`NO_PROXY`），**不是代理**
+# 历史缺陷：`_effective_proxies` 曾把「任何非空 value 都算代理」，于是 app 启动时无条件
+# 设置的 `NO_PROXY=localhost,127.0.0.1,::1` 被当成了一个代理地址，`_route_label` 打出
+# `proxy localhost,127.0.0.1,::1`——而这一轮其实是直连。这条日志在**所有**运行里都是假的。
+_FORWARDING_PROXY_KEYS = ('http', 'https', 'all')
+_NON_PROXY_KEYS = ('no', 'no_proxy')
+
 
 def _effective_proxies(proxies: Any = None) -> dict[str, str]:
-    """按 requests 自己的合并规则，算出这一轮真正生效的代理。
+    """按 requests 自己的合并规则，算出这一轮真正生效的**转发代理**。
 
     不能用 `_proxy_dict(proxies)` 的结果当结论：`proxies={}` 在 requests 里表示
     「我没指定，去合并环境变量」，和「直连」不是一回事。只有走
     `Session.merge_environment_settings` 才能拿到最终口径，所以这里直接问它。
+
+    但合并结果里**混着排除规则**：`NO_PROXY` 会以 `no` 键出现。它不是代理，
+    所以这里只保留真正参与转发的键（`http` / `https` / `all`）且值非空的项。
+    否则「直连」会被标成 `proxy localhost,127.0.0.1,::1`。
     """
     try:
         merged = requests.Session().merge_environment_settings(
@@ -82,7 +95,20 @@ def _effective_proxies(proxies: Any = None) -> dict[str, str]:
     except Exception:  # noqa: BLE001 - 只是日志口径，取不到就如实说不知道
         return {}
     raw = merged.get('proxies') if isinstance(merged, dict) else None
-    return {str(k): str(v) for k, v in (raw or {}).items() if v}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key).strip().lower()
+        if name in _NON_PROXY_KEYS:
+            # 排除规则，不是出口。`NO_PROXY` 的存在不改变这一轮走不走代理。
+            continue
+        if name not in _FORWARDING_PROXY_KEYS:
+            # 未登记的键不当成代理：宁可少报，也不把 `no` 之类的元数据说成出口。
+            continue
+        if value:
+            out[name] = str(value)
+    return out
 
 
 def _route_label(proxies: Any = None) -> str:

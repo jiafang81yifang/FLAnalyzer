@@ -70,11 +70,16 @@ def _deliver(tmp_path, selector=None):
                mock.patch.object(app, '_ensure_mobile_six', lambda *a, **k: False),
                mock.patch.object(app, 'enrich_history_okooo_cs_facts', lambda *a, **k: False),
                mock.patch.object(app, 'JUDGMENT_TG_REPORT_OUTPUT', True),
-               # 闸门钉成「未开赛」：这 3 条标题测试测的是**标题行去重**
-               # （📌 只出现一次、kickoff 只出现一次），与「发不发」正交，桩掉闸门
-               # 不削弱被测点。不桩的话 `KICKOFF` 是写死日期，阶段2 用 datetime.now()
-               # 判「已开赛就不补发」，开球时间一过这三条就自己变红。
-               # 必须打模块属性：阶段2 是直接按模块全局调用的。
+               # 闸门钉成「未开赛」：这 3 条测的是**标题行去重**（📌 只出现一次、
+               # kickoff 只出现一次、场次号只出现一次），与「发不发」正交。桩掉闸门
+               # 之后被测的标题去重逻辑仍完整执行，没有任何断言被削弱。
+               #
+               # 不打这个桩会随时间自己变红：`KICKOFF` 是写死的日期，阶段2 用
+               # `datetime.now()` 判「已开赛就不补发」，于是开球时间一过，这 3 条就
+               # 拿不到任何投递（`first == ''`）。把 KICKOFF 往后挪只是把炸弹延后，
+               # 同一文件下方 `SWEEP_FROZEN_NOW` 那套冻结时钟就是为这个模式准备的。
+               # 必须打 `app.is_history_match_not_started`（模块属性）：阶段2 是直接按
+               # 模块全局调用的，不是经由实例或导入名。
                mock.patch.object(app, 'is_history_match_not_started', lambda *a, **k: True),
                mock.patch('requests.get', side_effect=ConnectionError('offline')),
                mock.patch('requests.post', side_effect=ConnectionError('offline')),
