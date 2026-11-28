@@ -730,3 +730,57 @@ def test_pipeline_puts_the_two_pages_in_two_messages() -> None:
     assert chunks[1].startswith(PAGE2_TITLE)
     # 出处/缺项说明只在第 1 条里出现，第 2 条不重复
     assert PAGE2_TITLE not in chunks[0]
+
+
+def test_two_pages_stay_separate_messages_among_the_other_sections() -> None:
+    """#38 加入五段新段后，两页仍各自独立成条，不和别的段挤进同一条。
+
+    这条盯的是**分段结果**，不是页面文本：`\x0c` 只在段内有意义，
+    段尾符必须交给下一段开头，否则第 2 页会和它后面的进球矩阵 /
+    六盘口事实板 / heat / 研判正文拼成同一条消息。
+    """
+    import blade_deepseek_pipeline as pipe
+
+    pages = tgt.build_goal_table_messages_text(SAMPLE)
+    sections = pipe.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        title_line='📌 标题行',
+        goal_table_tg_lines=pages,
+        mkt_over_theo_tg_lines=['📉【市热超理论专表】', '  条数: 22'],
+        six_market_fact_tg_lines=['🔎【六盘口事实板】', '  亚盘让球 无数据'],
+        heat_tg_lines=['HEATMARK'],
+        desc_lines=['DeepSeek 数据分析研判报告', '正文'],
+    )
+    report = "\n\n".join(sections)
+    chunks = pipe.split_tg_html_preserving_pre(report, 4000)
+    assert ''.join(chunks) == report.replace('\x0c', ''), '切分必须无损'
+    assert all(chunk.strip() for chunk in chunks), '不允许出现空白消息'
+    assert all(not chunk.startswith('\n') for chunk in chunks), '每条都从内容开头'
+
+    page1 = [c for c in chunks if PAGE1_TITLE in c]
+    page2 = [c for c in chunks if PAGE2_TITLE in c]
+    assert len(page1) == 1 and len(page2) == 1
+    # 第 2 页那条里不许混进 #38 的段，也不许混进第 1 页。
+    for marker in ('市均前15·进球赔率矩阵', '六盘口事实板', 'HEATMARK',
+                   'DeepSeek 数据分析研判报告', PAGE1_TITLE):
+        assert marker not in page2[0], f'第 2 页与 {marker} 挤在同一条'
+    # 第 1 页那条同样不许吞掉第 2 页或别的段。
+    for marker in (PAGE2_TITLE, '六盘口事实板', 'HEATMARK'):
+        assert marker not in page1[0], f'第 1 页与 {marker} 挤在同一条'
+    # 两页各自的第一行就是自己的页标题。
+    assert page1[0].splitlines()[0] == PAGE1_TITLE
+    assert page2[0].splitlines()[0] == PAGE2_TITLE
+
+
+def test_tables_last_section_still_splits_two_pages() -> None:
+    """表是报告最后一段时，两页仍然各自成条（段尾分页符收尾）。"""
+    import blade_deepseek_pipeline as pipe
+
+    pages = tgt.build_goal_table_messages_text(SAMPLE)
+    sections = pipe.DeepSeekAnalyzer.build_deepseek_only_tg_sections(
+        title_line='📌 标题行', goal_table_tg_lines=pages,
+    )
+    chunks = pipe.split_tg_html_preserving_pre("\n\n".join(sections), 4000)
+    heads = [c.splitlines()[0] for c in chunks if c.strip()]
+    assert heads.count(PAGE1_TITLE) == 1
+    assert heads.count(PAGE2_TITLE) == 1
+    assert not any(PAGE2_TITLE in c and PAGE1_TITLE in c for c in chunks)
